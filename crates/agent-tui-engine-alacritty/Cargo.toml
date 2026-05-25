@@ -1,0 +1,20 @@
+[package]
+name = "agent-tui-engine-alacritty"
+description = "alacritty-terminal-backed implementation of the agent-tui Engine trait (lean alternative)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-tui-engine = { workspace = true }
+agent-tui-protocol = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+# alacritty-terminal lands in P5 alternative-engine work; see docs/RFC.md §3.2.
+# alacritty_terminal = "0.x"

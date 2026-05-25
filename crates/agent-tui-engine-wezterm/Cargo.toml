@@ -1,0 +1,20 @@
+[package]
+name = "agent-tui-engine-wezterm"
+description = "wezterm-term-backed implementation of the agent-tui Engine trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-tui-engine = { workspace = true }
+agent-tui-protocol = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+# wezterm-term lands in P0 follow-up; see docs/RFC.md §3.2.
+# wezterm-term = "0.x"

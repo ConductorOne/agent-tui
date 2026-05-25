@@ -1,0 +1,20 @@
+[package]
+name = "agent-tui-engine"
+description = "Headless VT engine trait for agent-tui — abstracts over wezterm-term, alacritty-terminal, libghostty-vt."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-tui-protocol = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

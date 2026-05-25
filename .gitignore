@@ -1,0 +1,24 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Local env
+.env
+.envrc.local
+*.log
+
+# Diagnostic bundles (agent-tui doctor --diagnostic-bundle)
+diag-*.tar.gz
+diag-*.tar
+
+# Local socket / state dirs accidentally tracked
+.agent-tui/

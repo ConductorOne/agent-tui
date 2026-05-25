@@ -1,0 +1,97 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/agent-tui",
+    "crates/agent-tui-protocol",
+    "crates/agent-tui-engine",
+    "crates/agent-tui-engine-wezterm",
+    "crates/agent-tui-engine-alacritty",
+    "crates/agent-tui-daemon",
+    "crates/agent-tui-recorder",
+    "crates/agent-tui-adapter",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/agent-tui/agent-tui"
+authors = ["agent-tui contributors"]
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Tune down a few overly aggressive pedantic lints that don't carry their weight.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+multiple_crate_versions = "allow"
+
+[workspace.dependencies]
+# In-workspace crates, all pinned to the workspace version.
+agent-tui-protocol = { path = "crates/agent-tui-protocol", version = "0.1.0" }
+agent-tui-engine = { path = "crates/agent-tui-engine", version = "0.1.0" }
+agent-tui-engine-wezterm = { path = "crates/agent-tui-engine-wezterm", version = "0.1.0" }
+agent-tui-engine-alacritty = { path = "crates/agent-tui-engine-alacritty", version = "0.1.0" }
+agent-tui-daemon = { path = "crates/agent-tui-daemon", version = "0.1.0" }
+agent-tui-recorder = { path = "crates/agent-tui-recorder", version = "0.1.0" }
+agent-tui-adapter = { path = "crates/agent-tui-adapter", version = "0.1.0" }
+
+# Async runtime + IO. Pinned to a single tokio feature set we add to as needed.
+tokio = { version = "1.43", features = [
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "fs",
+    "sync",
+    "io-util",
+    "process",
+    "signal",
+    "time",
+] }
+
+# Serde + JSON-RPC line protocol.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI parsing.
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+
+# Errors. thiserror in libraries, anyhow in the binary.
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Structured logging + tracing.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Identity, hashing, randomness.
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.9"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# Unix integration (Linux/macOS-only callers feature-gate as needed).
+nix = { version = "0.30", features = ["fs", "user", "signal", "term"] }
+
+# Embedded skill-data files.
+include_dir = "0.7"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.release-with-debug]
+inherits = "release"
+strip = "none"
+debug = true

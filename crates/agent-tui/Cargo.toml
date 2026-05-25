@@ -1,0 +1,34 @@
+[package]
+name = "agent-tui"
+description = "A headless terminal browser for LLM agents — single static binary CLI + daemon."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "agent-tui"
+path = "src/main.rs"
+
+[dependencies]
+agent-tui-protocol = { workspace = true }
+agent-tui-daemon = { workspace = true }
+agent-tui-engine = { workspace = true }
+agent-tui-engine-wezterm = { workspace = true }
+agent-tui-recorder = { workspace = true }
+agent-tui-adapter = { workspace = true }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
