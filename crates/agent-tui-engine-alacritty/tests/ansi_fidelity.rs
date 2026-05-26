@@ -129,6 +129,31 @@ fn utf8_codepoint_split_across_feeds_renders_identically() {
     }
 }
 
+/// Regression test for a quirk found driving GNU nano in an 80x24 PTY:
+/// nano writes its right-aligned `Modified` flag with cursor positioning
+/// that lands the first char at column 71 and the rest at 72..78, but
+/// only `M` at col 79 actually shows up in the engine's grid.
+///
+/// This narrow ANSI sequence reproduces the same pattern: position the
+/// cursor at row 0 col 71 via CUP, then write "Modified". Engine grid
+/// should hold all 8 chars; if anything between col 71-78 is lost it's
+/// the same bug.
+#[test]
+fn cup_then_write_at_high_columns_preserves_all_chars() {
+    let eng = AlacrittyEngine::new(80, 24);
+    // CUP row 1 col 72 (1-indexed). Then write 'Modified'.
+    eng.feed(b"\x1b[1;72HModified").expect("feed ok");
+    let snap = eng.snapshot();
+    let row0: String = (0..usize::from(snap.grid.cols))
+        .map(|col| snap.grid.cells[col].ch.as_str())
+        .collect::<String>();
+    let row0_trim = row0.trim_end();
+    assert!(
+        row0_trim.ends_with("Modified"),
+        "row 0 should end with 'Modified'; got {row0_trim:?}"
+    );
+}
+
 #[tokio::test]
 async fn resize_updates_dimensions_and_emits_event() {
     let eng = AlacrittyEngine::new(80, 24);

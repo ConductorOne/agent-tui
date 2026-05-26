@@ -89,6 +89,71 @@ pub mod fixtures {
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
         ],
     };
+
+    /// `less` pager + a deterministic 200-line file at
+    /// `/fixtures/lorem.txt`. `LESS=-M` is set so the status line
+    /// carries the `lines X-Y/Z   P%` indicator scenarios anchor on.
+    pub const LESS: BwrapFixture = BwrapFixture {
+        name: "less",
+        env: &[("LESS", "-M"), ("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")],
+    };
+
+    /// htop with an empty `~/.config/htop/htoprc` pre-staged so the
+    /// first-run config write doesn't perturb the snapshot. Tests
+    /// should launch with `-d 50 -C` for a 5-second refresh + mono
+    /// output (gives `wait_idle` a long quiet window between repaints).
+    pub const HTOP: BwrapFixture = BwrapFixture {
+        name: "htop",
+        env: &[
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+        ],
+    };
+
+    /// tig + the same seeded git repo as the lazygit fixture
+    /// (`/fixtures/repo`, two commits). `TIGRC_USER` and `TIGRC_SYSTEM`
+    /// are pinned to a fixture-controlled rc so colors, mouse, and
+    /// rev-graph are off.
+    pub const TIG: BwrapFixture = BwrapFixture {
+        name: "tig",
+        env: &[
+            ("NO_COLOR", "1"),
+            ("TIGRC_USER", "/etc/tigrc-fixture"),
+            ("TIGRC_SYSTEM", "/dev/null"),
+            ("GIT_CONFIG_GLOBAL", "/etc/gitconfig-fixture"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+        ],
+    };
+
+    /// fzf + a 10-item candidate list at `/fixtures/fruits.txt`.
+    /// `FZF_DEFAULT_OPTS` is wiped to ignore any host config; scenarios
+    /// pass explicit flags (`--no-mouse --layout=reverse`) at invoke
+    /// time so the chrome layout is deterministic.
+    pub const FZF: BwrapFixture = BwrapFixture {
+        name: "fzf",
+        env: &[
+            ("FZF_DEFAULT_OPTS", ""),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+        ],
+    };
+
+    /// GNU nano + a 3-line file at `/fixtures/sample.txt`. `NO_COLOR=1`
+    /// disables syntax highlighting so cell attrs stay deterministic.
+    /// Scenarios should pass `-I` (no rc files) and usually `-w` (no
+    /// hard wrap) at invoke time.
+    pub const NANO: BwrapFixture = BwrapFixture {
+        name: "nano",
+        env: &[
+            ("NO_COLOR", "1"),
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+        ],
+    };
 }
 
 /// Static descriptor for a bwrap fixture.
