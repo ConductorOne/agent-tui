@@ -1,0 +1,19 @@
+" Deterministic vim config for the agent-tui integration fixture.
+"
+" Goals:
+"   - No swapfile prompts that block scenarios mid-step.
+"   - Predictable statusline content scenarios can wait_text for.
+"   - No syntax/colorscheme glamour that adds ANSI noise to PTY output.
+
+set nocompatible
+set noswapfile
+set nobackup
+set nowritebackup
+set noundofile
+syntax off
+set background=light
+set laststatus=2
+" Force the statusline to a known-shape so wait_text(...) is precise.
+set statusline=%f\ [%l/%L]%m
+" Disable mouse so OSC mouse-tracking bytes don't pollute the cell grid.
+set mouse=

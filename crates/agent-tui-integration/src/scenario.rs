@@ -42,6 +42,9 @@ pub struct Scenario {
     artifacts: Arc<ArtifactDir>,
     started_at: Instant,
     name: String,
+    /// Container id, cached so `Drop` (which can't `await`) can pass it
+    /// to the synchronous `docker exec` / `docker logs` rescue calls.
+    container_id: String,
 }
 
 /// In-tree fixture image tags. Built locally via `just fixtures` or by
@@ -49,6 +52,8 @@ pub struct Scenario {
 pub mod fixtures {
     /// bash + `FinalTerm` OSC 133 integration baked in.
     pub const SHELL: &str = "agent-tui-fixture-shell:dev";
+    /// vim + a deterministic /fixtures dir + `vimtutor`.
+    pub const VIM: &str = "agent-tui-fixture-vim:dev";
 }
 
 impl Scenario {
@@ -81,6 +86,7 @@ impl Scenario {
             .start()
             .await
             .with_context(|| format!("start container {image}"))?;
+        let container_id = container.id().to_string();
 
         // Ensure session dirs exist inside the container.
         for d in [SOCKET_DIR, STATE_DIR] {
@@ -93,11 +99,14 @@ impl Scenario {
                 .with_context(|| format!("mkdir {d}"))?;
         }
 
+        let artifacts = Arc::new(ArtifactDir::new(name, image)?);
+        artifacts.set_container_id(&container_id);
         Ok(Self {
             container,
-            artifacts: Arc::new(ArtifactDir::new(name)?),
+            artifacts,
             started_at: Instant::now(),
             name: name.to_string(),
+            container_id,
         })
     }
 
@@ -154,8 +163,9 @@ impl Scenario {
         .await
     }
 
-    /// `agent-tui snapshot --mode outline`. Stores the result in the
-    /// artifact dir so it's available for panic-time dumps.
+    /// `agent-tui snapshot --mode outline`. Each call is appended to the
+    /// scenario's snapshot history so the artifact dump can show state
+    /// evolution, not just the most recent frame.
     pub async fn snapshot(&mut self) -> Result<Snapshot> {
         let env = self
             .run_cli(
@@ -163,7 +173,7 @@ impl Scenario {
                 &["snapshot".into(), "--mode".into(), "outline".into()],
             )
             .await?;
-        self.artifacts.set_last_snapshot(env.clone());
+        self.artifacts.push_snapshot(env.clone());
         let data = env.get("data").cloned().unwrap_or(Value::Null);
         Ok(Snapshot { envelope: data })
     }
@@ -221,15 +231,94 @@ impl Scenario {
 
 impl Drop for Scenario {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            let _ = self.artifacts.dump();
-            tracing::error!(
-                test = %self.name,
-                artifacts = %self.artifacts.root().display(),
-                "scenario panicked; artifacts captured"
-            );
+        if !std::thread::panicking() {
+            return;
+        }
+        let _ = self.artifacts.dump();
+        self.dump_diagnostics_blocking();
+        tracing::error!(
+            test = %self.name,
+            artifacts = %self.artifacts.root().display(),
+            "scenario panicked; artifacts captured"
+        );
+    }
+}
+
+impl Scenario {
+    /// Shell out to `docker exec` / `docker logs` to fetch the cast file,
+    /// PNG screenshot, and container output. Synchronous so it works from
+    /// `Drop`. Failures are silent — best-effort.
+    fn dump_diagnostics_blocking(&self) {
+        let cid = &self.container_id;
+        let docker = docker_cli();
+        let artifact_root = self.artifacts.root();
+
+        // pane.cast — the in-container recorder file for pane p1. May not
+        // exist if no pane was spawned successfully.
+        let cast_path = format!("{STATE_DIR}/agent-tui/default/p1.cast");
+        if let Ok(out) = std::process::Command::new(&docker)
+            .args(["exec", cid, "cat", &cast_path])
+            .output()
+            && out.status.success()
+        {
+            let _ = std::fs::write(artifact_root.join("pane.cast"), &out.stdout);
+        }
+
+        // last-snapshot.png — ask agent-tui inside the container to
+        // rasterize one final snapshot with `--annotate` labels, then
+        // copy the PNG out. Only succeeds if the daemon is still
+        // healthy enough to respond, which is the common case
+        // (panics happen in *test* assertion code, not the daemon).
+        let png_path = format!("{STATE_DIR}/last-snapshot.png");
+        let _ = std::process::Command::new(&docker)
+            .args([
+                "exec",
+                cid,
+                AGENT_TUI_IN_CONTAINER,
+                "--socket-dir",
+                SOCKET_DIR,
+                "snapshot",
+                "--mode",
+                "outline",
+                "--png",
+                &png_path,
+                "--annotate",
+            ])
+            .output();
+        if let Ok(out) = std::process::Command::new(&docker)
+            .args(["exec", cid, "cat", &png_path])
+            .output()
+            && out.status.success()
+            && !out.stdout.is_empty()
+        {
+            let _ = std::fs::write(artifact_root.join("last-snapshot.png"), &out.stdout);
+        }
+
+        // container.log — what the entrypoint emitted. Usually small/empty
+        // for our sleep-infinity entrypoints, but worth grabbing.
+        if let Ok(out) = std::process::Command::new(&docker)
+            .args(["logs", cid])
+            .output()
+        {
+            let _ = std::fs::write(artifact_root.join("container.log"), &out.stdout);
+            let _ = std::fs::write(artifact_root.join("container.err"), &out.stderr);
         }
     }
+}
+
+/// `DOCKER_CLI` env var override, else `podman` if present, else `docker`.
+fn docker_cli() -> String {
+    if let Ok(v) = std::env::var("DOCKER_CLI") {
+        return v;
+    }
+    if std::process::Command::new("podman")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return "podman".into();
+    }
+    "docker".into()
 }
 
 /// Wrapper around a snapshot response that carries the assertion helpers.

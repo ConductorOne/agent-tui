@@ -31,12 +31,40 @@ pub mod scenario;
 ///
 /// `Drop`-time captures are written into this directory **only on panic**
 /// — successful tests don't pollute the dir.
+///
+/// On a panic the dump produces:
+///
+/// ```text
+/// target/integration-artifacts/<scenario>/
+///   README.md          Human-readable index + playback instructions.
+///   meta.json          Scenario name, image, container id, panic message.
+///   command-log.json   Every agent-tui CLI call (op, args, response, ms).
+///   snapshots/         All snapshots taken in order: 001.json, 002.json, …
+///   pane.cast          asciicast pulled from inside the container so the
+///                      whole TUI stream can be replayed via `asciinema
+///                      play pane.cast`. Best-effort: skipped silently if
+///                      the cast file isn't present (no pane spawned yet).
+///   container.log      `docker logs <container>` output. Best-effort.
+/// ```
 pub struct ArtifactDir {
     root: PathBuf,
     /// Each (op, response) the scenario has sent so far. Persisted on panic.
     log: Mutex<Vec<CommandRecord>>,
-    /// Latest snapshot envelope, for the panic-time dump.
-    last_snapshot: Mutex<Option<serde_json::Value>>,
+    /// Every snapshot the scenario has taken, in order.
+    snapshot_history: Mutex<Vec<serde_json::Value>>,
+    /// Static scenario metadata captured at construction time.
+    meta: Mutex<ScenarioMeta>,
+}
+
+/// Static metadata about the running scenario, dumped to `meta.json`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ScenarioMeta {
+    /// Scenario name (matches the directory under `target/integration-artifacts/`).
+    pub name: String,
+    /// Container image tag used.
+    pub image: String,
+    /// Container id once started.
+    pub container_id: Option<String>,
 }
 
 /// One entry in the per-scenario command log captured for debugging.
@@ -54,17 +82,23 @@ pub struct CommandRecord {
 
 impl ArtifactDir {
     /// Open the artifact directory for `<test_name>`. Creates it on demand.
-    pub fn new(test_name: &str) -> Result<Self> {
+    pub fn new(test_name: &str, image: &str) -> Result<Self> {
         let root = workspace_root()?
             .join("target")
             .join("integration-artifacts")
             .join(sanitize(test_name));
         std::fs::create_dir_all(&root)
             .with_context(|| format!("create artifact dir {}", root.display()))?;
+        std::fs::create_dir_all(root.join("snapshots"))?;
         Ok(Self {
             root,
             log: Mutex::new(Vec::new()),
-            last_snapshot: Mutex::new(None),
+            snapshot_history: Mutex::new(Vec::new()),
+            meta: Mutex::new(ScenarioMeta {
+                name: test_name.to_string(),
+                image: image.to_string(),
+                container_id: None,
+            }),
         })
     }
 
@@ -75,10 +109,17 @@ impl ArtifactDir {
         }
     }
 
-    /// Remember the latest snapshot so panic-time capture can dump it.
-    pub fn set_last_snapshot(&self, snap: serde_json::Value) {
-        if let Ok(mut g) = self.last_snapshot.lock() {
-            *g = Some(snap);
+    /// Append a snapshot to the history.
+    pub fn push_snapshot(&self, snap: serde_json::Value) {
+        if let Ok(mut g) = self.snapshot_history.lock() {
+            g.push(snap);
+        }
+    }
+
+    /// Set the container id once the container has started.
+    pub fn set_container_id(&self, id: &str) {
+        if let Ok(mut m) = self.meta.lock() {
+            m.container_id = Some(id.to_string());
         }
     }
 
@@ -87,21 +128,102 @@ impl ArtifactDir {
         &self.root
     }
 
-    /// Write artifacts to disk. Called automatically on panic by
-    /// [`Scenario::drop`]; can also be called explicitly to capture
-    /// state mid-scenario for debugging passing tests.
+    /// Snapshot the metadata for callers that need it (e.g. the `docker
+    /// exec` helper in `Scenario::dump_blocking`).
+    pub fn meta_snapshot(&self) -> ScenarioMeta {
+        self.meta.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Write the synchronous artifacts (everything that lives in memory).
+    /// Called automatically on panic by `Scenario::drop` and explicitly
+    /// by `Scenario::capture_now` for debugging passing tests.
+    ///
+    /// The async-fetched bits (cast file + container logs) live in
+    /// `Scenario::dump_diagnostics_blocking` which shells out to `docker`.
     pub fn dump(&self) -> std::io::Result<()> {
         if let Ok(log) = self.log.lock() {
             let json = serde_json::to_string_pretty(&*log).unwrap_or_default();
             std::fs::write(self.root.join("command-log.json"), json)?;
         }
-        if let Ok(snap) = self.last_snapshot.lock()
-            && let Some(s) = snap.as_ref()
-        {
-            let json = serde_json::to_string_pretty(s).unwrap_or_default();
-            std::fs::write(self.root.join("last-snapshot.json"), json)?;
+        if let Ok(history) = self.snapshot_history.lock() {
+            for (i, snap) in history.iter().enumerate() {
+                let path = self
+                    .root
+                    .join("snapshots")
+                    .join(format!("{:03}.json", i + 1));
+                let json = serde_json::to_string_pretty(snap).unwrap_or_default();
+                std::fs::write(path, json)?;
+            }
         }
+        if let Ok(meta) = self.meta.lock() {
+            let json = serde_json::to_string_pretty(&*meta).unwrap_or_default();
+            std::fs::write(self.root.join("meta.json"), json)?;
+        }
+        self.write_readme()?;
         Ok(())
+    }
+
+    fn write_readme(&self) -> std::io::Result<()> {
+        let meta = self.meta.lock().ok();
+        let name = meta
+            .as_ref()
+            .map_or_else(|| "<unknown>".into(), |m| m.name.clone());
+        let image = meta
+            .as_ref()
+            .map_or_else(|| "<unknown>".into(), |m| m.image.clone());
+        let cid = meta
+            .as_ref()
+            .and_then(|m| m.container_id.clone())
+            .unwrap_or_else(|| "<container did not start>".into());
+        let body = format!(
+            r"# Integration test artifacts: {name}
+
+**Image:** `{image}`
+**Container ID:** `{cid}`
+
+## How to debug
+
+1. **Replay the agent's view:** the `pane.cast` file is an asciicast
+   captured from the daemon's recorder *inside the container*. It contains
+   every PTY byte the TUI emitted with original timing.
+
+   ```bash
+   asciinema play pane.cast
+   ```
+
+2. **Look at the screenshot:** `last-snapshot.png` is a rasterized
+   render of the final pane state with `@eN` ref labels overlaid (the
+   `--annotate` mode). Useful for grok-at-a-glance failure visualization
+   without needing asciinema installed.
+
+3. **See state evolution:** every snapshot the scenario took lives in
+   `snapshots/NNN.json` in chronological order. Diff consecutive
+   snapshots to spot where state went wrong.
+
+4. **See every CLI call:** `command-log.json` has the agent-tui CLI op,
+   its args, the daemon response, and elapsed-ms-since-scenario-start
+   for every call.
+
+5. **Read container logs:** `container.log` is `docker logs <container>`
+   captured at panic time. Usually just the long-running entrypoint's
+   output (PTY traffic flows through agent-tui, not stdout, so this is
+   often empty for TUI scenarios).
+
+## Files
+
+| File | What it is |
+|------|------------|
+| `README.md` | This index. |
+| `meta.json` | Scenario name + image + container id, JSON. |
+| `command-log.json` | Every agent-tui CLI op + response, chronological. |
+| `snapshots/NNN.json` | Snapshots in capture order. |
+| `pane.cast` | asciicast — replay via `asciinema play`. Best-effort. |
+| `last-snapshot.png` | Annotated PNG render of the final pane state. Best-effort. |
+| `container.log` | `docker logs` stdout. Best-effort. |
+| `container.err` | `docker logs` stderr. Best-effort. |
+"
+        );
+        std::fs::write(self.root.join("README.md"), body)
     }
 }
 
