@@ -15,15 +15,18 @@ workspace = true
 agent-tui-protocol = { workspace = true }
 agent-tui-engine = { workspace = true }
 agent-tui-engine-wezterm = { workspace = true }
+agent-tui-engine-alacritty = { workspace = true }
 agent-tui-adapter = { workspace = true }
 agent-tui-recorder = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+portable-pty = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

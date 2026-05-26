@@ -13,7 +13,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod handlers;
+pub mod pane;
 pub mod paths;
+pub mod pty;
 pub mod server;
 pub mod sidecar;
 

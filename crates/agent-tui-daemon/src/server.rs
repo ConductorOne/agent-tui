@@ -16,6 +16,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
+use super::handlers;
+use super::pane::Registry;
 use super::paths::SocketLayout;
 use super::sidecar;
 
@@ -30,6 +32,18 @@ pub struct DaemonConfig {
     pub engine: String,
     /// Binary semver string.
     pub binary_version: String,
+}
+
+/// Per-process daemon state. Wraps the immutable [`DaemonConfig`] alongside
+/// the shared, mutable resources every connection handler needs.
+#[derive(Clone)]
+pub struct DaemonState {
+    /// Immutable config captured at daemon launch.
+    pub cfg: DaemonConfig,
+    /// Pane registry shared across every connection.
+    pub registry: Arc<Registry>,
+    /// Per-pane snapshot-generation tracker.
+    pub generations: Arc<handlers::snapshot::GenerationTracker>,
 }
 
 /// Handle returned by [`run_daemon`]. Currently only carries a shutdown
@@ -66,7 +80,11 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
         shutdown: shutdown.clone(),
     };
 
-    let cfg = Arc::new(cfg);
+    let state = DaemonState {
+        cfg,
+        registry: Arc::new(Registry::new()),
+        generations: Arc::new(handlers::snapshot::GenerationTracker::default()),
+    };
     let shutdown_inner = shutdown.clone();
     tokio::spawn(async move {
         loop {
@@ -77,8 +95,8 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
                 }
                 accept = listener.accept() => match accept {
                     Ok((sock, _addr)) => {
-                        let cfg = cfg.clone();
-                        tokio::spawn(handle_conn(sock, cfg));
+                        let state = state.clone();
+                        tokio::spawn(handle_conn(sock, state));
                     }
                     Err(e) => {
                         error!(error = %e, "accept error");
@@ -86,13 +104,13 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
                 }
             }
         }
-        sidecar::remove_all_sidecars(&cfg.layout);
+        sidecar::remove_all_sidecars(&state.cfg.layout);
     });
 
     Ok(handle)
 }
 
-async fn handle_conn(sock: UnixStream, cfg: Arc<DaemonConfig>) {
+async fn handle_conn(sock: UnixStream, state: DaemonState) {
     let (reader, mut writer) = sock.into_split();
     let mut lines = BufReader::new(reader).lines();
     loop {
@@ -101,7 +119,7 @@ async fn handle_conn(sock: UnixStream, cfg: Arc<DaemonConfig>) {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let response = dispatch(&cfg, &line).await;
+                let response = dispatch(&state, &line).await;
                 let bytes = match serde_json::to_vec(&response) {
                     Ok(b) => b,
                     Err(e) => {
@@ -127,7 +145,7 @@ async fn handle_conn(sock: UnixStream, cfg: Arc<DaemonConfig>) {
     }
 }
 
-async fn dispatch(cfg: &DaemonConfig, line: &str) -> ResponseEnvelope {
+async fn dispatch(state: &DaemonState, line: &str) -> ResponseEnvelope {
     let start = Instant::now();
     let parsed: Result<Request, _> = serde_json::from_str(line);
     let id = match &parsed {
@@ -138,7 +156,7 @@ async fn dispatch(cfg: &DaemonConfig, line: &str) -> ResponseEnvelope {
     let response = match parsed {
         Ok(req) => {
             if req.protocol == PROTOCOL_VERSION {
-                handle_command(cfg, req.command).await
+                handle_command(state, req.command).await
             } else {
                 Response::err(ErrorBody::new(
                     ErrorCode::DaemonVersionDrift,
@@ -160,8 +178,8 @@ async fn dispatch(cfg: &DaemonConfig, line: &str) -> ResponseEnvelope {
     ResponseEnvelope {
         id,
         protocol: PROTOCOL_VERSION,
-        version: cfg.binary_version.clone(),
-        session: Some(cfg.session.clone()),
+        version: state.cfg.binary_version.clone(),
+        session: Some(state.cfg.session.clone()),
         pane: None,
         generation: None,
         sequence: None,
@@ -171,17 +189,21 @@ async fn dispatch(cfg: &DaemonConfig, line: &str) -> ResponseEnvelope {
     }
 }
 
-// Async is intentional: P0–P2 will introduce engine/adapter awaits inside
-// every arm. The clippy lint is right today but wrong tomorrow.
-#[allow(clippy::unused_async)]
-async fn handle_command(_cfg: &DaemonConfig, cmd: agent_tui_protocol::Command) -> Response {
+async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
-    // v0.1.0 scaffolding — every command returns a typed "not yet" error
-    // except DaemonStatus and DaemonShutdown which are useful immediately.
     match cmd {
+        Command::Spawn { argv, cwd, size } => {
+            handlers::spawn::run(&state.registry, argv, cwd, size).await
+        }
+        Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
+        Command::List { all } => handlers::list::run(&state.registry, all).await,
+        Command::Snapshot { pane, mode, .. } => {
+            handlers::snapshot::run(&state.registry, &state.generations, pane, mode).await
+        }
         Command::DaemonStatus => Response::ok(serde_json::json!({
             "status": "running",
             "protocol": PROTOCOL_VERSION,
+            "panes": state.registry.count().await,
         })),
         Command::DaemonShutdown { force: _ } => {
             // P0 follow-up: actually shut down. For now, just acknowledge.
