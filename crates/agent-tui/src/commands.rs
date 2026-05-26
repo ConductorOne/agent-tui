@@ -19,7 +19,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 one_shot_print(&cli.globals, Command::DaemonShutdown { force }).await
             }
         },
-        CliCmd::Doctor(args) => doctor(&cli.globals, &args),
+        CliCmd::Doctor(args) => doctor(&cli.globals, &args).await,
         CliCmd::Skills(args) => skills(&args),
         CliCmd::Mcp(_) => Err(anyhow!(
             "mcp serve not yet implemented (P4); track docs/RFC.md §13.4"
@@ -152,22 +152,49 @@ fn wait_condition_from_args(
     Err(anyhow!("wait requires exactly one mode flag"))
 }
 
-// Return-type kept as `Result<()>` so P0–P5 can introduce real failure
-// modes (filesystem probes, stale-daemon kills under `--fix`) without
-// touching the dispatch site.
-#[allow(clippy::unnecessary_wraps)]
-fn doctor(_g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Result<()> {
-    println!(
-        "{}",
-        serde_json::json!({
-            "ok": true,
-            "version": env!("CARGO_PKG_VERSION"),
-            "quick": args.quick,
-            "fix": args.fix,
-            "diagnostic_bundle": args.diagnostic_bundle.as_ref().map(|p| p.display().to_string()),
-            "note": "scaffolding doctor — full implementation lands in P0",
-        })
-    );
+/// `doctor` probes the daemon (`DaemonStatus`) for reachability + version +
+/// pane count and surfaces a CLI-side health report. `--fix` and
+/// `--diagnostic-bundle` still surface as fields but the destructive /
+/// archival paths land in P1.
+async fn doctor(g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Result<()> {
+    let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+
+    let mut report = serde_json::json!({
+        "ok": true,
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "session": g.session,
+        "socket": layout.socket.display().to_string(),
+        "quick": args.quick,
+        "fix": args.fix,
+        "diagnostic_bundle": args.diagnostic_bundle.as_ref().map(|p| p.display().to_string()),
+    });
+
+    match client::one_shot(&layout, Command::DaemonStatus).await {
+        Ok(env) if env.response.success => {
+            report["daemon"] = serde_json::json!({
+                "reachable": true,
+                "version": env.version,
+                "protocol": env.protocol,
+                "status": env.response.data,
+            });
+        }
+        Ok(env) => {
+            report["ok"] = serde_json::json!(false);
+            report["daemon"] = serde_json::json!({
+                "reachable": true,
+                "error": env.response.error,
+            });
+        }
+        Err(e) => {
+            report["ok"] = serde_json::json!(false);
+            report["daemon"] = serde_json::json!({
+                "reachable": false,
+                "error": format!("{e:#}"),
+            });
+        }
+    }
+
+    println!("{report}");
     Ok(())
 }
 
