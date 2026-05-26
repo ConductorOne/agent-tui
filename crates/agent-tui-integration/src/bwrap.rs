@@ -115,16 +115,38 @@ pub mod fixtures {
     /// (`/fixtures/repo`, two commits). `TIGRC_USER` and `TIGRC_SYSTEM`
     /// are pinned to a fixture-controlled rc so colors, mouse, and
     /// rev-graph are off.
+    ///
+    /// **`LINES` + `COLUMNS` env are explicitly set.** ncurses
+    /// initializes its `stdscr` from `getmaxyx`, which reads
+    /// `TIOCGWINSZ`. Under our daemon's PTY (`portable-pty` 0.9, 80x24
+    /// `PtySize`), `stty -a` reports rows=24 cols=80 — but ncurses sees
+    /// rows=23 at `newterm()` time and lays out the view one row short.
+    /// `lazygit`, `vim`, `htop`, `less`, `fzf`, `nano` are unaffected.
+    /// Forcing the env value works around the discrepancy until the
+    /// root cause in the daemon PTY layer is identified.
     pub const TIG: BwrapFixture = BwrapFixture {
         name: "tig",
         env: &[
             ("NO_COLOR", "1"),
             ("TIGRC_USER", "/etc/tigrc-fixture"),
-            ("TIGRC_SYSTEM", "/dev/null"),
+            // **Don't override TIGRC_SYSTEM** — /etc/tigrc ships ~19KB
+            // of default keybindings (j/k/g/G/h/q/Enter/…) without
+            // which tig has no input handlers at all and refuses to
+            // paint the commit body. The user-rc we ship layers our
+            // (mostly-cosmetic) overrides on top of those defaults.
             ("GIT_CONFIG_GLOBAL", "/etc/gitconfig-fixture"),
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
+            // PTY-size off-by-one workaround: ncurses sees LINES=23
+            // from `TIOCGWINSZ` despite the daemon allocating an 80x24
+            // PTY (confirmed via `stty` inside the sandbox returning
+            // 24 rows). Forcing the env value pulls tig's view height
+            // up by 1 row — title bar lands at row 22 (correct for 24
+            // rows) instead of row 21. Tracked separately as a
+            // daemon-side issue worth investigating in the PTY layer.
+            ("LINES", "24"),
+            ("COLUMNS", "80"),
         ],
     };
 

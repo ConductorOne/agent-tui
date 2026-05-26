@@ -12,15 +12,6 @@
 use agent_tui_integration::bwrap::{BwrapScenario, fixtures};
 use anyhow::Result;
 
-// TIG-RENDERING-BUG: tig 2.5 renders only the bottom 3 rows of the
-// terminal under our PTY + alacritty engine — the commit list body
-// (rows 0..N-3) stays blank. The title bar + "commit 1 of 1" status
-// line show up at the very bottom regardless of seeded commit count.
-// `less`, `htop`, `vim`, `lazygit`, `nano`, `fzf` all render correctly,
-// so the bug is tig-specific — likely DECSTBM scroll-region or alt-
-// screen quirk we don't handle. Investigating as a focused regression
-// test against the engine; ignoring these scenarios until then.
-#[ignore = "TIG-RENDERING-BUG: see comment above"]
 #[tokio::test]
 async fn bwrap_tig_main_view_shows_commits() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_tig_main", fixtures::TIG).await?;
@@ -48,15 +39,6 @@ async fn bwrap_tig_main_view_shows_commits() -> Result<()> {
     Ok(())
 }
 
-// TIG-RENDERING-BUG: tig 2.5 renders only the bottom 3 rows of the
-// terminal under our PTY + alacritty engine — the commit list body
-// (rows 0..N-3) stays blank. The title bar + "commit 1 of 1" status
-// line show up at the very bottom regardless of seeded commit count.
-// `less`, `htop`, `vim`, `lazygit`, `nano`, `fzf` all render correctly,
-// so the bug is tig-specific — likely DECSTBM scroll-region or alt-
-// screen quirk we don't handle. Investigating as a focused regression
-// test against the engine; ignoring these scenarios until then.
-#[ignore = "TIG-RENDERING-BUG: see comment above"]
 #[tokio::test]
 async fn bwrap_tig_enter_opens_diff_view() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_tig_diff", fixtures::TIG).await?;
@@ -89,15 +71,6 @@ async fn bwrap_tig_enter_opens_diff_view() -> Result<()> {
     Ok(())
 }
 
-// TIG-RENDERING-BUG: tig 2.5 renders only the bottom 3 rows of the
-// terminal under our PTY + alacritty engine — the commit list body
-// (rows 0..N-3) stays blank. The title bar + "commit 1 of 1" status
-// line show up at the very bottom regardless of seeded commit count.
-// `less`, `htop`, `vim`, `lazygit`, `nano`, `fzf` all render correctly,
-// so the bug is tig-specific — likely DECSTBM scroll-region or alt-
-// screen quirk we don't handle. Investigating as a focused regression
-// test against the engine; ignoring these scenarios until then.
-#[ignore = "TIG-RENDERING-BUG: see comment above"]
 #[tokio::test]
 async fn bwrap_tig_quit_releases_alt_screen() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_tig_quit", fixtures::TIG).await?;
