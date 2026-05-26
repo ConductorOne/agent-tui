@@ -31,6 +31,39 @@ just build    # full debug build
 - `crates/agent-tui-adapter` — per-program adapter trait + plug-in IPC.
 - `docs/RFC.md` — the canonical architecture RFC. Read this first.
 
+## Integration tests (Docker / Podman)
+
+The real-world TUI suite lives in `crates/agent-tui-integration` and is
+gated behind the `docker` Cargo feature. `cargo test --workspace` (i.e.
+the default suite) skips it.
+
+```bash
+# Build the binary the harness will inject into containers.
+cargo build --bin agent-tui
+
+# Run the suite. Requires a Docker-API endpoint via DOCKER_HOST.
+cargo test -p agent-tui-integration --features docker -- --nocapture
+```
+
+**Docker** works out of the box on `ubuntu-latest` and Docker Desktop.
+
+**Podman** is supported transparently — testcontainers-rs talks to the
+Docker HTTP API, which Podman exposes via `podman system service`. For
+rootless dev environments:
+
+```bash
+podman system service --time=0 &
+export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
+cargo test -p agent-tui-integration --features docker
+```
+
+On failure the harness writes diagnostic artifacts (command log, last
+snapshot, daemon response history) to
+`target/integration-artifacts/<test>/`. CI uploads that directory as a
+`integration-artifacts` action artifact for downloadable inspection.
+
+See `docs/research/testcontainers-spike.md` for the full plan.
+
 ## Coding conventions
 
 - `#![forbid(unsafe_code)]` in every crate root. If you need `unsafe`, justify it inline and downgrade to `#![deny(unsafe_code)]` for the file only.

@@ -190,6 +190,26 @@ If a scenario flakes more than that, it's a defect — either in agent-tui
 or in the fixture — and we fix the root cause rather than tune the
 sleep.
 
+## Container runtime: Docker OR Podman, transparently
+
+testcontainers-rs talks to anything that implements the Docker HTTP API.
+The runtime is selected by the `DOCKER_HOST` env var:
+
+| Environment | `DOCKER_HOST` value |
+|---|---|
+| Local dev w/ Docker Desktop | unset (default `unix:///var/run/docker.sock`) |
+| Local dev w/ Podman (rootless) | `unix:///run/user/$UID/podman/podman.sock` (after `podman system service --time=0`) |
+| Linux CI on GitHub Actions | unset (Docker pre-installed) |
+| Dev inside a sandboxed container (e.g. our Squire env) | Use Podman in rootless nested mode, or skip integration tests with `--features default` (i.e. don't enable the integration feature) |
+
+No code change in our harness: `testcontainers::runners::AsyncRunner` reads
+the env var. Document the Podman pattern in `CONTRIBUTING.md` so devs
+without Docker can still run the suite.
+
+This also de-risks the corporate-laptop / EKS-pod scenario — the moment
+someone tries to develop where Docker can't run (locked-down macOS,
+Linux sandbox, etc.) they can `apt install podman` and continue.
+
 ## Risks + mitigations
 
 | Risk | Likelihood | Mitigation |

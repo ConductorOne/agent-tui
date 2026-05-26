@@ -9,6 +9,7 @@ members = [
     "crates/agent-tui-daemon",
     "crates/agent-tui-recorder",
     "crates/agent-tui-adapter",
+    "crates/agent-tui-integration",
 ]
 
 [workspace.package]
