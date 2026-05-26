@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Warning, keymap};
 
-use crate::pane::{Pane, Registry};
+use crate::pane::{Registry, resolve_focused};
 
 const BARRIER_TIMEOUT_MS: u64 = 200;
 
@@ -39,7 +39,7 @@ pub async fn type_text(registry: &Arc<Registry>, pane: Option<PaneId>, text: Str
 }
 
 async fn deliver(registry: &Arc<Registry>, pane: Option<PaneId>, bytes: &[u8]) -> Response {
-    let pane_arc = match resolve(registry, pane).await {
+    let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -94,36 +94,4 @@ async fn deliver(registry: &Arc<Registry>, pane: Option<PaneId>, bytes: &[u8]) -
         });
     }
     resp
-}
-
-async fn resolve(registry: &Arc<Registry>, pane: Option<PaneId>) -> Result<Arc<Pane>, Response> {
-    if let Some(id) = pane {
-        return registry.get(&id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                format!("pane {id} not found"),
-                "call list to see live panes",
-            ))
-        });
-    }
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no panes",
-            "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "multiple panes; --pane required",
-            "pass --pane p<N>",
-        ))),
-    }
 }

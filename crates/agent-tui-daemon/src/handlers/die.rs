@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response};
 
-use crate::pane::Registry;
+use crate::pane::{Registry, resolve_focused};
 
-/// Resolve the pane id (or focused-pane heuristic), kill the child, and drop
-/// the registry entry.
+/// Resolve the target pane, kill the child, and drop the registry entry.
+/// Clears focus if the killed pane was the focused one.
 pub async fn run(registry: &Arc<Registry>, pane: Option<PaneId>) -> Response {
-    let id = match resolve(registry, pane).await {
-        Ok(id) => id,
+    let id = match resolve_focused(registry, pane).await {
+        Ok(p) => p.id.clone(),
         Err(resp) => return resp,
     };
 
@@ -26,6 +26,10 @@ pub async fn run(registry: &Arc<Registry>, pane: Option<PaneId>) -> Response {
         ));
     };
 
+    // Demote focus to `Held` when the focused pane dies. Future no-`--pane`
+    // commands error until the user re-focuses explicitly.
+    registry.mark_focus_held_if(&id).await;
+
     // Best-effort SIGTERM. If the child has already exited, ChildKiller
     // typically returns an error; treat it as success.
     let kill_err = entry.pty.kill().err().map(|e| e.to_string());
@@ -35,26 +39,4 @@ pub async fn run(registry: &Arc<Registry>, pane: Option<PaneId>) -> Response {
         "killed": kill_err.is_none(),
         "kill_error": kill_err,
     }))
-}
-
-async fn resolve(registry: &Arc<Registry>, pane: Option<PaneId>) -> Result<PaneId, Response> {
-    if let Some(id) = pane {
-        return Ok(id);
-    }
-    // Focused-pane semantics arrive in P0b; for now require explicit id when
-    // more than one pane exists.
-    let list = registry.list().await;
-    match list.len() {
-        1 => Ok(list[0].id.clone()),
-        0 => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no panes",
-            "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "multiple panes; --pane required",
-            "pass --pane p<N> (focus tracking lands in P0b)",
-        ))),
-    }
 }

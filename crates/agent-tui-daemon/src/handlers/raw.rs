@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response};
 
-use crate::pane::{Pane, Registry};
+use crate::pane::{Registry, resolve_focused};
 
 /// `send_ansi` — decode `bytes_hex` and write to the PTY master end.
 pub async fn send_ansi(
@@ -27,7 +27,7 @@ pub async fn send_ansi(
             ));
         }
     };
-    let pane_arc = match resolve(registry, pane).await {
+    let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -58,7 +58,7 @@ pub async fn resize(
             "agent terminals expect minimum geometry",
         ));
     }
-    let pane_arc = match resolve(registry, pane).await {
+    let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -96,38 +96,6 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
                 .map_err(|_| format!("invalid hex pair at offset {i}: '{}'", &cleaned[i..i + 2]))
         })
         .collect()
-}
-
-async fn resolve(registry: &Arc<Registry>, pane: Option<PaneId>) -> Result<Arc<Pane>, Response> {
-    if let Some(id) = pane {
-        return registry.get(&id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                format!("pane {id} not found"),
-                "call list to see live panes",
-            ))
-        });
-    }
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no panes",
-            "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "multiple panes; --pane required",
-            "pass --pane p<N>",
-        ))),
-    }
 }
 
 #[cfg(test)]

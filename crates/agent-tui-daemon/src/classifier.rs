@@ -10,9 +10,21 @@ use agent_tui_protocol::PaneState;
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// Classify a pane snapshot.
+use crate::osc133::Marker as Osc133;
+
+/// Classify a pane snapshot using only the cell grid + mode flags.
 #[must_use]
 pub fn classify(snap: &EngineSnapshot) -> PaneState {
+    classify_with_osc133(snap, None)
+}
+
+/// Classify a pane snapshot, optionally augmented with the most recent
+/// OSC 133 shell-integration marker. A `PromptStart`/`CommandStart`/`CommandEnd`
+/// marker upgrades an otherwise-`Unknown` state to `Shell`; an
+/// `OutputStart` marker means the shell is currently running a foreground
+/// command, which we report as `Running`.
+#[must_use]
+pub fn classify_with_osc133(snap: &EngineSnapshot, osc: Option<Osc133>) -> PaneState {
     if snap.modes.alt_screen {
         return PaneState::AltScreenTui;
     }
@@ -31,7 +43,11 @@ pub fn classify(snap: &EngineSnapshot) -> PaneState {
     if repl_re().is_match(last_line) {
         return PaneState::Repl;
     }
-    PaneState::Unknown
+    match osc {
+        Some(Osc133::PromptStart | Osc133::CommandStart | Osc133::CommandEnd) => PaneState::Shell,
+        Some(Osc133::OutputStart) => PaneState::Running,
+        None => PaneState::Unknown,
+    }
 }
 
 fn visible_text(snap: &EngineSnapshot) -> String {

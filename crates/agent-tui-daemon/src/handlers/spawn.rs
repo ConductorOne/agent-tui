@@ -44,6 +44,9 @@ pub async fn run(
 
     let id = registry.alloc_id();
     let recorder = start_recorder(session, &id);
+    if let Some(rec) = &recorder {
+        spawn_checkpoint_task(engine.clone(), rec.clone());
+    }
 
     let pty = match PtyChild::spawn(
         &argv,
@@ -83,9 +86,10 @@ pub async fn run(
         rows,
         engine,
         pty,
-        adapter,
+        adapter: tokio::sync::RwLock::new(adapter),
     };
-    registry.insert(pane).await;
+    let pane_arc = registry.insert(pane).await;
+    spawn_redetect_task(pane_arc, adapters.clone(), argv.clone());
 
     Response::ok(serde_json::json!({
         "pane": id,
@@ -119,4 +123,65 @@ fn state_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(s));
     }
     dirs::state_dir()
+}
+
+/// Spawn a deferred adapter-redetect task. Waits briefly for the child to
+/// produce its first ~512 bytes, then re-runs Detect with the populated
+/// `PaneInfo.first_bytes` so banner-based adapters (claude-code, eventually
+/// nvim/tmux) can upgrade `generic`.
+const REDETECT_BUDGET_MS: u64 = 600;
+
+fn spawn_redetect_task(
+    pane: Arc<crate::pane::Pane>,
+    adapters: crate::adapter_registry::AdapterRegistry,
+    argv: Vec<String>,
+) {
+    tokio::spawn(async move {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(REDETECT_BUDGET_MS);
+        while !pane.pty.first_bytes_done() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        let first_bytes = pane.pty.first_bytes_snapshot();
+        if first_bytes.is_empty() {
+            return;
+        }
+        let info = PaneInfo {
+            argv: argv.clone(),
+            comm: basename(&argv[0]),
+            first_bytes,
+            env: BTreeMap::new(),
+        };
+        if let Some(best) = adapters.detect_best(&info).await {
+            let current = pane.adapter().await;
+            if best.name() != current.name() {
+                let _ = pane.set_adapter(best.clone()).await;
+                tracing::info!(
+                    pane = %pane.id,
+                    new_adapter = %best.name(),
+                    previous = %current.name(),
+                    "adapter upgraded after first-bytes re-detect"
+                );
+            }
+        }
+    });
+}
+
+/// Spawn a per-pane background task that emits an `s` checkpoint event into
+/// the recorder every `CHECKPOINT_EVERY` mutations. Drops itself when the
+/// engine's broadcast channel closes (i.e. the pane is destroyed).
+const CHECKPOINT_EVERY: u64 = 1000;
+
+fn spawn_checkpoint_task(engine: Arc<dyn Engine>, recorder: Recorder) {
+    tokio::spawn(async move {
+        let mut sub = engine.subscribe();
+        let mut last_checkpointed: u64 = 0;
+        while let Ok(evt) = sub.recv().await {
+            if evt.sequence.saturating_sub(last_checkpointed) >= CHECKPOINT_EVERY {
+                let snap = engine.snapshot();
+                recorder.push_checkpoint(snap.sequence, &snap.canonical_hash());
+                last_checkpointed = snap.sequence;
+            }
+        }
+    });
 }

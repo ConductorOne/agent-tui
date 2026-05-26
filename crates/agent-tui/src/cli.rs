@@ -75,7 +75,7 @@ impl EngineKind {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Spawn a PTY-backed pane. Stub in v0.1.0.
+    /// Spawn a PTY-backed pane running the given argv.
     Spawn {
         /// Argv to execute.
         #[arg(trailing_var_arg = true, num_args = 1..)]
@@ -150,6 +150,8 @@ pub enum Command {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Pane focus management (`pane focus <id>`).
+    Pane(PaneArgs),
     /// Wait for a state-change condition.
     Wait(WaitArgs),
     /// `eval` against an adapter (governed).
@@ -172,6 +174,24 @@ pub enum Command {
     Mcp(McpArgs),
     /// `skills get/list` — print embedded skill docs.
     Skills(SkillsArgs),
+}
+
+/// `pane` subcommand group.
+#[derive(Debug, Args)]
+pub struct PaneArgs {
+    /// What to do with the pane focus.
+    #[command(subcommand)]
+    pub action: PaneAction,
+}
+
+/// Pane subcommand actions.
+#[derive(Debug, Subcommand)]
+pub enum PaneAction {
+    /// Set the focused pane.
+    Focus {
+        /// Pane id (e.g. `p1`). Pass `none` to clear focus.
+        pane: String,
+    },
 }
 
 /// `wait` subcommand. Exactly one mode flag is required.

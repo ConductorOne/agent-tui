@@ -1,9 +1,9 @@
 //! `snapshot` command handler.
 //!
-//! v0.1.0 wires only `--mode outline` and emits a minimal "generic" outline:
-//! one `@e1 [buffer]` node carrying the visible-grid text content. The full
-//! mode matrix (`cells`/`hybrid`/`adapter`), per-program adapters, and the
-//! real state classifier land in P1.
+//! All four modes (`outline` / `cells` / `hybrid` / `adapter`) are wired.
+//! Outline content comes from the pane's attached adapter via
+//! `Adapter::outline`; an empty or failing adapter falls back to the
+//! built-in `generic_outline` heuristic so the agent never gets `null`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,13 +18,13 @@ use base64::Engine as _;
 
 use crate::classifier;
 use crate::hash_window::HashWindow;
-use crate::pane::{Pane, Registry};
+use crate::pane::{Pane, Registry, resolve_focused};
 
 /// Per-session generation counters keyed by pane id.
 ///
 /// `generation` is *snapshot-driven*: it only ticks the first time a snapshot
-/// observes a sequence higher than the last-snapshotted one. We move this
-/// onto `Pane` once the per-pane concurrency machinery lands in P1.
+/// observes a sequence higher than the last-snapshotted one. Lives on the
+/// daemon today; moves onto `Pane` if/when per-pane concurrency demands it.
 #[derive(Default)]
 pub struct GenerationTracker {
     inner: tokio::sync::Mutex<HashMap<PaneId, GenSlot>>,
@@ -57,7 +57,7 @@ pub async fn run(
     pane: Option<PaneId>,
     mode: SnapshotMode,
 ) -> Response {
-    let pane_arc = match resolve(registry, pane).await {
+    let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -66,8 +66,9 @@ pub async fn run(
     let generation = generations
         .observe(&pane_arc.id, engine_snap.sequence)
         .await;
+    let adapter = pane_arc.adapter().await;
 
-    let snapshot = build_snapshot(&pane_arc, &engine_snap, generation, mode).await;
+    let snapshot = build_snapshot(&pane_arc, &adapter, &engine_snap, generation, mode).await;
     // Record (seq, hash) so `wait --hash` can resolve subsequent calls.
     hashes
         .record(&pane_arc.id, snapshot.sequence, snapshot.hash.clone())
@@ -84,17 +85,19 @@ pub async fn run(
 
 async fn build_snapshot(
     pane: &Pane,
+    adapter: &Arc<dyn agent_tui_adapter::Adapter>,
     engine_snap: &EngineSnapshot,
     generation: u64,
     mode: SnapshotMode,
 ) -> Snapshot {
     let hash = engine_snap.canonical_hash();
-    let state = classifier::classify(engine_snap);
+    let osc = pane.pty.last_osc133_marker();
+    let state = classifier::classify_with_osc133(engine_snap, osc);
 
     // Outline comes from the attached adapter; if it fails or returns an empty
     // node list, fall back to the generic heuristic so we never return nothing
     // to agents.
-    let adapter_outline = match pane.adapter.outline(engine_snap).await {
+    let adapter_outline = match adapter.outline(engine_snap).await {
         Ok(o) if !o.nodes.is_empty() => Some(o),
         Ok(_) | Err(_) => None,
     };
@@ -222,37 +225,5 @@ fn generic_outline(snap: &EngineSnapshot) -> Outline {
             anchor: Some((0, 0)),
             children: Vec::new(),
         }],
-    }
-}
-
-async fn resolve(registry: &Arc<Registry>, pane: Option<PaneId>) -> Result<Arc<Pane>, Response> {
-    if let Some(id) = pane {
-        return registry.get(&id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                format!("pane {id} not found"),
-                "call list to see live panes",
-            ))
-        });
-    }
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no panes",
-            "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "multiple panes; --pane required",
-            "pass --pane p<N>",
-        ))),
     }
 }

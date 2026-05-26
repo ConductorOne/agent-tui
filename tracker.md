@@ -4,9 +4,14 @@ Working knowledge that doesn't belong in source comments: decisions, follow-ups,
 
 ## Current phase
 
-**P2 — Adapters** (partial; built-in adapters done, plug-in IPC deferred).
-P0a + P0b + P0 close + P1 shipped previously; P2 added the AdapterRegistry,
-sectioned generic outline, and built-in claude-code + shell adapters.
+**Deferred-work sweep complete.** P0a + P0b + P0 close + P1 + P2 partial all
+shipped on PR #1. The sweep cycle added focus tracking, marker/checkpoint
+recorder events, first-bytes adapter re-detection, and an OSC 133 raw-byte
+parser feeding the classifier.
+
+Ready for the next major phase: **P3 (governance, auth vault, OPA-WASM,
+per-pane mpsc queue)** or **P4 (MCP server + cargo-dist + distribution
+channels)**.
 
 ## Substrate decision
 
@@ -26,11 +31,21 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 
 ## Deferred work
 
-- **task 0.4** — Per-pane `mpsc::Sender<Command>` queue. **Re-deferred to P3** after design review: snapshots are already lock-free, the engine broadcast is independent of the writer Mutex, and the wait subsystem doesn't need a queue to subscribe. The only thing a real queue adds is `PANE_BUSY` semantics under `--no-wait`, and no real agent flow triggers that today. Revisit when governance / policy gates need to reject in-flight writes.
-- **PluginAdapter (sub-process JSON-RPC over stdio)** — Deferred. v1 ships only built-in adapters (`generic`, `claude-code`, `shell`). External adapters land when there's a concrete consumer (nvim or tmux author with a Python/Rust impl).
-- **nvim / tmux built-in adapters** — Deferred. Both need live RPC (msgpack to a running nvim socket, control-mode tmux subprocess). Tests would need either a real nvim/tmux in CI or extensive mocking — neither is cheap. Defer until P3 when adapter eval lands with policy.
-- **1000-event `s` checkpoint emission** — Recorder has `push_checkpoint`; nothing calls it yet. Wire when scroll-history replay needs anchor points.
-- **First-bytes Detect re-attach** — Spawn handler currently passes `first_bytes: Vec::new()` to `detect()`. The adapter contract wants the first 512 bytes for richer detection. Wire when a built-in adapter starts using it.
+### Still deferred (justified)
+
+- **task 0.4** — Per-pane `mpsc::Sender<Command>` queue. Re-deferred to P3 with policy. The only thing a real queue adds today is `PANE_BUSY` semantics under `--no-wait`, and no flow triggers that yet.
+- **PluginAdapter (sub-process JSON-RPC over stdio)** — Moved to P4 alongside `mcp serve`. Both speak stdio JSON-RPC; build the framework once.
+- **nvim / tmux built-in adapters** — Will land as external plug-ins via PluginAdapter once #2 ships. Avoids dragging `nvim --headless` / `tmux -CC` into CI.
+- **wezterm engine real impl** — Blocked on `wezterm-term` being published to crates.io. Track only.
+
+### Recently paid down (this PR)
+
+- ✅ **Focus tracking** — `pane focus <id>` command + tri-state focus (Auto/Focused/Held). Focused-pane death promotes to Held; explicit refocus required.
+- ✅ **Marker events** — Every command emits an `m` recorder event with {kind, ok, error_code}.
+- ✅ **Checkpoint events** — Per-pane background task pushes `s` event every 1000 mutations.
+- ✅ **First-bytes Detect re-attach** — PtyChild captures first 512 bytes; spawn fires a deferred re-detect that swaps the attached adapter if a better one wins on populated PaneInfo.
+- ✅ **OSC 133 raw-byte parser** — Pre-engine scanner upgrades `PaneState::Unknown` → `Shell` / `Running` on FinalTerm shell-integration markers.
+- ✅ **Stale comment sweep** — Removed every `lands in P0b` / `v0.1.0 wires only outline` lie.
 - **Snapshot `--mode cells/hybrid/adapter`** — Only `--mode outline` wired in P0a. Cycle 15.
 - **State classifier** — Returns `Unknown` unless alt-screen is on. Cycle 16. The 9-state heuristic stack ships with the recorder.
 - **Asciicast recorder** — Event types exist (`agent-tui-recorder`); no writer yet. Cycle 17–18.
@@ -49,7 +64,8 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 
 | Commit | Phase | Notes |
 |---|---|---|
-| (next) | P2 partial | AdapterRegistry, sectioned generic outline, claude-code + shell built-ins |
+| (next) | Deferred-work sweep | Focus tracking, marker/checkpoint events, first-bytes redetect, OSC 133 parser, stale-comment sweep |
+| fcf460c | P2 partial | AdapterRegistry, sectioned generic outline, claude-code + shell built-ins |
 | e212d9c | P1 | wait subsystem, cells/hybrid snapshots, classifier, recorder + rotation/retention |
 | d7057f7 | P0 close | doctor wired to DaemonStatus |
 | 3b2239f | P0b | keymap, press/type quiesce barrier, send_ansi, resize, signal |

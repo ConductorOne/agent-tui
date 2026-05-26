@@ -32,7 +32,22 @@ pub struct PtyChild {
     reader: Mutex<Option<JoinHandle<()>>>,
     /// Optional recorder so input events can be teed back into the cast log.
     recorder: Option<Recorder>,
+    /// First ~512 bytes seen from the PTY. Used for late adapter re-detection.
+    first_bytes: Arc<Mutex<FirstBytes>>,
+    /// Most recent OSC 133 marker seen on this PTY, used by the shell-state
+    /// classifier. Updated by the reader task; read by the snapshot handler.
+    last_osc133: Arc<Mutex<Option<crate::osc133::Marker>>>,
 }
+
+/// Holds the first ~`MAX_FIRST_BYTES` bytes of PTY output for the adapter
+/// re-detection pass that runs shortly after spawn.
+#[derive(Default)]
+struct FirstBytes {
+    buf: Vec<u8>,
+    done: bool,
+}
+
+const MAX_FIRST_BYTES: usize = 512;
 
 impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
@@ -79,8 +94,18 @@ impl PtyChild {
 
         let reader_engine = engine;
         let reader_recorder = recorder.clone();
+        let first_bytes = Arc::new(Mutex::new(FirstBytes::default()));
+        let reader_first_bytes = first_bytes.clone();
+        let last_osc133 = Arc::new(Mutex::new(None));
+        let reader_osc133 = last_osc133.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
-            pty_reader_loop(reader, &reader_engine, reader_recorder.as_ref());
+            pty_reader_loop(
+                reader,
+                &reader_engine,
+                reader_recorder.as_ref(),
+                &reader_first_bytes,
+                &reader_osc133,
+            );
         });
 
         Ok(Self {
@@ -90,6 +115,8 @@ impl PtyChild {
             killer: Mutex::new(killer),
             reader: Mutex::new(Some(reader_handle)),
             recorder,
+            first_bytes,
+            last_osc133,
         })
     }
 
@@ -156,6 +183,31 @@ impl PtyChild {
         let m = self.master.lock().ok()?;
         m.process_group_leader()
     }
+
+    /// Borrowed reference to the attached recorder, if any. Used by
+    /// the dispatch tap to emit `m` (tool-call) events.
+    pub fn recorder(&self) -> Option<&Recorder> {
+        self.recorder.as_ref()
+    }
+
+    /// Snapshot the first ~512 PTY-output bytes captured so far. Used by
+    /// the spawn handler's deferred adapter re-detection pass.
+    pub fn first_bytes_snapshot(&self) -> Vec<u8> {
+        self.first_bytes
+            .lock()
+            .map_or_else(|_| Vec::new(), |fb| fb.buf.clone())
+    }
+
+    /// Whether the first-bytes buffer has filled (or the child exited
+    /// without producing 512 bytes — `done` is set when EOF is observed).
+    pub fn first_bytes_done(&self) -> bool {
+        self.first_bytes.lock().map_or(true, |fb| fb.done)
+    }
+
+    /// Most recent OSC 133 marker observed on this PTY, if any.
+    pub fn last_osc133_marker(&self) -> Option<crate::osc133::Marker> {
+        self.last_osc133.lock().ok().and_then(|m| *m)
+    }
 }
 
 impl Drop for PtyChild {
@@ -172,11 +224,19 @@ fn pty_reader_loop(
     mut reader: Box<dyn Read + Send>,
     engine: &Arc<dyn Engine>,
     recorder: Option<&Recorder>,
+    first_bytes: &Arc<Mutex<FirstBytes>>,
+    last_osc133: &Arc<Mutex<Option<crate::osc133::Marker>>>,
 ) {
     let mut buf = [0u8; 8192];
+    let mut osc_scanner = crate::osc133::Scanner::new();
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                if let Ok(mut fb) = first_bytes.lock() {
+                    fb.done = true;
+                }
+                break;
+            }
             Ok(n) => {
                 if let Err(e) = engine.feed(&buf[..n]) {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
@@ -185,9 +245,31 @@ fn pty_reader_loop(
                 if let Some(rec) = recorder {
                     rec.push_output(&buf[..n]);
                 }
+                // OSC 133 scanning is independent of the engine — we look at
+                // raw bytes so missing shell-prompt support in the VT parser
+                // doesn't bleed through to the classifier.
+                let markers = osc_scanner.feed(&buf[..n]);
+                if let Some(last) = markers.last()
+                    && let Ok(mut slot) = last_osc133.lock()
+                {
+                    *slot = Some(*last);
+                }
+                if let Ok(mut fb) = first_bytes.lock()
+                    && !fb.done
+                {
+                    let remaining = MAX_FIRST_BYTES.saturating_sub(fb.buf.len());
+                    let take = remaining.min(n);
+                    fb.buf.extend_from_slice(&buf[..take]);
+                    if fb.buf.len() >= MAX_FIRST_BYTES {
+                        fb.done = true;
+                    }
+                }
             }
             Err(e) => {
                 tracing::debug!(error = %e, "pty read ended");
+                if let Ok(mut fb) = first_bytes.lock() {
+                    fb.done = true;
+                }
                 break;
             }
         }

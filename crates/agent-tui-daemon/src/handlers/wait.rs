@@ -21,7 +21,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 
 use crate::hash_window::HashWindow;
-use crate::pane::{Pane, Registry};
+use crate::pane::{Pane, Registry, resolve_focused};
 
 /// Drive a [`WaitCondition`] to completion.
 pub async fn run(
@@ -31,7 +31,7 @@ pub async fn run(
     condition: WaitCondition,
     timeout: Duration,
 ) -> Response {
-    let pane_arc = match resolve(registry, pane).await {
+    let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -228,36 +228,4 @@ fn visible_text(snap: &agent_tui_engine::EngineSnapshot) -> String {
         out.push('\n');
     }
     out
-}
-
-async fn resolve(registry: &Arc<Registry>, pane: Option<PaneId>) -> Result<Arc<Pane>, Response> {
-    if let Some(id) = pane {
-        return registry.get(&id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                format!("pane {id} not found"),
-                "call list to see live panes",
-            ))
-        });
-    }
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no panes",
-            "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "multiple panes; --pane required",
-            "pass --pane p<N>",
-        ))),
-    }
 }

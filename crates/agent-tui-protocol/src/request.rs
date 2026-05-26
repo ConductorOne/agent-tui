@@ -185,6 +185,13 @@ pub enum Command {
         /// The expression string. Adapter-specific.
         expr: String,
     },
+    /// Set the focused pane for this session. Subsequent no-`--pane`
+    /// commands resolve to this pane. Pass `pane: None` to clear focus.
+    Focus {
+        /// Pane to focus. `None` clears the current focus.
+        #[serde(default)]
+        pane: Option<PaneId>,
+    },
     /// Daemon status query (used by `doctor` and the CLI's reachability check).
     DaemonStatus,
     /// Initiate idle-shutdown of the daemon (optionally forced).

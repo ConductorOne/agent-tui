@@ -367,6 +367,175 @@ async fn snapshot_uses_attached_adapter_outline() {
 }
 
 #[tokio::test]
+async fn osc133_marker_upgrades_state_to_shell() {
+    let (cfg, _h) = boot_daemon().await;
+    // Emit an OSC 133 prompt-start marker, then idle.
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf '\\033]133;A\\033\\\\'; sleep 2".into(),
+            ],
+            cwd: None,
+            size: Some((40, 4)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    let data = snap.response.data.unwrap();
+    assert_eq!(
+        data["state"], "shell",
+        "OSC 133 A should classify as shell, got: {data:?}"
+    );
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn focus_resolves_no_pane_commands_under_multi_pane() {
+    let (cfg, _h) = boot_daemon().await;
+    // Two panes spawned; no-pane snapshot would otherwise error.
+    let _p1 = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    let _p2 = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    // No focus yet → snapshot errors NO_ACTIVE_PANE.
+    let no_focus = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    assert!(!no_focus.response.success);
+    assert_eq!(
+        no_focus.response.error.unwrap().code.to_string(),
+        "NO_ACTIVE_PANE"
+    );
+    // Focus p2 and retry.
+    let focus = round_trip(
+        &cfg,
+        Command::Focus {
+            pane: Some(agent_tui_protocol::PaneId("p2".into())),
+        },
+    )
+    .await;
+    assert!(focus.response.success, "{focus:?}");
+    let with_focus = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    assert!(with_focus.response.success);
+    assert_eq!(with_focus.response.data.unwrap()["pane"], "p2");
+    // Cleanup both.
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId("p1".into())),
+        },
+    )
+    .await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId("p2".into())),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn focus_cleared_when_focused_pane_dies() {
+    let (cfg, _h) = boot_daemon().await;
+    let _p1 = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    let _p2 = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    let _ = round_trip(
+        &cfg,
+        Command::Focus {
+            pane: Some(agent_tui_protocol::PaneId("p1".into())),
+        },
+    )
+    .await;
+    // Die the focused pane.
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId("p1".into())),
+        },
+    )
+    .await;
+    // No-pane snapshot must error again (no auto-refocus).
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    assert!(!snap.response.success);
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId("p2".into())),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn snapshot_cells_mode_returns_rle_grid() {
     let (cfg, _h) = boot_daemon().await;
     let _spawn = round_trip(

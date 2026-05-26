@@ -2,7 +2,7 @@
 //!
 //! Binds the Unix-domain socket from [`SocketLayout`], handles
 //! version-handshake, and dispatches every line of JSON it receives to
-//! [`handle_command`]. Recorder/adapter wiring lands in P1/P2.
+//! [`handle_command`].
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -197,6 +197,58 @@ async fn dispatch(state: &DaemonState, line: &str) -> ResponseEnvelope {
 }
 
 async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
+    let pane_hint = pane_hint_of(&cmd);
+    let op_name = op_name_of(&cmd);
+    let response = dispatch_command(state, cmd).await;
+    if let Some(id) = pane_hint
+        && let Some(pane) = state.registry.get(&id).await
+        && let Some(rec) = pane.pty.recorder()
+    {
+        let err = response.error.as_ref().map(|e| e.code.to_string());
+        rec.push_marker(op_name, op_name, response.success, err.as_deref());
+    }
+    response
+}
+
+fn op_name_of(cmd: &agent_tui_protocol::Command) -> &'static str {
+    use agent_tui_protocol::Command;
+    match cmd {
+        Command::Spawn { .. } => "spawn",
+        Command::List { .. } => "list",
+        Command::Snapshot { .. } => "snapshot",
+        Command::Press { .. } => "press",
+        Command::Type { .. } => "type",
+        Command::SendAnsi { .. } => "send_ansi",
+        Command::Resize { .. } => "resize",
+        Command::Signal { .. } => "signal",
+        Command::Die { .. } => "die",
+        Command::Wait { .. } => "wait",
+        Command::Eval { .. } => "eval",
+        Command::Focus { .. } => "focus",
+        Command::DaemonStatus => "daemon_status",
+        Command::DaemonShutdown { .. } => "daemon_shutdown",
+    }
+}
+
+fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol::PaneId> {
+    use agent_tui_protocol::Command;
+    match cmd {
+        Command::Snapshot { pane, .. }
+        | Command::Press { pane, .. }
+        | Command::Type { pane, .. }
+        | Command::SendAnsi { pane, .. }
+        | Command::Resize { pane, .. }
+        | Command::Signal { pane, .. }
+        | Command::Die { pane }
+        | Command::Wait { pane, .. }
+        | Command::Eval { pane, .. } => pane.clone(),
+        // Spawn fires after the pane id is allocated; the spawn handler itself
+        // pushes its own marker. Daemon/Focus/List/Status are session-wide.
+        _ => None,
+    }
+}
+
+async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
     match cmd {
         Command::Spawn { argv, cwd, size } => {
@@ -249,6 +301,7 @@ async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -
             // P0 follow-up: actually shut down. For now, just acknowledge.
             Response::ok(serde_json::json!({ "queued": true }))
         }
+        Command::Focus { pane } => handlers::focus::run(&state.registry, pane).await,
         Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,
             "eval not yet wired (lands with adapters in P2)",

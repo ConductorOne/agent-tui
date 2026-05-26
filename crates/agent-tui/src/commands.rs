@@ -6,7 +6,7 @@ use agent_tui_daemon::{DaemonConfig, run_daemon};
 use agent_tui_protocol::{Command, SessionId};
 use anyhow::{Result, anyhow};
 
-use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind};
+use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind, PaneAction};
 use crate::client;
 
 /// Top-level dispatch entry point.
@@ -105,6 +105,15 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
         CliCmd::Die { pane } => Ok(Command::Die {
             pane: pane.map(agent_tui_protocol::PaneId),
         }),
+        CliCmd::Pane(p) => match p.action {
+            PaneAction::Focus { pane } => Ok(Command::Focus {
+                pane: if pane.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    Some(agent_tui_protocol::PaneId(pane))
+                },
+            }),
+        },
         CliCmd::Wait(a) => Ok(Command::Wait {
             pane: a.pane.clone().map(agent_tui_protocol::PaneId),
             condition: wait_condition_from_args(&a)?,

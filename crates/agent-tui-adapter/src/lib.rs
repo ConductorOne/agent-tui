@@ -79,9 +79,10 @@ pub enum Notification {
 /// The per-program adapter trait.
 ///
 /// Built-in adapters implement this directly. The plug-in IPC wrapper
-/// (`PluginAdapter`, lands in P2) implements `Adapter` by speaking JSON-RPC
-/// over a sub-process's stdin/stdout. From the daemon's POV the two are
-/// indistinguishable.
+/// (`PluginAdapter`, lands in P4 alongside the MCP server — both speak
+/// the same JSON-RPC-over-stdio surface) will implement `Adapter` by
+/// driving a sub-process's stdin/stdout. From the daemon's POV the two
+/// are indistinguishable.
 #[async_trait::async_trait]
 pub trait Adapter: Send + Sync {
     /// Adapter registry key (`generic`, `nvim`, `tmux`, ...).
