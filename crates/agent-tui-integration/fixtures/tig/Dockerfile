@@ -15,6 +15,7 @@ RUN apt-get update \
         ca-certificates \
         git \
         less \
+        python3 \
         tig \
     && rm -rf /var/lib/apt/lists/*
 

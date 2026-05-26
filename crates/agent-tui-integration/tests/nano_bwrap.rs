@@ -72,19 +72,15 @@ async fn bwrap_nano_typed_buffer_shows_modified() -> Result<()> {
     s.wait_idle(250).await?;
 
     // Type a unique marker character. The typed prefix lands at the
-    // cursor (row 1 col 0) and the seeded content follows.
-    //
-    // NOTE: nano also writes a right-aligned `Modified` flag to row 0
-    // col 71+ on every change; our engine appears to truncate that
-    // text to just `M` at col 79 in 80-col PTYs. Tracked separately —
-    // this scenario anchors on the buffer mutation instead, which is
-    // unambiguous evidence the keypress reached nano.
+    // cursor (row 1 col 0); nano also writes a right-aligned
+    // `Modified` flag onto row 0 with CUP-then-SGR.
     s.type_text("Z").await?;
-    s.wait_text("Zoriginalseed").await?;
+    s.wait_text("Modified").await?;
     s.wait_idle(200).await?;
 
     let snap = s.snapshot().await?;
     snap.assert_outline_contains("Zoriginalseed")?;
+    snap.assert_outline_contains("Modified")?;
 
     // Discard + exit: ^X then N (don't save).
     s.press("<c-x>").await?;
@@ -108,24 +104,26 @@ async fn bwrap_nano_save_clears_modified() -> Result<()> {
 
     // Modify the buffer with a unique prefix.
     s.type_text("ZZmod-").await?;
-    s.wait_text("ZZmod-originalseed").await?;
+    s.wait_text("Modified").await?;
     s.wait_idle(200).await?;
 
-    // Save with ^O. nano prompts `File Name to Write: <filename>`.
-    // Pressing Enter accepts the default (current filename).
+    // Save with ^O. nano prompts `File Name to Write: <filename>`,
+    // and after the write the `Modified` flag clears + the status
+    // line shows `[ Wrote N lines ]`.
     s.press("<c-o>").await?;
     s.wait_text("File Name to Write").await?;
     s.press("<cr>").await?;
-    // After the write, the status line shows `[ Wrote N lines ]`.
-    // We snapshot the `Wrote` confirmation — the buffer body re-renders
-    // on the next nano repaint cycle so asserting against post-save
-    // grid state races nano's screen refresh. The disk-side check
-    // below is the real proof the round-trip worked.
     s.wait_text(r"Wrote").await?;
     s.wait_idle(250).await?;
 
     let snap = s.snapshot().await?;
     snap.assert_outline_contains("Wrote")?;
+    snap.assert_outline_contains("ZZmod-originalseed")?;
+    let outline_text = serde_json::to_string(snap.envelope())?;
+    assert!(
+        !outline_text.contains("Modified"),
+        "Modified flag should clear after save"
+    );
 
     // Disk-side check — proves the keypresses reached nano AND nano
     // wrote the buffer back through the /work bind. End-to-end.

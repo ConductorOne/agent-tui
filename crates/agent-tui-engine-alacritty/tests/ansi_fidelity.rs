@@ -154,6 +154,52 @@ fn cup_then_write_at_high_columns_preserves_all_chars() {
     );
 }
 
+/// Stress: feed nano's "Modified" byte stream split into 1-byte chunks.
+/// If any state machine drops bytes across feed boundaries (CSI mid-
+/// parse, SCS mid-parse, etc.), the assertion will catch it.
+#[test]
+fn replay_nano_modified_byte_stream_under_one_byte_chunks() {
+    let bytes = include_bytes!("nano-modified.bin");
+    let eng = AlacrittyEngine::new(80, 24);
+    for b in bytes {
+        eng.feed(std::slice::from_ref(b)).expect("feed ok");
+    }
+    let snap = eng.snapshot();
+    let row0: String = (0..usize::from(snap.grid.cols))
+        .map(|col| snap.grid.cells[col].ch.as_str())
+        .collect::<String>();
+    assert!(
+        row0.contains("Modified"),
+        "row 0 should contain 'Modified' after one-byte-at-a-time replay; got {row0:?}"
+    );
+}
+
+/// Regression replay of GNU nano's exact byte stream when writing its
+/// `Modified` flag, captured from a real test run.
+///
+/// nano's sequence is `CUP(1,71) → SCS G0=ASCII → SGR(0;7) → "Modified"`.
+/// When fed all at once through the engine, the literal text "Modified"
+/// must land in the cell grid in full — not truncated to "M" at the
+/// last column, which was the original failure mode found in
+/// `bwrap_nano_typed_buffer_shows_modified`.
+///
+/// The bytes live in `nano-modified.bin` so the test stays fast (no
+/// PTY, no bwrap, no nano binary needed in the engine crate).
+#[test]
+fn replay_nano_modified_byte_stream_shows_modified() {
+    let bytes = include_bytes!("nano-modified.bin");
+    let eng = AlacrittyEngine::new(80, 24);
+    eng.feed(bytes).expect("feed ok");
+    let snap = eng.snapshot();
+    let row0: String = (0..usize::from(snap.grid.cols))
+        .map(|col| snap.grid.cells[col].ch.as_str())
+        .collect::<String>();
+    assert!(
+        row0.contains("Modified"),
+        "row 0 should contain 'Modified' after replaying nano's bytes; got {row0:?}"
+    );
+}
+
 #[tokio::test]
 async fn resize_updates_dimensions_and_emits_event() {
     let eng = AlacrittyEngine::new(80, 24);

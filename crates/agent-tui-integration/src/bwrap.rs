@@ -138,15 +138,6 @@ pub mod fixtures {
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
-            // PTY-size off-by-one workaround: ncurses sees LINES=23
-            // from `TIOCGWINSZ` despite the daemon allocating an 80x24
-            // PTY (confirmed via `stty` inside the sandbox returning
-            // 24 rows). Forcing the env value pulls tig's view height
-            // up by 1 row — title bar lands at row 22 (correct for 24
-            // rows) instead of row 21. Tracked separately as a
-            // daemon-side issue worth investigating in the PTY layer.
-            ("LINES", "24"),
-            ("COLUMNS", "80"),
         ],
     };
 

@@ -82,6 +82,25 @@ impl PtyChild {
             cmd.cwd(d);
         }
 
+        // **Normalize LINES + COLUMNS to match the PTY we just allocated.**
+        //
+        // ncurses-based programs (tig, mc, dialog, …) read `LINES` and
+        // `COLUMNS` from the environment first and only fall back to
+        // `TIOCGWINSZ` when those env vars are unset. portable-pty's
+        // CommandBuilder inherits the parent process's env, so the
+        // daemon's own LINES/COLUMNS — which come from the user's
+        // *outer* shell, not our PTY — would leak through and convince
+        // ncurses the screen is the outer-shell size (often 50+ rows,
+        // 200+ cols on modern monitors) while the actual PTY is 80×24.
+        // tig with that mismatch draws into virtual rows past the actual
+        // grid; the visible result is a mostly-blank pane with chrome
+        // displaced to the bottom rows. Other engines (vim, less) that
+        // consult TIOCGWINSZ instead of LINES weren't affected, which
+        // made the bug look TUI-specific. Forcing the env to match the
+        // PTY removes the discrepancy.
+        cmd.env("LINES", rows.to_string());
+        cmd.env("COLUMNS", cols.to_string());
+
         let child = pair.slave.spawn_command(cmd).context("spawn child")?;
         let killer = child.clone_killer();
 
