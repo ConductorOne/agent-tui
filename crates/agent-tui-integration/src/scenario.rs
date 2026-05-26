@@ -74,9 +74,20 @@ impl Scenario {
         // Keep the container alive with a long-running entry; we drive
         // agent-tui via `docker exec`. `sleep infinity` keeps the
         // container in `Running` until we drop the handle.
+        //
+        // `NetworkMode = "none"` because our scenarios are hermetic by
+        // design — the daemon inside the container only talks to its
+        // local Unix socket. Avoids `slirp4netns` / TUN-device
+        // requirements that don't exist inside sandboxed dev pods
+        // (Squire EKS, etc). We set this via `host_config_modifier`
+        // because testcontainers' `with_network(...)` treats the arg as
+        // a named network to attach to, not as a NetworkMode literal.
         let img = GenericImage::new(image_name, tag)
             .with_entrypoint("sleep")
             .with_cmd(["infinity"])
+            .with_host_config_modifier(|host_config| {
+                host_config.network_mode = Some("none".to_string());
+            })
             .with_mount(Mount::bind_mount(
                 binary.to_string_lossy().to_string(),
                 AGENT_TUI_IN_CONTAINER,
