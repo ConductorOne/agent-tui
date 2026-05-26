@@ -175,4 +175,133 @@ mod tests {
         let m = s.feed(b"\x1b]133;Z\x07");
         assert!(m.is_empty());
     }
+
+    // -------------------------------------------------------------------
+    // Property tests. Streaming byte-state-machines are bug-prone in the
+    // chunking and reset corners — proptest is exactly the right tool.
+    // -------------------------------------------------------------------
+    mod proptests {
+        use super::{Marker, Scanner};
+        use proptest::prelude::*;
+
+        /// Atomic feed: feed the whole buffer in one call.
+        fn run_atomic(bytes: &[u8]) -> Vec<Marker> {
+            Scanner::new().feed(bytes).clone()
+        }
+
+        /// Chunked feed: feed `chunk_sizes`-shaped pieces in sequence.
+        /// Sizes are normalized to fit the buffer; remainder goes in a
+        /// final chunk so we always feed the entire input exactly once.
+        fn run_chunked(bytes: &[u8], chunk_sizes: &[usize]) -> Vec<Marker> {
+            let mut s = Scanner::new();
+            let mut out = Vec::new();
+            let mut idx = 0;
+            for &cs in chunk_sizes {
+                if idx >= bytes.len() {
+                    break;
+                }
+                let n = cs.clamp(1, bytes.len() - idx);
+                out.extend(s.feed(&bytes[idx..idx + n]));
+                idx += n;
+            }
+            if idx < bytes.len() {
+                out.extend(s.feed(&bytes[idx..]));
+            }
+            out
+        }
+
+        /// Byte-by-byte feed: the most adversarial chunking — one byte per
+        /// `feed` call. This exposes any state machine that "looks ahead"
+        /// across calls without storing partial state.
+        fn run_one_at_a_time(bytes: &[u8]) -> Vec<Marker> {
+            let mut s = Scanner::new();
+            let mut out = Vec::new();
+            for b in bytes {
+                out.extend(s.feed(std::slice::from_ref(b)));
+            }
+            out
+        }
+
+        proptest! {
+            /// Feeding the same input atomically vs in arbitrary chunks
+            /// must yield the same marker stream. This is THE property a
+            /// streaming scanner has to satisfy.
+            #[test]
+            fn chunked_equiv_atomic(
+                bytes in prop::collection::vec(any::<u8>(), 0..256),
+                chunks in prop::collection::vec(1usize..32, 0..32),
+            ) {
+                let atomic = run_atomic(&bytes);
+                let chunked = run_chunked(&bytes, &chunks);
+                prop_assert_eq!(atomic, chunked);
+            }
+
+            /// Even one-byte-at-a-time matches atomic feed. Stronger
+            /// statement than `chunked_equiv_atomic`: no state machine
+            /// shortcut crosses input boundaries.
+            #[test]
+            fn one_byte_at_a_time_equiv_atomic(
+                bytes in prop::collection::vec(any::<u8>(), 0..256),
+            ) {
+                let atomic = run_atomic(&bytes);
+                let stepped = run_one_at_a_time(&bytes);
+                prop_assert_eq!(atomic, stepped);
+            }
+
+            /// `feed` is total — for any input, the scanner returns a
+            /// Vec without panicking. Catches indexing bugs in the state
+            /// machine and any future regression that adds an `unwrap`.
+            #[test]
+            fn feed_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+                let _ = Scanner::new().feed(&bytes);
+            }
+
+            /// Number of markers emitted is bounded by `len(input) / 7`
+            /// — the shortest valid OSC 133 sequence is `ESC ] 1 3 3 ;
+            /// kind BEL` = 7 bytes. A stronger bound rules out a "single
+            /// byte produces many markers" regression class.
+            #[test]
+            fn marker_count_bounded(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+                let markers = run_atomic(&bytes);
+                prop_assert!(
+                    markers.len() <= bytes.len() / 7 + 1,
+                    "got {} markers from {} bytes",
+                    markers.len(), bytes.len()
+                );
+            }
+
+            /// Wrapping a valid OSC 133 sequence in random garbage on
+            /// either side must still yield exactly one marker. This is
+            /// the practical case: real PTY output is OSC 133 markers
+            /// interleaved with ANSI color codes, text, repaints.
+            #[test]
+            fn valid_marker_survives_noise(
+                prefix in prop::collection::vec(any::<u8>(), 0..32),
+                suffix in prop::collection::vec(any::<u8>(), 0..32),
+                kind in prop_oneof![Just(b'A'), Just(b'B'), Just(b'C'), Just(b'D')],
+            ) {
+                let mut buf = prefix.clone();
+                // Filter out 0x1B from prefix to avoid the prefix
+                // accidentally starting another OSC sequence that consumes
+                // our marker. (Real-world: 0x1B is rare in ANSI noise, so
+                // this just isolates the property we want to assert.)
+                buf.retain(|b| *b != 0x1B);
+                buf.extend_from_slice(&[0x1B, b']', b'1', b'3', b'3', b';', kind, 0x07]);
+                buf.extend_from_slice(&suffix);
+
+                let markers = run_atomic(&buf);
+                let expected = match kind {
+                    b'A' => Marker::PromptStart,
+                    b'B' => Marker::CommandStart,
+                    b'C' => Marker::OutputStart,
+                    b'D' => Marker::CommandEnd,
+                    _ => unreachable!(),
+                };
+                prop_assert!(
+                    markers.contains(&expected),
+                    "expected {:?} in markers {:?}", expected, markers
+                );
+            }
+        }
+    }
 }

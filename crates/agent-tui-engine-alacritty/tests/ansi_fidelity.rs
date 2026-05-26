@@ -100,6 +100,35 @@ fn canonical_hash_is_deterministic_after_identical_feeds() {
     );
 }
 
+/// Regression test for the UTF-8 stitching across `feed` boundaries.
+///
+/// `alacritty_terminal::Processor::advance` doesn't buffer incomplete
+/// UTF-8 across calls; without our wrapper's `utf8_carry` field, a
+/// 4-byte sequence split mid-codepoint produced different cursor state
+/// than the atomic feed. See proptest `feed_is_associative_for_utf8`
+/// — this is the human-readable narrow case.
+#[test]
+fn utf8_codepoint_split_across_feeds_renders_identically() {
+    // 日 = U+65E5 = 0xE6 0x97 0xA5 in UTF-8 (3 bytes, wide cell).
+    let bytes = [0xE6, 0x97, 0xA5, b'X'];
+
+    let atomic = AlacrittyEngine::new(20, 4);
+    atomic.feed(&bytes).unwrap();
+    let h_atomic = atomic.snapshot().canonical_hash();
+
+    // Split between every adjacent pair of bytes — buffer must stitch.
+    for split in 1..bytes.len() {
+        let e = AlacrittyEngine::new(20, 4);
+        e.feed(&bytes[..split]).unwrap();
+        e.feed(&bytes[split..]).unwrap();
+        assert_eq!(
+            e.snapshot().canonical_hash(),
+            h_atomic,
+            "split at {split} produced a different hash than atomic feed"
+        );
+    }
+}
+
 #[tokio::test]
 async fn resize_updates_dimensions_and_emits_event() {
     let eng = AlacrittyEngine::new(80, 24);

@@ -38,6 +38,17 @@ struct State {
     sequence: Sequence,
     cols: u16,
     rows: u16,
+    /// Carry-over for an incomplete UTF-8 codepoint at the tail of the
+    /// previous `feed` call. Upstream `alacritty_terminal::Processor`
+    /// doesn't preserve UTF-8 buffer state across `advance()` calls —
+    /// when a multi-byte codepoint is split (e.g. by a 4KB PTY read
+    /// boundary), the second chunk's continuation bytes get treated as
+    /// stand-alone control bytes. We buffer the lead bytes here and
+    /// merge them into the next feed before forwarding.
+    ///
+    /// Capacity is `<= 3` because the longest UTF-8 prefix that's still
+    /// incomplete is 3 bytes (waiting for the 4th continuation).
+    utf8_carry: Vec<u8>,
 }
 
 #[derive(Clone, Default)]
@@ -87,6 +98,7 @@ impl AlacrittyEngine {
                 sequence: 0,
                 cols,
                 rows,
+                utf8_carry: Vec::with_capacity(3),
             }),
             events,
         }
@@ -126,6 +138,58 @@ impl AlacrittyEngine {
         // Send failures (no subscribers) are not engine errors.
         let _ = self.events.send(MutationEvent { sequence, kind });
     }
+
+    /// Stitch any UTF-8 carry-over from the previous feed onto the
+    /// current input and split off a new tail of incomplete bytes.
+    /// Returns the bytes safe to forward to the parser.
+    ///
+    /// Why: `alacritty_terminal::Processor::advance` doesn't preserve
+    /// UTF-8 continuation state across calls. A 4KB PTY read can split
+    /// a multi-byte codepoint at any byte; without this, the second
+    /// chunk's continuation bytes get treated as stray C1 controls and
+    /// the cell grid drifts. See `feed_is_associative_for_utf8` in
+    /// `tests/proptest_invariants.rs` — that property exercises this.
+    fn buffer_utf8_tail(carry: &mut Vec<u8>, input: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::with_capacity(carry.len() + input.len());
+        buf.extend_from_slice(carry);
+        buf.extend_from_slice(input);
+        carry.clear();
+
+        // Walk backwards from the tail looking for an incomplete UTF-8
+        // lead byte. UTF-8 lead patterns: 0xC0..=0xDF (2-byte),
+        // 0xE0..=0xEF (3-byte), 0xF0..=0xF7 (4-byte). A continuation
+        // byte is 0x80..=0xBF.
+        let max_lookback = buf.len().min(3);
+        for back in 1..=max_lookback {
+            let i = buf.len() - back;
+            let b = buf[i];
+            let needed: usize = if b < 0x80 {
+                // ASCII or stray continuation; not a lead.
+                continue;
+            } else if (0xC0..=0xDF).contains(&b) {
+                2
+            } else if (0xE0..=0xEF).contains(&b) {
+                3
+            } else if (0xF0..=0xF7).contains(&b) {
+                4
+            } else {
+                // Stray continuation byte (0x80..=0xBF) or invalid lead
+                // (>=0xF8). Don't buffer — let the parser decide.
+                continue;
+            };
+            let trailing = buf.len() - i;
+            if trailing < needed {
+                // Incomplete lead at offset `i` — buffer it for next feed.
+                let tail = buf.split_off(i);
+                carry.extend_from_slice(&tail);
+                break;
+            }
+            // Otherwise the lead has enough continuation bytes; nothing
+            // to buffer.
+            break;
+        }
+        buf
+    }
 }
 
 impl Engine for AlacrittyEngine {
@@ -137,9 +201,12 @@ impl Engine for AlacrittyEngine {
             .state
             .lock()
             .map_err(|e| EngineError::Refused(format!("poisoned: {e}")))?;
-        // Split-borrow: parser and term are sibling fields of `s`.
-        let State { parser, term, .. } = &mut *s;
-        parser.advance(term, bytes);
+        let safe = Self::buffer_utf8_tail(&mut s.utf8_carry, bytes);
+        if !safe.is_empty() {
+            // Split-borrow: parser and term are sibling fields of `s`.
+            let State { parser, term, .. } = &mut *s;
+            parser.advance(term, &safe);
+        }
         s.sequence = s.sequence.saturating_add(1);
         let seq = s.sequence;
         drop(s);

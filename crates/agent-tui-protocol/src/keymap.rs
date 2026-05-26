@@ -371,4 +371,169 @@ mod tests {
         let b = parse_to_bytes("a<cr>b").unwrap();
         assert_eq!(b, b"a\rb");
     }
+
+    // -------------------------------------------------------------------
+    // Property tests. A handful of invariants the grammar should satisfy
+    // for *any* well-formed input — proptest finds the inputs no example
+    // table thought to write.
+    // -------------------------------------------------------------------
+
+    /// Render `tokens` back to a parseable string. The result is the
+    /// canonical form: parsing it then re-rendering must be a fixed point.
+    fn canonical(tokens: &[Token]) -> String {
+        let mut s = String::new();
+        for t in tokens {
+            match t {
+                Token::Lit(text) => {
+                    for c in text.chars() {
+                        if c == '<' {
+                            s.push_str("<\\<>");
+                        } else {
+                            s.push(c);
+                        }
+                    }
+                }
+                Token::Cr => s.push_str("<cr>"),
+                Token::Lf => s.push_str("<lf>"),
+                Token::Tab => s.push_str("<tab>"),
+                Token::Bs => s.push_str("<bs>"),
+                Token::Esc => s.push_str("<esc>"),
+                Token::Space => s.push_str("<space>"),
+                Token::Ctrl(c) => {
+                    use std::fmt::Write;
+                    let _ = write!(s, "<c-{c}>");
+                }
+                Token::Alt(c) => {
+                    use std::fmt::Write;
+                    let _ = write!(s, "<a-{c}>");
+                }
+                Token::Fn(n) => {
+                    use std::fmt::Write;
+                    let _ = write!(s, "<f{n}>");
+                }
+                Token::Arrow(Arrow::Up) => s.push_str("<up>"),
+                Token::Arrow(Arrow::Down) => s.push_str("<down>"),
+                Token::Arrow(Arrow::Left) => s.push_str("<left>"),
+                Token::Arrow(Arrow::Right) => s.push_str("<right>"),
+                Token::Home => s.push_str("<home>"),
+                Token::End => s.push_str("<end>"),
+                Token::PageUp => s.push_str("<pageup>"),
+                Token::PageDown => s.push_str("<pagedown>"),
+                Token::Del => s.push_str("<del>"),
+                Token::Ins => s.push_str("<ins>"),
+            }
+        }
+        s
+    }
+
+    /// Normalize: the parser folds adjacent literals into one. Drop
+    /// empty literals. The "canonical form" of a token vector for
+    /// comparison purposes.
+    fn normalize(tokens: Vec<Token>) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+        for t in tokens {
+            if let Token::Lit(s) = &t
+                && s.is_empty()
+            {
+                continue;
+            }
+            match (out.last_mut(), &t) {
+                (Some(Token::Lit(prev)), Token::Lit(new)) => prev.push_str(new),
+                _ => out.push(t),
+            }
+        }
+        out
+    }
+
+    mod proptests {
+        use super::{Arrow, Token, canonical, normalize, parse, parse_to_bytes, serialize};
+        use proptest::prelude::*;
+
+        /// Generate a single Token. Constraints mirror what the parser
+        /// will accept and round-trip: literals contain printable ASCII
+        /// only (proptest's default String is too noisy for round-trip;
+        /// the parser is UTF-8 safe but the canonical form has subtle
+        /// rules for `<`).
+        fn arb_token() -> impl Strategy<Value = Token> {
+            prop_oneof![
+                // Bias toward literals — they're the common case.
+                4 => "[a-zA-Z0-9 :;,./_=+'\"<\\-]{1,16}"
+                    .prop_map(Token::Lit),
+                1 => Just(Token::Cr),
+                1 => Just(Token::Lf),
+                1 => Just(Token::Tab),
+                1 => Just(Token::Bs),
+                1 => Just(Token::Esc),
+                1 => Just(Token::Space),
+                1 => "[a-z0-9]".prop_map(|s| Token::Ctrl(s.chars().next().unwrap())),
+                1 => "[a-z0-9]".prop_map(|s| Token::Alt(s.chars().next().unwrap())),
+                1 => (1u8..=12).prop_map(Token::Fn),
+                1 => prop_oneof![
+                    Just(Arrow::Up),
+                    Just(Arrow::Down),
+                    Just(Arrow::Left),
+                    Just(Arrow::Right),
+                ].prop_map(Token::Arrow),
+                1 => Just(Token::Home),
+                1 => Just(Token::End),
+                1 => Just(Token::PageUp),
+                1 => Just(Token::PageDown),
+                1 => Just(Token::Del),
+                1 => Just(Token::Ins),
+            ]
+        }
+
+        fn arb_tokens() -> impl Strategy<Value = Vec<Token>> {
+            prop::collection::vec(arb_token(), 0..16)
+        }
+
+        proptest! {
+            /// `parse(canonical(tokens)) == normalize(tokens)`. The
+            /// fundamental parser invariant: re-rendering and re-parsing
+            /// is a fixed point modulo literal coalescing.
+            #[test]
+            fn canonical_round_trip(tokens in arb_tokens()) {
+                let s = canonical(&tokens);
+                let reparsed = parse(&s).expect("canonical form must parse");
+                prop_assert_eq!(reparsed, normalize(tokens));
+            }
+
+            /// Re-canonicalizing the parsed output is a fixed point.
+            #[test]
+            fn canonical_is_idempotent(tokens in arb_tokens()) {
+                let s1 = canonical(&tokens);
+                let parsed = parse(&s1).expect("parse ok");
+                let s2 = canonical(&parsed);
+                let reparsed = parse(&s2).expect("re-parse ok");
+                prop_assert_eq!(parsed, reparsed);
+            }
+
+            /// `parse` is total: any string either parses successfully or
+            /// returns `KeyFormatError`, never panics. Catches indexing /
+            /// UTF-8-boundary bugs.
+            #[test]
+            fn parse_never_panics(s in ".*") {
+                let _ = parse(&s);
+            }
+
+            /// `serialize` is total over any well-formed token sequence
+            /// produced by `parse`. Catches encoder regressions where a
+            /// new token variant is added without an `encode` arm.
+            #[test]
+            fn serialize_never_panics(tokens in arb_tokens()) {
+                let _ = serialize(&tokens);
+            }
+
+            /// `parse_to_bytes` agrees with the two-step `parse` then
+            /// `serialize`. Catches a class of bug where the shortcut
+            /// drifts from the long form.
+            #[test]
+            fn parse_to_bytes_matches_two_step(tokens in arb_tokens()) {
+                let s = canonical(&tokens);
+                let two_step = serialize(&parse(&s).unwrap());
+                let one_step = parse_to_bytes(&s).unwrap();
+                prop_assert_eq!(one_step, two_step);
+            }
+        }
+    }
 }
