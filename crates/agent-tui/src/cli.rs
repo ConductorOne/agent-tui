@@ -1,10 +1,7 @@
 //! Clap-derived CLI surface.
 //!
-//! Mirrors `docs/RFC.md` §5. v0.1.0 only wires the subcommands the daemon
-//! actually handles end-to-end (`daemon`, `status`, `shutdown`, plus
-//! placeholders that return `Internal` for the others). The grammar shape
-//! is locked in so the surface area stops moving while the engine, adapter,
-//! and recorder land in P0–P2.
+//! Mirrors `docs/RFC.md` §5. The grammar is locked; commands wire to the
+//! daemon as their handlers land per phase (see `tracker.md`).
 
 use std::path::PathBuf;
 
@@ -36,8 +33,9 @@ pub struct GlobalArgs {
     /// Override socket discovery root. Env: `AGENT_TUI_SOCKET_DIR`.
     #[arg(long, env = "AGENT_TUI_SOCKET_DIR", global = true)]
     pub socket_dir: Option<PathBuf>,
-    /// Engine selection. v0.1.0 ships `wezterm` only; `alacritty` lands in P5.
-    #[arg(long, value_enum, default_value_t = EngineKind::Wezterm, global = true)]
+    /// Engine selection. v0.1.0 ships `alacritty` (default; only working engine);
+    /// `wezterm` is a placeholder until a published substrate appears.
+    #[arg(long, value_enum, default_value_t = EngineKind::Alacritty, global = true)]
     pub engine: EngineKind,
     /// JSON output for machine consumers.
     #[arg(long, global = true)]
@@ -51,15 +49,26 @@ pub struct GlobalArgs {
     /// Truncate snapshot payloads at N characters.
     #[arg(long, value_name = "N", global = true)]
     pub max_output: Option<usize>,
+    /// Comma-separated allowlist of binary basenames `spawn` will accept.
+    /// `*` allows everything (audit-only). Empty / unset = no restriction.
+    /// Env: `AGENT_TUI_ALLOWED_BINARIES`.
+    #[arg(
+        long,
+        env = "AGENT_TUI_ALLOWED_BINARIES",
+        value_name = "CSV",
+        global = true
+    )]
+    pub allowed_binaries: Option<String>,
 }
 
 /// VT engine selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum EngineKind {
-    /// `wezterm-term`-backed engine. Default.
-    Wezterm,
-    /// `alacritty-terminal`-backed engine. Lean alternative; lands in P5.
+    /// `alacritty_terminal`-backed engine. The v1 default — published on
+    /// crates.io, MSRV matches ours. See `tracker.md` for substrate context.
     Alacritty,
+    /// `wezterm-term`-backed engine. Placeholder; not yet on crates.io.
+    Wezterm,
 }
 
 impl EngineKind {
@@ -76,7 +85,7 @@ impl EngineKind {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Spawn a PTY-backed pane. Stub in v0.1.0.
+    /// Spawn a PTY-backed pane running the given argv.
     Spawn {
         /// Argv to execute.
         #[arg(trailing_var_arg = true, num_args = 1..)]
@@ -151,6 +160,8 @@ pub enum Command {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Pane focus management (`pane focus <id>`).
+    Pane(PaneArgs),
     /// Wait for a state-change condition.
     Wait(WaitArgs),
     /// `eval` against an adapter (governed).
@@ -175,9 +186,29 @@ pub enum Command {
     Skills(SkillsArgs),
 }
 
+/// `pane` subcommand group.
+#[derive(Debug, Args)]
+pub struct PaneArgs {
+    /// What to do with the pane focus.
+    #[command(subcommand)]
+    pub action: PaneAction,
+}
+
+/// Pane subcommand actions.
+#[derive(Debug, Subcommand)]
+pub enum PaneAction {
+    /// Set the focused pane.
+    Focus {
+        /// Pane id (e.g. `p1`). Pass `none` to clear focus.
+        pane: String,
+    },
+}
+
 /// `wait` subcommand. Exactly one mode flag is required.
+///
+/// The `wait_mode` group is declared on the mode arguments themselves so
+/// `--pane` and `--max` stay outside the mutual-exclusion set.
 #[derive(Debug, Args, Clone)]
-#[group(required = true, multiple = false, id = "wait_mode")]
 pub struct WaitArgs {
     /// Pane id; defaults to focused.
     #[arg(long, global = false)]

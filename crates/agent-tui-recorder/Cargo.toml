@@ -11,6 +11,9 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+uuid = { workspace = true }
+
 [dependencies]
 agent-tui-protocol = { workspace = true }
 tokio = { workspace = true }
@@ -19,3 +22,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+flate2 = "1.0"

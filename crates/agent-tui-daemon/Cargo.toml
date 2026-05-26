@@ -11,19 +11,39 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+base64 = "0.22"
+async-trait = "0.1"
+proptest = { workspace = true }
+
 [dependencies]
 agent-tui-protocol = { workspace = true }
 agent-tui-engine = { workspace = true }
 agent-tui-engine-wezterm = { workspace = true }
+agent-tui-engine-alacritty = { workspace = true }
 agent-tui-adapter = { workspace = true }
 agent-tui-recorder = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+portable-pty = "0.9"
+regex = "1.11"
+base64 = "0.22"
+dirs = "5.0"
+async-trait = "0.1"
+hex = { workspace = true }
+rand = { workspace = true }
+interprocess = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# GenerateConsoleCtrlEvent for SIGINT/SIGBREAK delivery; daemon uses
+# portable-pty's TerminateProcess via ChildKiller for SIGTERM/SIGKILL.
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }

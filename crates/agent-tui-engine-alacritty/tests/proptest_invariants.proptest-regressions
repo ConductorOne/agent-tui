@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b21ba23fc889b8f6626b8e345de154d1ef06d204093fc74bff29fb49c56f0e59 # shrinks to a = [194], b = [128, 32, 128]
+cc d6b0dec56517d218c133f728219a422429e006a0a4d5bd2af3030ad579d53fb6 # shrinks to bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 194, 130, 44, 198, 218, 12, 49, 127, 127, 180, 157, 39, 10, 217, 1, 64, 34, 173, 229, 195, 202, 245, 58, 187, 255], split_at = [238, 348, 471, 331, 301]

@@ -9,6 +9,7 @@ members = [
     "crates/agent-tui-daemon",
     "crates/agent-tui-recorder",
     "crates/agent-tui-adapter",
+    "crates/agent-tui-integration",
 ]
 
 [workspace.package]
@@ -52,10 +53,15 @@ tokio = { version = "1.43", features = [
     "fs",
     "sync",
     "io-util",
+    "io-std",
     "process",
     "signal",
     "time",
 ] }
+
+# Cross-platform IPC: Unix domain sockets on Linux/macOS, named pipes on
+# Windows, behind one async API. See docs/windows-strategy.md.
+interprocess = { version = "2.4", features = ["tokio"] }
 
 # Serde + JSON-RPC line protocol.
 serde = { version = "1.0", features = ["derive"] }
@@ -84,6 +90,10 @@ nix = { version = "0.30", features = ["fs", "user", "signal", "term"] }
 
 # Embedded skill-data files.
 include_dir = "0.7"
+
+# Property-based testing. Dev-dep only; pinned at the workspace level so
+# every crate uses the same version under `cargo test`.
+proptest = "1.5"
 
 [profile.release]
 lto = "thin"

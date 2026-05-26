@@ -7,6 +7,35 @@ use std::env;
 use std::path::PathBuf;
 
 use agent_tui_protocol::SessionId;
+use interprocess::local_socket::Name;
+
+/// Build the cross-platform `interprocess` socket name for a given layout.
+///
+/// On Unix we use a filesystem-path Unix socket (preserves the
+/// `<session>.sock` file we discover via `SocketLayout`). On Windows we use
+/// the namespaced API — named pipes — derived from the session basename so
+/// the address is stable and discoverable.
+///
+/// # Errors
+/// Returns the `io::Error` `interprocess` produces if the path/name can't
+/// be encoded for the platform-native API.
+pub fn socket_name(layout: &SocketLayout) -> std::io::Result<Name<'_>> {
+    #[cfg(unix)]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        layout.socket.as_path().to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        let stem = layout
+            .socket
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("agent-tui");
+        format!("agent-tui-{stem}").to_ns_name::<GenericNamespaced>()
+    }
+}
 
 /// Where the daemon writes its socket and sidecar files.
 ///

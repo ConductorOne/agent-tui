@@ -34,6 +34,31 @@ Session: default  | Pane: p1 (nvim) | 80x24 | alt_screen | gen 17 | seq 4423
 
 For the full design, read [`docs/RFC.md`](docs/RFC.md).
 
+## Use it from Claude Desktop / Claude Code (MCP)
+
+`agent-tui mcp serve` is an MCP server. Drop this into your
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "agent-tui": {
+      "command": "/path/to/agent-tui",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Claude then sees tools like `spawn`, `press`, `snapshot`, `wait`, `die`
+and can drive any TUI on your machine — vim, lazygit, tmux, k9s.
+Snapshots return a structured outline; with the `vim` adapter active,
+the outline carries `mode=insert` directly so Claude doesn't have to
+pattern-match escape sequences.
+
+The protocol is JSON-RPC 2.0 over stdio (MCP 2024-11-05). Any
+MCP-speaking client works — Claude Desktop, Claude Code, your own.
+
 ## What's in the repo
 
 ```

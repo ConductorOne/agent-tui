@@ -52,5 +52,30 @@ run *ARGS:
 todos:
     @rg "TODO|FIXME|XXX|unimplemented!|todo!\(" --type rust || echo "no todos found"
 
+# Build every in-tree fixture container image as `agent-tui-fixture-<name>:dev`.
+# Used by the integration suite (`cargo test -p agent-tui-integration --features docker`).
+# Requires DOCKER_HOST to point at a working Docker-API socket (Docker or
+# rootful Podman — see scripts/dev/podman-socket.sh).
+fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in crates/agent-tui-integration/fixtures/*/; do
+        name=$(basename "$d")
+        echo "==> building agent-tui-fixture-${name}:dev"
+        docker build -t "agent-tui-fixture-${name}:dev" "$d"
+    done
+
+# Export OCI rootfs tarballs from each fixture Dockerfile for the
+# bwrap-backed integration suite. See scripts/dev/build-rootfs.sh.
+# `just rootfs` builds all; `just rootfs vim` builds one.
+rootfs *NAMES:
+    @./scripts/dev/build-rootfs.sh {{NAMES}}
+
+# Run integration tests with the bwrap backend (local dev path —
+# works in restricted envs that can't run nested containers).
+# Requires `just rootfs` to have built the rootfs tarballs first.
+test-bwrap *ARGS:
+    cargo test -p agent-tui-integration --features bwrap {{ARGS}}
+
 # CI-equivalent: fmt + clippy + test.
 ci: fmt-check clippy test

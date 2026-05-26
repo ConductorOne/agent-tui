@@ -1,0 +1,41 @@
+[package]
+name = "agent-tui-integration"
+description = "Containerized real-world TUI integration tests for agent-tui. See docs/research/testcontainers-spike.md."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Tests requiring a Docker-API container runtime (Docker or Podman). The
+# integration suite never runs under bare `cargo test --workspace`; CI
+# selects it via `cargo test -p agent-tui-integration --features docker`.
+# See docs/research/testcontainers-spike.md.
+docker = ["dep:testcontainers"]
+# Tests using the bwrap (bubblewrap) backend. Consumes the OCI rootfs
+# tarballs produced by `just rootfs`. Works in restricted dev envs
+# (e.g. Squire EKS pods) where nested containers can't run but bwrap
+# can — see crates/agent-tui-integration/src/bwrap.rs for the design.
+bwrap = []
+
+[dependencies]
+testcontainers = { version = "0.27", optional = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+agent-tui-protocol = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Optional Docker-API features in the dev tier so `cargo test -p
+# agent-tui-integration --features docker` works without --no-default-features.

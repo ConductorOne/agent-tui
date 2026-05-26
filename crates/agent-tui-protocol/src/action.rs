@@ -116,3 +116,24 @@ pub struct CallerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
 }
+
+/// One row in the audit firehose. Emitted for every governance decision
+/// regardless of verdict. See `docs/RFC.md` §11.6.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEvent {
+    /// Session id (string; empty when not pane-scoped).
+    pub session: String,
+    /// Pane id (`None` for session-level actions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+    /// Action kind that was evaluated.
+    pub action_kind: ActionKind,
+    /// Decision verdict.
+    pub verdict: Verdict,
+    /// Human-readable reason (from the evaluator).
+    pub reason: String,
+    /// Wall-clock timestamp.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// Action-specific detail (`Spawn { argv, cwd }`, `Input { bytes_hex, key_tokens }`, ...).
+    pub detail_json: serde_json::Value,
+}

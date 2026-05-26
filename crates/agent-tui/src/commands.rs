@@ -6,7 +6,7 @@ use agent_tui_daemon::{DaemonConfig, run_daemon};
 use agent_tui_protocol::{Command, SessionId};
 use anyhow::{Result, anyhow};
 
-use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind};
+use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind, PaneAction};
 use crate::client;
 
 /// Top-level dispatch entry point.
@@ -19,11 +19,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 one_shot_print(&cli.globals, Command::DaemonShutdown { force }).await
             }
         },
-        CliCmd::Doctor(args) => doctor(&cli.globals, &args),
+        CliCmd::Doctor(args) => doctor(&cli.globals, &args).await,
         CliCmd::Skills(args) => skills(&args),
-        CliCmd::Mcp(_) => Err(anyhow!(
-            "mcp serve not yet implemented (P4); track docs/RFC.md §13.4"
-        )),
+        CliCmd::Mcp(_) => crate::mcp::serve(cli.globals).await,
         // Everything else is a one-shot client RPC. The daemon currently
         // returns a friendly INTERNAL error for unwired ops; the CLI surfaces
         // that as a non-zero exit so callers can branch.
@@ -36,11 +34,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 
 async fn run_foreground_daemon(g: &crate::cli::GlobalArgs) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+    // `--allowed-binaries` is also wired to AGENT_TUI_ALLOWED_BINARIES via
+    // clap's `env` attr; the lazy-spawn path in client.rs forwards that env
+    // var to the daemon child so foreground and lazy invocations agree.
     let cfg = DaemonConfig {
         session: SessionId(g.session.clone()),
         layout,
         engine: g.engine.as_str().to_string(),
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
+        allowed_binaries: g.allowed_binaries.clone(),
     };
     let handle = run_daemon(cfg).await?;
     // Block until the daemon's shutdown notify fires. In v0.1.0 nothing
@@ -105,6 +107,15 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
         CliCmd::Die { pane } => Ok(Command::Die {
             pane: pane.map(agent_tui_protocol::PaneId),
         }),
+        CliCmd::Pane(p) => match p.action {
+            PaneAction::Focus { pane } => Ok(Command::Focus {
+                pane: if pane.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    Some(agent_tui_protocol::PaneId(pane))
+                },
+            }),
+        },
         CliCmd::Wait(a) => Ok(Command::Wait {
             pane: a.pane.clone().map(agent_tui_protocol::PaneId),
             condition: wait_condition_from_args(&a)?,
@@ -152,22 +163,49 @@ fn wait_condition_from_args(
     Err(anyhow!("wait requires exactly one mode flag"))
 }
 
-// Return-type kept as `Result<()>` so P0–P5 can introduce real failure
-// modes (filesystem probes, stale-daemon kills under `--fix`) without
-// touching the dispatch site.
-#[allow(clippy::unnecessary_wraps)]
-fn doctor(_g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Result<()> {
-    println!(
-        "{}",
-        serde_json::json!({
-            "ok": true,
-            "version": env!("CARGO_PKG_VERSION"),
-            "quick": args.quick,
-            "fix": args.fix,
-            "diagnostic_bundle": args.diagnostic_bundle.as_ref().map(|p| p.display().to_string()),
-            "note": "scaffolding doctor — full implementation lands in P0",
-        })
-    );
+/// `doctor` probes the daemon (`DaemonStatus`) for reachability + version +
+/// pane count and surfaces a CLI-side health report. `--fix` and
+/// `--diagnostic-bundle` still surface as fields but the destructive /
+/// archival paths land in P1.
+async fn doctor(g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Result<()> {
+    let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+
+    let mut report = serde_json::json!({
+        "ok": true,
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "session": g.session,
+        "socket": layout.socket.display().to_string(),
+        "quick": args.quick,
+        "fix": args.fix,
+        "diagnostic_bundle": args.diagnostic_bundle.as_ref().map(|p| p.display().to_string()),
+    });
+
+    match client::one_shot(&layout, Command::DaemonStatus).await {
+        Ok(env) if env.response.success => {
+            report["daemon"] = serde_json::json!({
+                "reachable": true,
+                "version": env.version,
+                "protocol": env.protocol,
+                "status": env.response.data,
+            });
+        }
+        Ok(env) => {
+            report["ok"] = serde_json::json!(false);
+            report["daemon"] = serde_json::json!({
+                "reachable": true,
+                "error": env.response.error,
+            });
+        }
+        Err(e) => {
+            report["ok"] = serde_json::json!(false);
+            report["daemon"] = serde_json::json!({
+                "reachable": false,
+                "error": format!("{e:#}"),
+            });
+        }
+    }
+
+    println!("{report}");
     Ok(())
 }
 

@@ -79,9 +79,10 @@ pub enum Notification {
 /// The per-program adapter trait.
 ///
 /// Built-in adapters implement this directly. The plug-in IPC wrapper
-/// (`PluginAdapter`, lands in P2) implements `Adapter` by speaking JSON-RPC
-/// over a sub-process's stdin/stdout. From the daemon's POV the two are
-/// indistinguishable.
+/// (`PluginAdapter`, lands in P4 alongside the MCP server — both speak
+/// the same JSON-RPC-over-stdio surface) will implement `Adapter` by
+/// driving a sub-process's stdin/stdout. From the daemon's POV the two
+/// are indistinguishable.
 #[async_trait::async_trait]
 pub trait Adapter: Send + Sync {
     /// Adapter registry key (`generic`, `nvim`, `tmux`, ...).
@@ -107,72 +108,6 @@ pub trait Adapter: Send + Sync {
     async fn shutdown(&self) -> Result<(), AdapterError>;
 }
 
-/// A minimal built-in `generic` adapter — confidence 0.1 for everything,
-/// outline-only with empty content. Real outline heuristics land in P0.
-pub struct GenericAdapter;
+pub mod builtin;
 
-#[async_trait::async_trait]
-impl Adapter for GenericAdapter {
-    fn name(&self) -> &'static str {
-        "generic"
-    }
-
-    async fn detect(&self, _info: &PaneInfo) -> f32 {
-        0.1
-    }
-
-    async fn initialize(&self) -> Result<Capabilities, AdapterError> {
-        Ok(Capabilities {
-            supports_eval: false,
-            supports_streaming_events: false,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        })
-    }
-
-    async fn outline(&self, _snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
-        Ok(Outline {
-            adapter: "generic".to_string(),
-            nodes: Vec::new(),
-        })
-    }
-
-    async fn eval(&self, _expr: &str) -> Result<serde_json::Value, AdapterError> {
-        Err(AdapterError::Refused(
-            "generic adapter does not support eval".to_string(),
-        ))
-    }
-
-    async fn shutdown(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use agent_tui_engine::{Cell, CellGrid, EngineSnapshot, ModeFlags};
-
-    #[tokio::test]
-    async fn generic_returns_empty_outline() {
-        let a = GenericAdapter;
-        let snap = EngineSnapshot {
-            grid: CellGrid {
-                cols: 1,
-                rows: 1,
-                cells: vec![Cell {
-                    ch: " ".into(),
-                    width: 1,
-                    fg: 0,
-                    bg: 0,
-                    attrs: 0,
-                }],
-                cursor: (0, 0),
-            },
-            modes: ModeFlags::default(),
-            sequence: 0,
-        };
-        let outline = a.outline(&snap).await.expect("outline");
-        assert_eq!(outline.adapter, "generic");
-        assert!(outline.nodes.is_empty());
-    }
-}
+pub use builtin::{ClaudeCodeAdapter, GenericAdapter, ShellAdapter, VimAdapter};

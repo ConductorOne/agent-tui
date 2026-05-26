@@ -4,16 +4,25 @@
 //! one line per response. The CLI lazily spawns the daemon if no live socket
 //! is found at `$XDG_RUNTIME_DIR/agent-tui/<session>.sock`.
 //!
-//! This crate is intentionally thin in v0.1.0 — it stands up the socket
-//! layout, version handshake, and command dispatch surface so that the
-//! per-pane queue, engine, recorder, and adapter wiring (P0–P1) can land
-//! independently.
-//!
-//! See `docs/RFC.md` §2, §4, §5, §13.1.
+//! Owns the per-session resources every handler needs: pane registry, the
+//! seq→hash window backing `wait --hash`, snapshot generation tracker, and
+//! the adapter registry consulted at spawn time. See `docs/RFC.md` §2, §4,
+//! §5, §13.1.
 
-#![forbid(unsafe_code)]
+// Crate-level `deny` rather than `forbid` so the Windows signal handler
+// can opt into a single `unsafe` call (`GenerateConsoleCtrlEvent`, see
+// handlers/signal.rs). Every other module stays unsafe-free.
+#![deny(unsafe_code)]
 
+pub mod adapter_registry;
+pub mod classifier;
+pub mod governance;
+pub mod handlers;
+pub mod hash_window;
+pub mod osc133;
+pub mod pane;
 pub mod paths;
+pub mod pty;
 pub mod server;
 pub mod sidecar;
 

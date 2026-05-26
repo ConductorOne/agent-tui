@@ -34,6 +34,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    # IPC is interprocess::local_socket on every platform (Unix sockets on
+    # Linux/macOS, named pipes on Windows). Signals are cfg-gated so Windows
+    # gets GenerateConsoleCtrlEvent + TerminateProcess instead of killpg.
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -45,3 +48,74 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  integration-docker:
+    # Runs the containerized real-world TUI suite (see
+    # docs/research/testcontainers-spike.md). Linux-only — Docker is
+    # pre-installed on GitHub's ubuntu-latest runners. The build step
+    # is required because the harness mounts the host's just-built
+    # target/debug/agent-tui binary into each container.
+    name: integration (docker)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build agent-tui binary
+        run: cargo build --bin agent-tui
+      - name: Build fixture images
+        run: |
+          set -euxo pipefail
+          for d in crates/agent-tui-integration/fixtures/*/; do
+            name=$(basename "$d")
+            docker build -t "agent-tui-fixture-${name}:dev" "$d"
+          done
+      - name: Run integration suite
+        run: cargo test -p agent-tui-integration --features docker -- --nocapture
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts-docker
+          path: target/integration-artifacts/
+          if-no-files-found: ignore
+
+  integration-bwrap:
+    # Same integration suite, different sandbox runtime. The fixture
+    # Dockerfiles are built once (via `scripts/dev/build-rootfs.sh`),
+    # exported to rootfs tarballs, and bwrap rebases each test into a
+    # fresh sandbox in ~5ms — vs Docker's ~3s container start. See
+    # crates/agent-tui-integration/src/bwrap.rs for the design.
+    #
+    # Runs in parallel with integration-docker as a cross-check: both
+    # backends consume the same fixture source, so a regression in
+    # either points to a daemon-side bug rather than runtime drift.
+    # Also: this is the path that works locally in restricted dev
+    # environments where nested containers are blocked.
+    name: integration (bwrap)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bubblewrap + podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap podman
+      - name: Build agent-tui binary
+        run: cargo build --bin agent-tui
+      - name: Build fixture rootfs tarballs
+        # `build-rootfs.sh` caches via .hash stamps so reruns skip
+        # already-built fixtures whose Dockerfile tree is unchanged.
+        run: PODMAN="sudo podman" ./scripts/dev/build-rootfs.sh
+      - name: Run integration suite (bwrap)
+        run: cargo test -p agent-tui-integration --features bwrap -- --nocapture
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artifacts-bwrap
+          path: target/integration-artifacts/
+          if-no-files-found: ignore

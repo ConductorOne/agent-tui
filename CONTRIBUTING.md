@@ -31,6 +31,72 @@ just build    # full debug build
 - `crates/agent-tui-adapter` — per-program adapter trait + plug-in IPC.
 - `docs/RFC.md` — the canonical architecture RFC. Read this first.
 
+## Integration tests (Docker / Podman)
+
+The real-world TUI suite lives in `crates/agent-tui-integration` and is
+gated behind the `docker` Cargo feature. `cargo test --workspace` (i.e.
+the default suite) skips it.
+
+```bash
+# Build the binary the harness will inject into containers.
+cargo build --bin agent-tui
+
+# Run the suite. Requires a Docker-API endpoint via DOCKER_HOST.
+cargo test -p agent-tui-integration --features docker -- --nocapture
+```
+
+**Docker** works out of the box on `ubuntu-latest` and Docker Desktop.
+
+**Podman** is supported transparently — testcontainers-rs talks to the
+Docker HTTP API, which Podman exposes via `podman system service`. For
+rootless dev environments:
+
+```bash
+podman system service --time=0 &
+export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
+cargo test -p agent-tui-integration --features docker
+```
+
+### Inside a nested-container dev env (e.g. Squire EKS pods)
+
+The Docker backend **can't run nested in restricted EKS pods**: even
+rootful podman fails with `crun: mount proc to proc: Operation not
+permitted` because the host pod's `/proc` is read-only and the runtime
+can't manipulate the kernel namespaces it needs. Sysbox/Kata at the
+node level would fix this; without that, the Docker path is CI-only.
+
+For local iteration use the **bwrap backend** — same fixture
+Dockerfiles, different sandbox runtime:
+
+```bash
+# One-shot: build the fixture images with podman, export each as a
+# rootfs tarball into target/integration-rootfs/<name>/extracted/.
+# ~1.5s per fixture; cached by Dockerfile-tree hash.
+just rootfs
+
+# Run the bwrap suite. ~5ms per scenario (vs Docker's ~3s container
+# start) because there's no container daemon involved at test time.
+just test-bwrap
+```
+
+`build-rootfs.sh` uses `sudo podman` for the build/export step
+(rootful side-steps the newuidmap restriction). bwrap then sandbox-runs
+each test as the dev user — no daemon, no socket, no nested-container
+kernel features required at test time. It dodges the `mount proc` wall
+by sharing the host's `/proc` read-only instead of remounting it.
+
+CI runs **both** backends (`integration-docker` and `integration-bwrap`
+jobs) on `ubuntu-latest` as a cross-check — both consume the same
+Dockerfile fixtures, so a regression in either is a daemon-side bug
+rather than runtime drift. See
+`crates/agent-tui-integration/src/bwrap.rs` for the bwrap design and
+`docs/research/testcontainers-spike.md` for the original Docker design.
+
+On failure either harness writes diagnostic artifacts (command log,
+snapshot history, asciicast, annotated PNG) to
+`target/integration-artifacts/<test>/`. CI uploads them as
+`integration-artifacts-docker` / `integration-artifacts-bwrap`.
+
 ## Coding conventions
 
 - `#![forbid(unsafe_code)]` in every crate root. If you need `unsafe`, justify it inline and downgrade to `#![deny(unsafe_code)]` for the file only.
