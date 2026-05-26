@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use agent_tui_engine::Engine;
 use agent_tui_engine_alacritty::AlacrittyEngine;
-use agent_tui_protocol::{ErrorBody, ErrorCode, Response};
+use agent_tui_protocol::{ErrorBody, ErrorCode, Response, SessionId};
+use agent_tui_recorder::{Recorder, RecorderConfig};
 use chrono::Utc;
 
 use crate::pane::{Pane, Registry};
@@ -19,6 +20,7 @@ const DEFAULT_ROWS: u16 = 24;
 
 /// Spawn a PTY-backed pane running `argv` under the active session.
 pub async fn run(
+    session: &SessionId,
     registry: &Arc<Registry>,
     argv: Vec<String>,
     cwd: Option<String>,
@@ -36,7 +38,17 @@ pub async fn run(
     let engine: Arc<dyn Engine> = Arc::new(AlacrittyEngine::new(cols, rows));
     let cwd_path = cwd.as_ref().map(PathBuf::from);
 
-    let pty = match PtyChild::spawn(&argv, cwd_path.as_deref(), cols, rows, engine.clone()) {
+    let id = registry.alloc_id();
+    let recorder = start_recorder(session, &id);
+
+    let pty = match PtyChild::spawn(
+        &argv,
+        cwd_path.as_deref(),
+        cols,
+        rows,
+        engine.clone(),
+        recorder,
+    ) {
         Ok(p) => p,
         Err(e) => {
             return Response::err(ErrorBody::new(
@@ -46,8 +58,6 @@ pub async fn run(
             ));
         }
     };
-
-    let id = registry.alloc_id();
     let pane = Pane {
         id: id.clone(),
         argv: argv.clone(),
@@ -65,4 +75,25 @@ pub async fn run(
         "cols": cols,
         "rows": rows,
     }))
+}
+
+/// Open a recorder under `$XDG_STATE_HOME/agent-tui/<session>/`. Returns
+/// `None` (and logs) if we can't pick a state dir.
+fn start_recorder(session: &SessionId, pane: &agent_tui_protocol::PaneId) -> Option<Recorder> {
+    let dir = state_dir().map(|d| d.join("agent-tui").join(&session.0))?;
+    let cfg = RecorderConfig::new(dir, pane.0.clone());
+    match Recorder::start(cfg) {
+        Ok((rec, _handle)) => Some(rec),
+        Err(e) => {
+            tracing::warn!(error = %e, "recorder failed to start; continuing without one");
+            None
+        }
+    }
+}
+
+fn state_dir() -> Option<PathBuf> {
+    if let Ok(s) = std::env::var("XDG_STATE_HOME") {
+        return Some(PathBuf::from(s));
+    }
+    dirs::state_dir()
 }

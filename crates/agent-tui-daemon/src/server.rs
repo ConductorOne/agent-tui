@@ -2,8 +2,7 @@
 //!
 //! Binds the Unix-domain socket from [`SocketLayout`], handles
 //! version-handshake, and dispatches every line of JSON it receives to
-//! [`handle_command`]. v0.1.0 dispatch is a stub matrix — real engine /
-//! adapter / recorder wiring comes in P0–P2.
+//! [`handle_command`]. Recorder/adapter wiring lands in P1/P2.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,6 +16,7 @@ use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 use super::handlers;
+use super::hash_window::HashWindow;
 use super::pane::Registry;
 use super::paths::SocketLayout;
 use super::sidecar;
@@ -44,6 +44,8 @@ pub struct DaemonState {
     pub registry: Arc<Registry>,
     /// Per-pane snapshot-generation tracker.
     pub generations: Arc<handlers::snapshot::GenerationTracker>,
+    /// Per-pane (sequence -> hash) ring backing `wait --hash`.
+    pub hashes: Arc<HashWindow>,
 }
 
 /// Handle returned by [`run_daemon`]. Currently only carries a shutdown
@@ -84,6 +86,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
         cfg,
         registry: Arc::new(Registry::new()),
         generations: Arc::new(handlers::snapshot::GenerationTracker::default()),
+        hashes: Arc::new(HashWindow::new()),
     };
     let shutdown_inner = shutdown.clone();
     tokio::spawn(async move {
@@ -193,13 +196,25 @@ async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -
     use agent_tui_protocol::Command;
     match cmd {
         Command::Spawn { argv, cwd, size } => {
-            handlers::spawn::run(&state.registry, argv, cwd, size).await
+            handlers::spawn::run(&state.cfg.session, &state.registry, argv, cwd, size).await
         }
         Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
         Command::List { all } => handlers::list::run(&state.registry, all).await,
         Command::Snapshot { pane, mode, .. } => {
-            handlers::snapshot::run(&state.registry, &state.generations, pane, mode).await
+            handlers::snapshot::run(
+                &state.registry,
+                &state.generations,
+                &state.hashes,
+                pane,
+                mode,
+            )
+            .await
         }
+        Command::Wait {
+            pane,
+            condition,
+            timeout,
+        } => handlers::wait::run(&state.registry, &state.hashes, pane, condition, timeout).await,
         Command::Press { pane, keys } => handlers::input::press(&state.registry, pane, keys).await,
         Command::Type { pane, text } => {
             handlers::input::type_text(&state.registry, pane, text).await
@@ -222,9 +237,9 @@ async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -
             // P0 follow-up: actually shut down. For now, just acknowledge.
             Response::ok(serde_json::json!({ "queued": true }))
         }
-        _ => Response::err(ErrorBody::new(
+        Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,
-            "command not yet wired in this scaffolding build",
+            "eval not yet wired (lands with adapters in P2)",
             "see docs/RFC.md §17 for the roadmap",
         )),
     }

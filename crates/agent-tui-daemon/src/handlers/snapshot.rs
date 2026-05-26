@@ -8,13 +8,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_tui_engine::EngineSnapshot;
+use agent_tui_engine::{Cell, EngineSnapshot};
 use agent_tui_protocol::request::SnapshotMode;
+use agent_tui_protocol::snapshot::CellGridRle;
 use agent_tui_protocol::{
-    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, PaneState, Ref, RefBinding, Response,
-    Snapshot,
+    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, Ref, RefBinding, Response, Snapshot,
 };
+use base64::Engine as _;
 
+use crate::classifier;
+use crate::hash_window::HashWindow;
 use crate::pane::{Pane, Registry};
 
 /// Per-session generation counters keyed by pane id.
@@ -46,22 +49,14 @@ impl GenerationTracker {
     }
 }
 
-/// Take an outline-mode snapshot of the named pane (or the unique one when
-/// `pane` is None).
+/// Snapshot a pane in the requested mode.
 pub async fn run(
     registry: &Arc<Registry>,
     generations: &Arc<GenerationTracker>,
+    hashes: &Arc<HashWindow>,
     pane: Option<PaneId>,
     mode: SnapshotMode,
 ) -> Response {
-    if mode != SnapshotMode::Outline {
-        return Response::err(ErrorBody::new(
-            ErrorCode::Internal,
-            "only --mode outline is wired in v0.1.0",
-            "cells/hybrid/adapter modes land in P1",
-        ));
-    }
-
     let pane_arc = match resolve(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -72,7 +67,11 @@ pub async fn run(
         .observe(&pane_arc.id, engine_snap.sequence)
         .await;
 
-    let snapshot = build_snapshot(&pane_arc, &engine_snap, generation);
+    let snapshot = build_snapshot(&pane_arc, &engine_snap, generation, mode);
+    // Record (seq, hash) so `wait --hash` can resolve subsequent calls.
+    hashes
+        .record(&pane_arc.id, snapshot.sequence, snapshot.hash.clone())
+        .await;
     match serde_json::to_value(&snapshot) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::err(ErrorBody::new(
@@ -83,15 +82,24 @@ pub async fn run(
     }
 }
 
-fn build_snapshot(pane: &Pane, engine_snap: &EngineSnapshot, generation: u64) -> Snapshot {
+fn build_snapshot(
+    pane: &Pane,
+    engine_snap: &EngineSnapshot,
+    generation: u64,
+    mode: SnapshotMode,
+) -> Snapshot {
     let hash = engine_snap.canonical_hash();
-    let state = if engine_snap.modes.alt_screen {
-        PaneState::AltScreenTui
-    } else {
-        PaneState::Unknown
+    let state = classifier::classify(engine_snap);
+
+    let (outline, cells) = match mode {
+        SnapshotMode::Outline | SnapshotMode::Adapter => (Some(generic_outline(engine_snap)), None),
+        SnapshotMode::Cells => (None, Some(rle_grid(engine_snap))),
+        SnapshotMode::Hybrid => (
+            Some(generic_outline(engine_snap)),
+            Some(rle_grid(engine_snap)),
+        ),
     };
 
-    let outline = generic_outline(engine_snap);
     let mut refs = std::collections::BTreeMap::new();
     refs.insert(
         "@e1".to_string(),
@@ -112,11 +120,66 @@ fn build_snapshot(pane: &Pane, engine_snap: &EngineSnapshot, generation: u64) ->
         generation,
         sequence: engine_snap.sequence,
         hash,
-        outline: Some(outline),
-        cells: None,
+        outline,
+        cells,
         modes: engine_snap.modes.clone(),
         refs,
     }
+}
+
+/// RLE-compress the cell grid row-by-row and base64-encode each row's JSON.
+///
+/// Each row encodes as a JSON array of `[count, "ch", width, fg, bg, attrs]`
+/// runs — a balance between wire size and tooling friendliness (consumers can
+/// decode + parse without a custom binary reader).
+fn rle_grid(snap: &EngineSnapshot) -> CellGridRle {
+    let cols = usize::from(snap.grid.cols);
+    let rows = usize::from(snap.grid.rows);
+    let mut rows_b64 = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let start = row * cols;
+        let row_cells = &snap.grid.cells[start..start + cols];
+        let runs = encode_row_runs(row_cells);
+        let json = serde_json::to_string(&runs).unwrap_or_default();
+        rows_b64.push(base64::engine::general_purpose::STANDARD.encode(json.as_bytes()));
+    }
+    CellGridRle {
+        cols: snap.grid.cols,
+        rows: snap.grid.rows,
+        rows_b64,
+        palette: serde_json::Value::Null,
+        cursor: snap.grid.cursor,
+    }
+}
+
+fn encode_row_runs(cells: &[Cell]) -> Vec<serde_json::Value> {
+    let mut runs: Vec<serde_json::Value> = Vec::new();
+    let mut iter = cells.iter().peekable();
+    while let Some(first) = iter.next() {
+        let mut count: u32 = 1;
+        while let Some(&next) = iter.peek() {
+            if next.ch == first.ch
+                && next.width == first.width
+                && next.fg == first.fg
+                && next.bg == first.bg
+                && next.attrs == first.attrs
+            {
+                count += 1;
+                iter.next();
+            } else {
+                break;
+            }
+        }
+        runs.push(serde_json::json!([
+            count,
+            first.ch,
+            first.width,
+            first.fg,
+            first.bg,
+            first.attrs,
+        ]));
+    }
+    runs
 }
 
 /// Minimal outline: one `@e1 [buffer]` node whose `name` is the visible cell

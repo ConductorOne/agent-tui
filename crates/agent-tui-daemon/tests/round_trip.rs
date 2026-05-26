@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use agent_tui_daemon::{DaemonConfig, SocketLayout, run_daemon};
 use agent_tui_protocol::request::SnapshotMode;
 use agent_tui_protocol::{Command, PROTOCOL_VERSION, Request, ResponseEnvelope, SessionId};
+use base64::Engine as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -312,6 +313,82 @@ async fn resize_updates_engine_geometry() {
         "summary still shows spawn-time cols"
     );
 
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn snapshot_cells_mode_returns_rle_grid() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
+            cwd: None,
+            size: Some((10, 2)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Cells,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    assert!(snap.response.success, "cells snapshot: {snap:?}");
+    let data = snap.response.data.unwrap();
+    assert!(
+        data["outline"].is_null(),
+        "cells mode must not carry outline"
+    );
+    let cells = data["cells"].as_object().expect("cells object");
+    assert_eq!(cells["cols"], 10);
+    assert_eq!(cells["rows"], 2);
+    let rows = cells["rows_b64"].as_array().expect("rows_b64 array");
+    assert_eq!(rows.len(), 2);
+    // Decode first row's b64 and confirm it parses as RLE-runs JSON.
+    let row0_bytes = base64::engine::general_purpose::STANDARD
+        .decode(rows[0].as_str().unwrap())
+        .expect("b64 decode");
+    let parsed: serde_json::Value = serde_json::from_slice(&row0_bytes).expect("json parse");
+    assert!(
+        parsed.is_array(),
+        "row payload must be a JSON array of runs"
+    );
+
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn snapshot_hybrid_mode_carries_both() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
+            cwd: None,
+            size: Some((8, 2)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Hybrid,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    let data = snap.response.data.unwrap();
+    assert!(data["outline"].is_object(), "hybrid must carry outline");
+    assert!(data["cells"].is_object(), "hybrid must carry cells");
     let _ = round_trip(&cfg, Command::Die { pane: None }).await;
 }
 

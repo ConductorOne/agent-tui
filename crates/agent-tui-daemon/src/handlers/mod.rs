@@ -11,3 +11,4 @@ pub mod raw;
 pub mod signal;
 pub mod snapshot;
 pub mod spawn;
+pub mod wait;

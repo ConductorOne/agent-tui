@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use agent_tui_engine::Engine;
+use agent_tui_recorder::Recorder;
 use anyhow::{Context, Result, anyhow};
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::task::JoinHandle;
@@ -33,13 +34,15 @@ pub struct PtyChild {
 
 impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
-    /// reader task piping output into `engine.feed`.
+    /// reader task piping output into `engine.feed`. `recorder`, when
+    /// supplied, gets a tee of every byte chunk read from the PTY.
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
         cols: u16,
         rows: u16,
         engine: Arc<dyn Engine>,
+        recorder: Option<Recorder>,
     ) -> Result<Self> {
         if argv.is_empty() {
             return Err(anyhow!("argv must be non-empty"));
@@ -73,8 +76,9 @@ impl PtyChild {
         let reader = pair.master.try_clone_reader().context("clone_reader")?;
 
         let reader_engine = engine;
+        let reader_recorder = recorder;
         let reader_handle = tokio::task::spawn_blocking(move || {
-            pty_reader_loop(reader, &reader_engine);
+            pty_reader_loop(reader, &reader_engine, reader_recorder.as_ref());
         });
 
         Ok(Self {
@@ -151,7 +155,11 @@ impl Drop for PtyChild {
     }
 }
 
-fn pty_reader_loop(mut reader: Box<dyn Read + Send>, engine: &Arc<dyn Engine>) {
+fn pty_reader_loop(
+    mut reader: Box<dyn Read + Send>,
+    engine: &Arc<dyn Engine>,
+    recorder: Option<&Recorder>,
+) {
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf) {
@@ -160,6 +168,9 @@ fn pty_reader_loop(mut reader: Box<dyn Read + Send>, engine: &Arc<dyn Engine>) {
                 if let Err(e) = engine.feed(&buf[..n]) {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
                     break;
+                }
+                if let Some(rec) = recorder {
+                    rec.push_output(&buf[..n]);
                 }
             }
             Err(e) => {

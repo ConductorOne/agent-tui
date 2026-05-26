@@ -13,7 +13,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod classifier;
 pub mod handlers;
+pub mod hash_window;
 pub mod pane;
 pub mod paths;
 pub mod pty;

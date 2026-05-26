@@ -17,6 +17,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod writer;
+pub use writer::{
+    CHANNEL_CAPACITY, DEFAULT_RETENTION_BYTES, DEFAULT_ROTATE_BYTES, Recorder, RecorderConfig,
+    RecorderStats,
+};
+
 use serde::{Deserialize, Serialize};
 
 /// One event in the recorder's NDJSON log.
