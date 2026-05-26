@@ -20,8 +20,11 @@ use uuid::Uuid;
 
 /// Spin up an isolated daemon on a temp socket dir and return its connect URL.
 async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
-    let session = SessionId(format!("test-{}", Uuid::new_v4().simple()));
-    let root: PathBuf = std::env::temp_dir().join(format!("agent-tui-test-{session}"));
+    // macOS sockaddr_un.sun_path is 104 bytes; the full layout path is
+    // `<root>/<session>.sock`. Use a short session id (8 hex chars) and
+    // anchor the root under /tmp directly so the result fits.
+    let session = SessionId(short_session());
+    let root = short_temp_root("at-rt");
     std::fs::create_dir_all(&root).expect("mkdir tempdir");
     let layout = SocketLayout::for_session_in(&session, root);
     let cfg = DaemonConfig {
@@ -35,6 +38,21 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
     // Tiny yield so the accept loop is parked before we connect.
     tokio::task::yield_now().await;
     (cfg, handle)
+}
+
+fn short_session() -> String {
+    let mut h = Uuid::new_v4().simple().to_string();
+    h.truncate(8);
+    h
+}
+
+fn short_temp_root(prefix: &str) -> PathBuf {
+    // Anchor under /tmp on Unix to dodge macOS's long /var/folders TMPDIR.
+    // The full path becomes /tmp/at-rt-<8hex>/<8hex>.sock = 32 chars,
+    // well under the 104-byte sun_path limit.
+    let mut h = Uuid::new_v4().simple().to_string();
+    h.truncate(8);
+    PathBuf::from(format!("/tmp/{prefix}-{h}"))
 }
 
 async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {

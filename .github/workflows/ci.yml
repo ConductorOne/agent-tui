@@ -34,12 +34,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    # Unix-only for v1. The daemon binds a Unix-domain socket; Windows TCP
+    # fallback (RFC §13.1) is future work. Re-add windows-latest when the
+    # socket layer abstracts over both. macOS uses a short TMPDIR override
+    # so socket paths stay under the 104-byte sun_path limit.
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

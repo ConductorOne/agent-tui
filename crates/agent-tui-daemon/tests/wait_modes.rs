@@ -20,8 +20,13 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
-    let session = SessionId(format!("test-{}", Uuid::new_v4().simple()));
-    let root: PathBuf = std::env::temp_dir().join(format!("agent-tui-wait-{session}"));
+    // macOS sun_path is 104 bytes; keep the socket path tiny.
+    let mut sid = Uuid::new_v4().simple().to_string();
+    sid.truncate(8);
+    let session = SessionId(sid);
+    let mut h = Uuid::new_v4().simple().to_string();
+    h.truncate(8);
+    let root: PathBuf = PathBuf::from(format!("/tmp/at-wm-{h}"));
     std::fs::create_dir_all(&root).expect("mkdir tempdir");
     let layout = SocketLayout::for_session_in(&session, root);
     let cfg = DaemonConfig {
