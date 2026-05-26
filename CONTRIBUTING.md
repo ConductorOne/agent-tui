@@ -57,6 +57,36 @@ export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
 cargo test -p agent-tui-integration --features docker
 ```
 
+### Inside a nested-container dev env (e.g. Squire EKS pods)
+
+Rootless podman often fails in these envs — `newuidmap` can't write
+`/proc/<pid>/uid_map` because the host pod's security context blocks
+nested user-namespace setup, even when `/etc/subuid` and the
+`newuidmap`/`newgidmap` setuid bits look correct. There's no clean
+rootless fix without changing the EKS node runtime (Sysbox / Kata would
+solve it; `privileged: true` on the pod is the heavy-hammer alternative).
+
+For everyday dev iteration there's a pragmatic shortcut: run a rootful
+podman socket the dev user can connect to via `DOCKER_HOST`:
+
+```bash
+eval "$(./scripts/dev/podman-socket.sh)"
+cargo build --bin agent-tui
+cargo test -p agent-tui-integration --features docker
+```
+
+The script:
+- creates `/run/podman/` if missing,
+- starts `podman system service --time=0` as root (idempotent),
+- `chmod 666`s the socket so the dev user can connect,
+- prints the `export DOCKER_HOST=…` line for `eval`.
+
+This is a dev-only convenience — CI (GitHub Actions) uses Docker
+directly, so the production CI matrix doesn't depend on the script. The
+upshot is that the integration suite *can* be iterated on locally even
+inside Squire without anyone needing to weaken the pod's security
+context.
+
 On failure the harness writes diagnostic artifacts (command log, last
 snapshot, daemon response history) to
 `target/integration-artifacts/<test>/`. CI uploads that directory as a
