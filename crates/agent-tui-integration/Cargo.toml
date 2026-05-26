@@ -19,6 +19,11 @@ default = []
 # selects it via `cargo test -p agent-tui-integration --features docker`.
 # See docs/research/testcontainers-spike.md.
 docker = ["dep:testcontainers"]
+# Tests using the bwrap (bubblewrap) backend. Consumes the OCI rootfs
+# tarballs produced by `just rootfs`. Works in restricted dev envs
+# (e.g. Squire EKS pods) where nested containers can't run but bwrap
+# can — see crates/agent-tui-integration/src/bwrap.rs for the design.
+bwrap = []
 
 [dependencies]
 testcontainers = { version = "0.27", optional = true }

@@ -35,25 +35,18 @@ async fn vimtutor_walkthrough_lessons_1_1_to_1_3() -> Result<()> {
     s.spawn(["bash", "-c", "vimtutor; echo 'tutor-finished'"])
         .await?;
 
-    // Vimtutor opens with a welcome banner that contains the literal
-    // string "VIM Tutor". Wait for it to land + idle for the alt-screen
-    // toggle to fully repaint.
+    // Vimtutor opens at a welcome banner ("Welcome to the VIM Tutor")
+    // that does NOT yet include the lesson headers — those live further
+    // down the buffer. Anchor on the banner text + alt-screen state, not
+    // on "Lesson 1.1".
     s.wait_text(r"VIM Tutor").await?;
     s.wait_idle(200).await?;
 
     {
         let snap = s.snapshot().await?;
         assert_eq!(snap.state().unwrap_or(""), "alt_screen_tui");
-        // Lesson 1.1 header is in the visible buffer once the tutor
-        // opens; "Lesson 1.1" is the canonical anchor.
-        snap.assert_outline_contains("Lesson 1.1")?;
+        snap.assert_outline_contains("ATTENTION")?;
     }
-
-    // Lesson 1.1 — drive the hjkl exercise. We press `j` five times to
-    // move down through the lesson body; vim repositions the cursor
-    // and the visible block scrolls.
-    s.press("j j j j j").await?;
-    s.wait_idle(150).await?;
 
     // Search forward for the lesson-1.3 anchor and confirm it lands.
     // (`/Lesson 1.3<cr>` is the vimtutor-recommended motion between

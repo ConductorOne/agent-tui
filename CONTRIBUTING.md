@@ -59,40 +59,43 @@ cargo test -p agent-tui-integration --features docker
 
 ### Inside a nested-container dev env (e.g. Squire EKS pods)
 
-Rootless podman often fails in these envs — `newuidmap` can't write
-`/proc/<pid>/uid_map` because the host pod's security context blocks
-nested user-namespace setup, even when `/etc/subuid` and the
-`newuidmap`/`newgidmap` setuid bits look correct. There's no clean
-rootless fix without changing the EKS node runtime (Sysbox / Kata would
-solve it; `privileged: true` on the pod is the heavy-hammer alternative).
+The Docker backend **can't run nested in restricted EKS pods**: even
+rootful podman fails with `crun: mount proc to proc: Operation not
+permitted` because the host pod's `/proc` is read-only and the runtime
+can't manipulate the kernel namespaces it needs. Sysbox/Kata at the
+node level would fix this; without that, the Docker path is CI-only.
 
-For everyday dev iteration there's a pragmatic shortcut: run a rootful
-podman socket the dev user can connect to via `DOCKER_HOST`:
+For local iteration use the **bwrap backend** — same fixture
+Dockerfiles, different sandbox runtime:
 
 ```bash
-eval "$(./scripts/dev/podman-socket.sh)"
-cargo build --bin agent-tui
-cargo test -p agent-tui-integration --features docker
+# One-shot: build the fixture images with podman, export each as a
+# rootfs tarball into target/integration-rootfs/<name>/extracted/.
+# ~1.5s per fixture; cached by Dockerfile-tree hash.
+just rootfs
+
+# Run the bwrap suite. ~5ms per scenario (vs Docker's ~3s container
+# start) because there's no container daemon involved at test time.
+just test-bwrap
 ```
 
-The script:
-- creates `/run/podman/` if missing,
-- starts `podman system service --time=0` as root (idempotent),
-- `chmod 666`s the socket so the dev user can connect,
-- prints the `export DOCKER_HOST=…` line for `eval`.
+`build-rootfs.sh` uses `sudo podman` for the build/export step
+(rootful side-steps the newuidmap restriction). bwrap then sandbox-runs
+each test as the dev user — no daemon, no socket, no nested-container
+kernel features required at test time. It dodges the `mount proc` wall
+by sharing the host's `/proc` read-only instead of remounting it.
 
-This is a dev-only convenience — CI (GitHub Actions) uses Docker
-directly, so the production CI matrix doesn't depend on the script. The
-upshot is that the integration suite *can* be iterated on locally even
-inside Squire without anyone needing to weaken the pod's security
-context.
+CI runs **both** backends (`integration-docker` and `integration-bwrap`
+jobs) on `ubuntu-latest` as a cross-check — both consume the same
+Dockerfile fixtures, so a regression in either is a daemon-side bug
+rather than runtime drift. See
+`crates/agent-tui-integration/src/bwrap.rs` for the bwrap design and
+`docs/research/testcontainers-spike.md` for the original Docker design.
 
-On failure the harness writes diagnostic artifacts (command log, last
-snapshot, daemon response history) to
-`target/integration-artifacts/<test>/`. CI uploads that directory as a
-`integration-artifacts` action artifact for downloadable inspection.
-
-See `docs/research/testcontainers-spike.md` for the full plan.
+On failure either harness writes diagnostic artifacts (command log,
+snapshot history, asciicast, annotated PNG) to
+`target/integration-artifacts/<test>/`. CI uploads them as
+`integration-artifacts-docker` / `integration-artifacts-bwrap`.
 
 ## Coding conventions
 

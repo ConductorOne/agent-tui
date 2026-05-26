@@ -27,6 +27,67 @@ use serde::Serialize;
 #[cfg(feature = "docker")]
 pub mod scenario;
 
+#[cfg(feature = "bwrap")]
+pub mod bwrap;
+
+/// Wrapper around a snapshot response with the assertion helpers.
+///
+/// Lives in `lib.rs` so both the Docker backend (`scenario.rs`) and the
+/// bwrap backend (`bwrap.rs`) can build them without one depending on
+/// the other.
+pub struct Snapshot {
+    envelope: serde_json::Value,
+}
+
+impl Snapshot {
+    /// Build from the `data` payload of an agent-tui snapshot response.
+    #[must_use]
+    pub fn from_envelope(envelope: serde_json::Value) -> Self {
+        Self { envelope }
+    }
+
+    /// Whole snapshot envelope (`data` field of the agent-tui response).
+    #[must_use]
+    pub fn envelope(&self) -> &serde_json::Value {
+        &self.envelope
+    }
+
+    fn outline_text(&self) -> String {
+        let nodes = self.envelope.get("outline").and_then(|o| o.get("nodes"));
+        let mut out = String::new();
+        if let Some(arr) = nodes.and_then(serde_json::Value::as_array) {
+            for n in arr {
+                if let Some(name) = n.get("name").and_then(serde_json::Value::as_str) {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// Assert that the rendered outline text contains `needle`. Errors
+    /// (with the full outline) when it doesn't; tests typically `?` the
+    /// result so a panic routes through the `Drop` artifact-capture path.
+    pub fn assert_outline_contains(&self, needle: &str) -> Result<()> {
+        let body = self.outline_text();
+        if body.contains(needle) {
+            Ok(())
+        } else {
+            anyhow::bail!("outline does not contain {needle:?}; full outline:\n---\n{body}\n---")
+        }
+    }
+
+    /// `state` field (`shell` / `running` / `alt_screen_tui` / …).
+    pub fn state(&self) -> Option<&str> {
+        self.envelope
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+    }
+}
+
 /// Per-test artifact directory under `target/integration-artifacts/<name>/`.
 ///
 /// `Drop`-time captures are written into this directory **only on panic**

@@ -186,7 +186,7 @@ impl Scenario {
             .await?;
         self.artifacts.push_snapshot(env.clone());
         let data = env.get("data").cloned().unwrap_or(Value::Null);
-        Ok(Snapshot { envelope: data })
+        Ok(Snapshot::from_envelope(data))
     }
 
     /// `agent-tui die`.
@@ -332,54 +332,9 @@ fn docker_cli() -> String {
     "docker".into()
 }
 
-/// Wrapper around a snapshot response that carries the assertion helpers.
-pub struct Snapshot {
-    envelope: Value,
-}
-
-impl Snapshot {
-    /// Whole snapshot envelope (`data` field of the agent-tui response).
-    #[must_use]
-    pub fn envelope(&self) -> &Value {
-        &self.envelope
-    }
-
-    /// Concatenated text of every outline node's `name`.
-    fn outline_text(&self) -> String {
-        let nodes = self.envelope.get("outline").and_then(|o| o.get("nodes"));
-        let mut out = String::new();
-        if let Some(arr) = nodes.and_then(Value::as_array) {
-            for n in arr {
-                if let Some(name) = n.get("name").and_then(Value::as_str) {
-                    if !out.is_empty() {
-                        out.push('\n');
-                    }
-                    out.push_str(name);
-                }
-            }
-        }
-        out
-    }
-
-    /// Assert that the rendered outline text contains `needle`. Panics
-    /// (with the full outline) when it doesn't, which routes through the
-    /// `Scenario::drop` artifact-capture path.
-    pub fn assert_outline_contains(&self, needle: &str) -> Result<()> {
-        let body = self.outline_text();
-        if body.contains(needle) {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "outline does not contain {needle:?}; full outline:\n---\n{body}\n---"
-            ))
-        }
-    }
-
-    /// `state` field (`shell` / `running` / `alt_screen_tui` / …).
-    pub fn state(&self) -> Option<&str> {
-        self.envelope.get("state").and_then(Value::as_str)
-    }
-}
+// `Snapshot` lives in lib.rs so the bwrap backend can use it without
+// pulling in this module's testcontainers dependency.
+pub use crate::Snapshot;
 
 fn split_image_tag(image: &str) -> (&str, &str) {
     match image.rsplit_once(':') {

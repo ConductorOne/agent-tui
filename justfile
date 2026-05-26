@@ -65,5 +65,17 @@ fixtures:
         docker build -t "agent-tui-fixture-${name}:dev" "$d"
     done
 
+# Export OCI rootfs tarballs from each fixture Dockerfile for the
+# bwrap-backed integration suite. See scripts/dev/build-rootfs.sh.
+# `just rootfs` builds all; `just rootfs vim` builds one.
+rootfs *NAMES:
+    @./scripts/dev/build-rootfs.sh {{NAMES}}
+
+# Run integration tests with the bwrap backend (local dev path —
+# works in restricted envs that can't run nested containers).
+# Requires `just rootfs` to have built the rootfs tarballs first.
+test-bwrap *ARGS:
+    cargo test -p agent-tui-integration --features bwrap {{ARGS}}
+
 # CI-equivalent: fmt + clippy + test.
 ci: fmt-check clippy test
