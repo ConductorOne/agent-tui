@@ -7,6 +7,10 @@
 //!  - `wait_alt_screen_returns_on_toggle`: mode-flag matching
 //!  - `wait_hash_unknown_returns_error`: seq->hash window miss path
 //!  - `wait_timeout_returns_wait_timeout`: deadline path on a noisy pane
+//!
+//! Gated `cfg(unix)`: every test spawns POSIX `/bin/cat` or `/bin/sh`.
+
+#![cfg(unix)]
 
 use std::path::PathBuf;
 use std::time::Duration;

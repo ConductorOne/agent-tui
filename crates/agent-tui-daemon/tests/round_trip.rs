@@ -5,6 +5,12 @@
 //!  - `spawn_list_die_lifecycle`: pane registry insert/list/remove
 //!  - `daemon_wire_smoke`: JSON wire envelope round-trips over the UDS
 //!  - `snapshot_hash_changes_after_output`: sequence + hash mechanics
+//!
+//! Gated `cfg(unix)`: every test spawns POSIX shells (`/bin/sh`, `/bin/cat`,
+//! `/bin/bash`) that don't exist on Windows. A separate Windows-smoke test
+//! uses `cmd.exe` and lives in `windows_smoke.rs`.
+
+#![cfg(unix)]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

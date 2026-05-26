@@ -184,6 +184,14 @@ impl PtyChild {
         m.process_group_leader()
     }
 
+    /// Child PID for Windows `GenerateConsoleCtrlEvent` delivery. portable-pty
+    /// spawns the child with `CREATE_NEW_PROCESS_GROUP` so the PID doubles as
+    /// the process-group id Windows control events expect.
+    pub fn child_pid(&self) -> Option<u32> {
+        let c = self.child.lock().ok()?;
+        c.process_id()
+    }
+
     /// Borrowed reference to the attached recorder, if any. Used by
     /// the dispatch tap to emit `m` (tool-call) events.
     pub fn recorder(&self) -> Option<&Recorder> {

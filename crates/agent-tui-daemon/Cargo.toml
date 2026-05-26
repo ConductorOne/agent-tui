@@ -41,3 +41,8 @@ interprocess = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# GenerateConsoleCtrlEvent for SIGINT/SIGBREAK delivery; daemon uses
+# portable-pty's TerminateProcess via ChildKiller for SIGTERM/SIGKILL.
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }

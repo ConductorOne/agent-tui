@@ -110,8 +110,17 @@ pub async fn run(
     }))
 }
 
+/// Basename for `PaneInfo.comm`. Strips both Unix and Windows path
+/// separators and the Windows `.exe` suffix (case-insensitive) so adapter
+/// detection tables don't need to carry per-OS spellings.
 fn basename(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_string()
+    let stem = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    // Strip a trailing `.exe` (case-insensitive) so e.g. `claude.exe` ->
+    // `claude` and the ClaudeCodeAdapter recognizes it.
+    if stem.len() > 4 && stem[stem.len() - 4..].eq_ignore_ascii_case(".exe") {
+        return stem[..stem.len() - 4].to_string();
+    }
+    stem.to_string()
 }
 
 /// Translate a non-Allow `Decision` into a `POLICY_*` Response. Allow returns
@@ -213,4 +222,31 @@ fn spawn_checkpoint_task(engine: Arc<dyn Engine>, recorder: Recorder) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::basename;
+
+    #[test]
+    fn basename_strips_unix_path() {
+        assert_eq!(basename("/usr/bin/bash"), "bash");
+    }
+
+    #[test]
+    fn basename_strips_windows_path_and_exe() {
+        assert_eq!(basename("C:\\Windows\\System32\\cmd.exe"), "cmd");
+        assert_eq!(basename("CLAUDE.EXE"), "CLAUDE");
+        assert_eq!(basename("claude.Exe"), "claude");
+    }
+
+    #[test]
+    fn basename_passthrough_for_simple_name() {
+        assert_eq!(basename("bash"), "bash");
+    }
+
+    #[test]
+    fn basename_does_not_strip_non_exe_extension() {
+        assert_eq!(basename("script.sh"), "script.sh");
+    }
 }
