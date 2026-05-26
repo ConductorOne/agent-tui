@@ -67,6 +67,28 @@ pub mod fixtures {
         name: "shell",
         env: &[],
     };
+
+    /// lazygit + a deterministically-seeded git repo at
+    /// `/fixtures/repo` (one staged file, one modified file, one
+    /// untracked file, two prior commits). The fixture pre-locks every
+    /// nondeterministic lazygit knob — see
+    /// `fixtures/lazygit/config.yml`. Tests should
+    /// `lazygit --use-config-file=/fixtures/xdg/lazygit/config.yml
+    /// --path /fixtures/repo`.
+    pub const LAZYGIT: BwrapFixture = BwrapFixture {
+        name: "lazygit",
+        env: &[
+            // lazygit honors XDG_CONFIG_HOME for its config dir; the
+            // Dockerfile bakes the config at /fixtures/xdg/lazygit/.
+            ("XDG_CONFIG_HOME", "/fixtures/xdg"),
+            ("HOME", "/fixtures"),
+            ("COLORTERM", "truecolor"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            ("GIT_CONFIG_GLOBAL", "/etc/gitconfig-fixture"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ],
+    };
 }
 
 /// Static descriptor for a bwrap fixture.

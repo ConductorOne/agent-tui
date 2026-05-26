@@ -54,6 +54,9 @@ pub mod fixtures {
     pub const SHELL: &str = "agent-tui-fixture-shell:dev";
     /// vim + a deterministic /fixtures dir + `vimtutor`.
     pub const VIM: &str = "agent-tui-fixture-vim:dev";
+    /// lazygit + a seeded git repo (`/fixtures/repo`). See
+    /// `fixtures/lazygit/Dockerfile` for the seeded state.
+    pub const LAZYGIT: &str = "agent-tui-fixture-lazygit:dev";
 }
 
 impl Scenario {

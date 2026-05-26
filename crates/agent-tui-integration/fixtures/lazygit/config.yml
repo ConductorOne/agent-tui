@@ -1,0 +1,36 @@
+# Hermetic lazygit config for the agent-tui integration fixture.
+#
+# Goals:
+#   - Same render every run, every machine.
+#   - No network at startup (no version check, no auto-fetch).
+#   - No font dependency (icons + nerd fonts off).
+#   - Predictable date formatting in the commits panel.
+
+gui:
+  showIcons: false
+  nerdFontsVersion: ""
+  timeFormat: "2006-01-02"
+  shortTimeFormat: "2006-01-02"
+  showFileTree: false
+  showCommandLog: false
+  showBottomLine: false
+  language: "en"
+
+git:
+  autoFetch: false
+  autoRefresh: false
+  fetchAll: false
+  # `paging` was renamed to `pagers` in lazygit 0.50+; the legacy form
+  # triggers a "migrate this config" warning on every launch. Using the
+  # new schema keeps the run silent.
+  pagers:
+    - colorArg: never
+      pager: cat
+
+update:
+  method: never
+
+disableStartupPopups: true
+notARepository: skip
+promptToReturnFromSubprocess: false
+confirmOnQuit: false
