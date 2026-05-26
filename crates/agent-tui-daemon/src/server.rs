@@ -200,6 +200,19 @@ async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -
         Command::Snapshot { pane, mode, .. } => {
             handlers::snapshot::run(&state.registry, &state.generations, pane, mode).await
         }
+        Command::Press { pane, keys } => handlers::input::press(&state.registry, pane, keys).await,
+        Command::Type { pane, text } => {
+            handlers::input::type_text(&state.registry, pane, text).await
+        }
+        Command::SendAnsi { pane, bytes_hex } => {
+            handlers::raw::send_ansi(&state.registry, pane, bytes_hex).await
+        }
+        Command::Resize { pane, cols, rows } => {
+            handlers::raw::resize(&state.registry, pane, cols, rows).await
+        }
+        Command::Signal { pane, signal } => {
+            handlers::signal::run(&state.registry, pane, signal).await
+        }
         Command::DaemonStatus => Response::ok(serde_json::json!({
             "status": "running",
             "protocol": PROTOCOL_VERSION,

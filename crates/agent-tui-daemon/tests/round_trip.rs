@@ -143,6 +143,179 @@ async fn daemon_wire_smoke() {
 }
 
 #[tokio::test]
+async fn press_round_trip_through_pty() {
+    let (cfg, _h) = boot_daemon().await;
+    // `cat` echoes its input back to stdout, so a press shows up in the next
+    // snapshot.
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((40, 4)),
+        },
+    )
+    .await;
+    // Let cat finish wiring up the tty before we type at it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let press = round_trip(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "hello<cr>".into(),
+        },
+    )
+    .await;
+    assert!(press.response.success, "press failed: {press:?}");
+
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    let outline = snap.response.data.unwrap()["outline"]["nodes"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        outline.contains("hello"),
+        "cat should have echoed 'hello'; got: {outline:?}"
+    );
+
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn quiesce_barrier_advances_sequence() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((20, 3)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let press = round_trip(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "x".into(),
+        },
+    )
+    .await;
+    let data = press.response.data.expect("press data");
+    let pre = data["pre_sequence"].as_u64().expect("pre_seq");
+    let post = data["post_sequence"].as_u64().expect("post_seq");
+    assert!(
+        post > pre,
+        "barrier must observe a sequence bump: pre={pre} post={post}"
+    );
+    assert_eq!(data["barrier_observed"], true);
+
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn signal_term_kills_child() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    let sig = round_trip(
+        &cfg,
+        Command::Signal {
+            pane: None,
+            signal: "SIGTERM".into(),
+        },
+    )
+    .await;
+    assert!(sig.response.success, "SIGTERM failed: {sig:?}");
+    // We don't assert on `list` going empty — die is the path that removes
+    // the registry entry. Signal only delivers the signal.
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn signal_bogus_name_rejected() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    let sig = round_trip(
+        &cfg,
+        Command::Signal {
+            pane: None,
+            signal: "SIGBOGUS".into(),
+        },
+    )
+    .await;
+    assert!(!sig.response.success);
+    let err = sig.response.error.expect("error body");
+    assert_eq!(err.code.to_string(), "INVALID_ARGS");
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn resize_updates_engine_geometry() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
+            cwd: None,
+            size: Some((40, 4)),
+        },
+    )
+    .await;
+
+    let r = round_trip(
+        &cfg,
+        Command::Resize {
+            pane: None,
+            cols: 132,
+            rows: 40,
+        },
+    )
+    .await;
+    assert!(r.response.success, "resize failed: {r:?}");
+
+    // Engine geometry change should be observable via the cells mode path,
+    // but for P0b we only have outline mode. Round-trip a list and confirm
+    // the pane's recorded dims are still the spawn-time ones (we don't
+    // propagate to PaneSummary in v0.1.0 — recorded as a learning).
+    let list = round_trip(&cfg, Command::List { all: false }).await;
+    let panes = list.response.data.unwrap();
+    assert_eq!(
+        panes["panes"][0]["cols"], 40,
+        "summary still shows spawn-time cols"
+    );
+
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
 async fn snapshot_hash_changes_after_output() {
     let (cfg, _h) = boot_daemon().await;
 

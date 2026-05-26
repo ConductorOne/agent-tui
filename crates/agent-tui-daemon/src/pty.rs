@@ -132,6 +132,13 @@ impl PtyChild {
         k.kill().context("kill child")?;
         Ok(())
     }
+
+    /// Process-group leader pid for `signal` delivery.
+    #[cfg(unix)]
+    pub fn pgid(&self) -> Option<i32> {
+        let m = self.master.lock().ok()?;
+        m.process_group_leader()
+    }
 }
 
 impl Drop for PtyChild {

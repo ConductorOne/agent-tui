@@ -5,6 +5,9 @@
 //! dispatches `Command` variants to these.
 
 pub mod die;
+pub mod input;
 pub mod list;
+pub mod raw;
+pub mod signal;
 pub mod snapshot;
 pub mod spawn;

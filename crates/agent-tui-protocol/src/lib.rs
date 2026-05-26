@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod action;
 pub mod error;
+pub mod keymap;
 pub mod request;
 pub mod response;
 pub mod snapshot;
