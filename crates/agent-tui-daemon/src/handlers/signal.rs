@@ -48,13 +48,11 @@ fn deliver(pane: &Pane, signal: &str) -> Result<(), DeliverErr> {
     use nix::sys::signal::killpg;
     use nix::unistd::Pid;
     let sig = parse_unix_signal(signal).map_err(DeliverErr::InvalidArgs)?;
-    let pgid = pane
-        .pty
-        .pgid()
-        .ok_or_else(|| {
-            DeliverErr::Internal("pane has no process group (child may have exited)".into())
-        })?;
-    killpg(Pid::from_raw(pgid), sig).map_err(|e| DeliverErr::Internal(format!("killpg failed: {e}")))
+    let pgid = pane.pty.pgid().ok_or_else(|| {
+        DeliverErr::Internal("pane has no process group (child may have exited)".into())
+    })?;
+    killpg(Pid::from_raw(pgid), sig)
+        .map_err(|e| DeliverErr::Internal(format!("killpg failed: {e}")))
 }
 
 #[cfg(unix)]
@@ -142,6 +140,7 @@ fn deliver_ctrl_event(pane: &Pane, kind: WinSig) -> Result<(), DeliverErr> {
     };
     // SAFETY: GenerateConsoleCtrlEvent is a Win32 syscall; passing a known
     // event id + a u32 process-group id is the documented contract.
+    #[allow(unsafe_code)]
     let ok = unsafe { GenerateConsoleCtrlEvent(event, pid) };
     if ok == 0 {
         return Err(DeliverErr::Internal(format!(

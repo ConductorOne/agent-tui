@@ -9,7 +9,10 @@
 //! the adapter registry consulted at spawn time. See `docs/RFC.md` §2, §4,
 //! §5, §13.1.
 
-#![forbid(unsafe_code)]
+// Crate-level `deny` rather than `forbid` so the Windows signal handler
+// can opt into a single `unsafe` call (`GenerateConsoleCtrlEvent`, see
+// handlers/signal.rs). Every other module stays unsafe-free.
+#![deny(unsafe_code)]
 
 pub mod adapter_registry;
 pub mod classifier;
