@@ -44,6 +44,13 @@ pub struct Scenario {
     name: String,
 }
 
+/// In-tree fixture image tags. Built locally via `just fixtures` or by
+/// CI's fixture-build step before integration tests run.
+pub mod fixtures {
+    /// bash + `FinalTerm` OSC 133 integration baked in.
+    pub const SHELL: &str = "agent-tui-fixture-shell:dev";
+}
+
 impl Scenario {
     /// Construct and start a new scenario backed by `image` (e.g.
     /// `alpine:3.20`, `ghcr.io/ductone/agent-tui-fixtures/vim:latest`).

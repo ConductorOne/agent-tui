@@ -64,6 +64,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build agent-tui binary
         run: cargo build --bin agent-tui
+      - name: Build fixture images
+        run: |
+          set -euxo pipefail
+          for d in crates/agent-tui-integration/fixtures/*/; do
+            name=$(basename "$d")
+            docker build -t "agent-tui-fixture-${name}:dev" "$d"
+          done
       - name: Run integration suite
         run: cargo test -p agent-tui-integration --features docker -- --nocapture
       - name: Upload debug artifacts on failure

@@ -52,5 +52,18 @@ run *ARGS:
 todos:
     @rg "TODO|FIXME|XXX|unimplemented!|todo!\(" --type rust || echo "no todos found"
 
+# Build every in-tree fixture container image as `agent-tui-fixture-<name>:dev`.
+# Used by the integration suite (`cargo test -p agent-tui-integration --features docker`).
+# Requires DOCKER_HOST to point at a working Docker-API socket (Docker or
+# rootful Podman — see scripts/dev/podman-socket.sh).
+fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in crates/agent-tui-integration/fixtures/*/; do
+        name=$(basename "$d")
+        echo "==> building agent-tui-fixture-${name}:dev"
+        docker build -t "agent-tui-fixture-${name}:dev" "$d"
+    done
+
 # CI-equivalent: fmt + clippy + test.
 ci: fmt-check clippy test
