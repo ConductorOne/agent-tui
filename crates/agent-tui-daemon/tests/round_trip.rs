@@ -317,6 +317,56 @@ async fn resize_updates_engine_geometry() {
 }
 
 #[tokio::test]
+async fn spawn_attaches_shell_adapter_for_bash() {
+    let (cfg, _h) = boot_daemon().await;
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/bash".into(), "-c".into(), "sleep 2".into()],
+            cwd: None,
+            size: None,
+        },
+    )
+    .await;
+    assert!(env.response.success);
+    let data = env.response.data.unwrap();
+    assert_eq!(data["adapter"], "shell");
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn snapshot_uses_attached_adapter_outline() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/bash".into(),
+                "-c".into(),
+                "echo hello-world; sleep 2".into(),
+            ],
+            cwd: None,
+            size: Some((40, 4)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    let data = snap.response.data.unwrap();
+    assert_eq!(data["outline"]["adapter"], "shell");
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
 async fn snapshot_cells_mode_returns_rle_grid() {
     let (cfg, _h) = boot_daemon().await;
     let _spawn = round_trip(

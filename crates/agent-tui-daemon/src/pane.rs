@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent_tui_adapter::Adapter;
 use agent_tui_engine::Engine;
 use agent_tui_protocol::PaneId;
 use chrono::{DateTime, Utc};
@@ -31,6 +32,9 @@ pub struct Pane {
     pub engine: Arc<dyn Engine>,
     /// PTY master + child handle.
     pub pty: PtyChild,
+    /// Attached per-program adapter (`generic` as fallback). Selected by the
+    /// registry's Detect lifecycle at spawn time.
+    pub adapter: Arc<dyn Adapter>,
 }
 
 /// Per-session pane registry. Allocates monotonic `p<N>` ids that are never

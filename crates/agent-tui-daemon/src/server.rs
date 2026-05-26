@@ -15,6 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
+use super::adapter_registry::AdapterRegistry;
 use super::handlers;
 use super::hash_window::HashWindow;
 use super::pane::Registry;
@@ -46,6 +47,8 @@ pub struct DaemonState {
     pub generations: Arc<handlers::snapshot::GenerationTracker>,
     /// Per-pane (sequence -> hash) ring backing `wait --hash`.
     pub hashes: Arc<HashWindow>,
+    /// Available adapter implementations (built-in + plug-ins).
+    pub adapters: AdapterRegistry,
 }
 
 /// Handle returned by [`run_daemon`]. Currently only carries a shutdown
@@ -87,6 +90,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
         registry: Arc::new(Registry::new()),
         generations: Arc::new(handlers::snapshot::GenerationTracker::default()),
         hashes: Arc::new(HashWindow::new()),
+        adapters: AdapterRegistry::with_builtins(),
     };
     let shutdown_inner = shutdown.clone();
     tokio::spawn(async move {
@@ -196,7 +200,15 @@ async fn handle_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -
     use agent_tui_protocol::Command;
     match cmd {
         Command::Spawn { argv, cwd, size } => {
-            handlers::spawn::run(&state.cfg.session, &state.registry, argv, cwd, size).await
+            handlers::spawn::run(
+                &state.cfg.session,
+                &state.registry,
+                &state.adapters,
+                argv,
+                cwd,
+                size,
+            )
+            .await
         }
         Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
         Command::List { all } => handlers::list::run(&state.registry, all).await,

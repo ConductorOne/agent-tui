@@ -30,6 +30,8 @@ pub struct PtyChild {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// Reader task handle; kept so callers can abort/await on drop.
     reader: Mutex<Option<JoinHandle<()>>>,
+    /// Optional recorder so input events can be teed back into the cast log.
+    recorder: Option<Recorder>,
 }
 
 impl PtyChild {
@@ -76,7 +78,7 @@ impl PtyChild {
         let reader = pair.master.try_clone_reader().context("clone_reader")?;
 
         let reader_engine = engine;
-        let reader_recorder = recorder;
+        let reader_recorder = recorder.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(reader, &reader_engine, reader_recorder.as_ref());
         });
@@ -87,10 +89,12 @@ impl PtyChild {
             child: Mutex::new(child),
             killer: Mutex::new(killer),
             reader: Mutex::new(Some(reader_handle)),
+            recorder,
         })
     }
 
     /// Write bytes to the PTY master end (delivered to the child as input).
+    /// Also tees an `i` event to the attached recorder, if any.
     pub fn write_input(&self, bytes: &[u8]) -> Result<()> {
         let mut w = self
             .writer
@@ -98,10 +102,15 @@ impl PtyChild {
             .map_err(|e| anyhow!("writer poisoned: {e}"))?;
         w.write_all(bytes).context("write to pty")?;
         w.flush().context("flush pty")?;
+        drop(w);
+        if let Some(rec) = &self.recorder {
+            rec.push_input(Some(bytes));
+        }
         Ok(())
     }
 
     /// Inform the kernel of a new window size; the child receives SIGWINCH.
+    /// Tees an `r` event to the attached recorder, if any.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let m = self
             .master
@@ -114,6 +123,10 @@ impl PtyChild {
             pixel_height: 0,
         })
         .context("pty resize")?;
+        drop(m);
+        if let Some(rec) = &self.recorder {
+            rec.push_resize(cols, rows);
+        }
         Ok(())
     }
 

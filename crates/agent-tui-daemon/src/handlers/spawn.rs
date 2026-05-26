@@ -3,15 +3,18 @@
 //! Allocates a fresh `PaneId`, instantiates an engine, spawns a PTY child,
 //! and registers the pane.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_tui_adapter::PaneInfo;
 use agent_tui_engine::Engine;
 use agent_tui_engine_alacritty::AlacrittyEngine;
 use agent_tui_protocol::{ErrorBody, ErrorCode, Response, SessionId};
 use agent_tui_recorder::{Recorder, RecorderConfig};
 use chrono::Utc;
 
+use crate::adapter_registry::AdapterRegistry;
 use crate::pane::{Pane, Registry};
 use crate::pty::PtyChild;
 
@@ -22,6 +25,7 @@ const DEFAULT_ROWS: u16 = 24;
 pub async fn run(
     session: &SessionId,
     registry: &Arc<Registry>,
+    adapters: &AdapterRegistry,
     argv: Vec<String>,
     cwd: Option<String>,
     size: Option<(u16, u16)>,
@@ -58,6 +62,19 @@ pub async fn run(
             ));
         }
     };
+
+    let pane_info = PaneInfo {
+        argv: argv.clone(),
+        comm: basename(&argv[0]),
+        first_bytes: Vec::new(),
+        env: BTreeMap::new(),
+    };
+    let adapter = adapters
+        .detect_best(&pane_info)
+        .await
+        .unwrap_or_else(|| Arc::new(agent_tui_adapter::GenericAdapter));
+    let adapter_name = adapter.name().to_string();
+
     let pane = Pane {
         id: id.clone(),
         argv: argv.clone(),
@@ -66,6 +83,7 @@ pub async fn run(
         rows,
         engine,
         pty,
+        adapter,
     };
     registry.insert(pane).await;
 
@@ -74,7 +92,12 @@ pub async fn run(
         "argv": argv,
         "cols": cols,
         "rows": rows,
+        "adapter": adapter_name,
     }))
+}
+
+fn basename(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
 /// Open a recorder under `$XDG_STATE_HOME/agent-tui/<session>/`. Returns

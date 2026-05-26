@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adapter_registry;
 pub mod classifier;
 pub mod handlers;
 pub mod hash_window;

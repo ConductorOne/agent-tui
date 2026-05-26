@@ -13,6 +13,7 @@ workspace = true
 
 [dev-dependencies]
 base64 = "0.22"
+async-trait = "0.1"
 
 [dependencies]
 agent-tui-protocol = { workspace = true }

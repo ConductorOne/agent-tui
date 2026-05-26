@@ -54,6 +54,7 @@ dependencies = [
  "agent-tui-protocol",
  "agent-tui-recorder",
  "anyhow",
+ "async-trait",
  "base64",
  "chrono",
  "dirs",

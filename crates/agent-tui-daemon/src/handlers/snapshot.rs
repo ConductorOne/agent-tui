@@ -67,7 +67,7 @@ pub async fn run(
         .observe(&pane_arc.id, engine_snap.sequence)
         .await;
 
-    let snapshot = build_snapshot(&pane_arc, &engine_snap, generation, mode);
+    let snapshot = build_snapshot(&pane_arc, &engine_snap, generation, mode).await;
     // Record (seq, hash) so `wait --hash` can resolve subsequent calls.
     hashes
         .record(&pane_arc.id, snapshot.sequence, snapshot.hash.clone())
@@ -82,7 +82,7 @@ pub async fn run(
     }
 }
 
-fn build_snapshot(
+async fn build_snapshot(
     pane: &Pane,
     engine_snap: &EngineSnapshot,
     generation: u64,
@@ -91,13 +91,19 @@ fn build_snapshot(
     let hash = engine_snap.canonical_hash();
     let state = classifier::classify(engine_snap);
 
+    // Outline comes from the attached adapter; if it fails or returns an empty
+    // node list, fall back to the generic heuristic so we never return nothing
+    // to agents.
+    let adapter_outline = match pane.adapter.outline(engine_snap).await {
+        Ok(o) if !o.nodes.is_empty() => Some(o),
+        Ok(_) | Err(_) => None,
+    };
+    let outline_for_mode = adapter_outline.unwrap_or_else(|| generic_outline(engine_snap));
+
     let (outline, cells) = match mode {
-        SnapshotMode::Outline | SnapshotMode::Adapter => (Some(generic_outline(engine_snap)), None),
+        SnapshotMode::Outline | SnapshotMode::Adapter => (Some(outline_for_mode), None),
         SnapshotMode::Cells => (None, Some(rle_grid(engine_snap))),
-        SnapshotMode::Hybrid => (
-            Some(generic_outline(engine_snap)),
-            Some(rle_grid(engine_snap)),
-        ),
+        SnapshotMode::Hybrid => (Some(outline_for_mode), Some(rle_grid(engine_snap))),
     };
 
     let mut refs = std::collections::BTreeMap::new();

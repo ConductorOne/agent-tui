@@ -4,7 +4,9 @@ Working knowledge that doesn't belong in source comments: decisions, follow-ups,
 
 ## Current phase
 
-**P1 — Observation & Wait** (in progress). P0a + P0b shipped: real engine, PTY, registry, spawn/die/list/snapshot/press/type/send_ansi/resize/signal/doctor wired end-to-end.
+**P2 — Adapters** (partial; built-in adapters done, plug-in IPC deferred).
+P0a + P0b + P0 close + P1 shipped previously; P2 added the AdapterRegistry,
+sectioned generic outline, and built-in claude-code + shell adapters.
 
 ## Substrate decision
 
@@ -22,9 +24,13 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 | Snapshot generation | `GenerationTracker` keyed by `PaneId` lives in `handlers/snapshot.rs` | Moves onto `Pane` itself when the per-pane queue lands |
 | Signal delivery | `nix::sys::signal::killpg` to the process group via `MasterPty::process_group_leader` | Reaches forwarded shell children, not just immediate child |
 
-## Deferred work (paying down in P1)
+## Deferred work
 
 - **task 0.4** — Per-pane `mpsc::Sender<Command>` queue. **Re-deferred to P3** after design review: snapshots are already lock-free, the engine broadcast is independent of the writer Mutex, and the wait subsystem doesn't need a queue to subscribe. The only thing a real queue adds is `PANE_BUSY` semantics under `--no-wait`, and no real agent flow triggers that today. Revisit when governance / policy gates need to reject in-flight writes.
+- **PluginAdapter (sub-process JSON-RPC over stdio)** — Deferred. v1 ships only built-in adapters (`generic`, `claude-code`, `shell`). External adapters land when there's a concrete consumer (nvim or tmux author with a Python/Rust impl).
+- **nvim / tmux built-in adapters** — Deferred. Both need live RPC (msgpack to a running nvim socket, control-mode tmux subprocess). Tests would need either a real nvim/tmux in CI or extensive mocking — neither is cheap. Defer until P3 when adapter eval lands with policy.
+- **1000-event `s` checkpoint emission** — Recorder has `push_checkpoint`; nothing calls it yet. Wire when scroll-history replay needs anchor points.
+- **First-bytes Detect re-attach** — Spawn handler currently passes `first_bytes: Vec::new()` to `detect()`. The adapter contract wants the first 512 bytes for richer detection. Wire when a built-in adapter starts using it.
 - **Snapshot `--mode cells/hybrid/adapter`** — Only `--mode outline` wired in P0a. Cycle 15.
 - **State classifier** — Returns `Unknown` unless alt-screen is on. Cycle 16. The 9-state heuristic stack ships with the recorder.
 - **Asciicast recorder** — Event types exist (`agent-tui-recorder`); no writer yet. Cycle 17–18.
@@ -43,6 +49,8 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 
 | Commit | Phase | Notes |
 |---|---|---|
+| (next) | P2 partial | AdapterRegistry, sectioned generic outline, claude-code + shell built-ins |
+| e212d9c | P1 | wait subsystem, cells/hybrid snapshots, classifier, recorder + rotation/retention |
 | d7057f7 | P0 close | doctor wired to DaemonStatus |
 | 3b2239f | P0b | keymap, press/type quiesce barrier, send_ansi, resize, signal |
 | 2140ae9 | P0a | real engine + PTY + registry + spawn/die/list/snapshot |
