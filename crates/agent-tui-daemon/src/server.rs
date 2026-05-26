@@ -10,8 +10,10 @@ use std::time::Instant;
 use agent_tui_protocol::{
     ErrorBody, ErrorCode, PROTOCOL_VERSION, Request, Response, ResponseEnvelope, SessionId,
 };
+use interprocess::local_socket::ListenerOptions;
+use interprocess::local_socket::tokio::{Listener, Stream};
+use interprocess::local_socket::traits::tokio::Listener as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
@@ -80,11 +82,14 @@ pub struct DaemonHandle {
 pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     cfg.layout.ensure_root()?;
     // Best-effort: drop any stale socket from a prior daemon at this path.
+    // (No-op on Windows where `socket` is just a discovery hint, not the
+    // actual named-pipe address.)
     let _ = std::fs::remove_file(&cfg.layout.socket);
 
     sidecar::write_startup_sidecars(&cfg.layout, &cfg.binary_version, &cfg.engine)?;
 
-    let listener = UnixListener::bind(&cfg.layout.socket)?;
+    let name = super::paths::socket_name(&cfg.layout)?;
+    let listener: Listener = ListenerOptions::new().name(name).create_tokio()?;
     info!(
         socket = %cfg.layout.socket.display(),
         session = %cfg.session,
@@ -117,7 +122,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
                     break;
                 }
                 accept = listener.accept() => match accept {
-                    Ok((sock, _addr)) => {
+                    Ok(sock) => {
                         let state = state.clone();
                         tokio::spawn(handle_conn(sock, state));
                     }
@@ -133,8 +138,8 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     Ok(handle)
 }
 
-async fn handle_conn(sock: UnixStream, state: DaemonState) {
-    let (reader, mut writer) = sock.into_split();
+async fn handle_conn(sock: Stream, state: DaemonState) {
+    let (reader, mut writer) = tokio::io::split(sock);
     let mut lines = BufReader::new(reader).lines();
     loop {
         match lines.next_line().await {

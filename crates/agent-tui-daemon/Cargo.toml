@@ -37,6 +37,7 @@ dirs = "5.0"
 async-trait = "0.1"
 hex = { workspace = true }
 rand = { workspace = true }
+interprocess = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

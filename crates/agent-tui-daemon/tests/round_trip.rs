@@ -13,8 +13,9 @@ use agent_tui_daemon::{DaemonConfig, SocketLayout, run_daemon};
 use agent_tui_protocol::request::SnapshotMode;
 use agent_tui_protocol::{Command, PROTOCOL_VERSION, Request, ResponseEnvelope, SessionId};
 use base64::Engine as _;
+use interprocess::local_socket::tokio::Stream;
+use interprocess::local_socket::traits::tokio::Stream as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -56,9 +57,8 @@ fn short_temp_root(prefix: &str) -> PathBuf {
 }
 
 async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
-    let mut stream = UnixStream::connect(&cfg.layout.socket)
-        .await
-        .expect("connect");
+    let name = agent_tui_daemon::paths::socket_name(&cfg.layout).expect("name");
+    let stream = Stream::connect(name).await.expect("connect");
     let req = Request {
         id: Uuid::new_v4(),
         protocol: PROTOCOL_VERSION,
@@ -66,8 +66,8 @@ async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
     };
     let mut bytes = serde_json::to_vec(&req).expect("encode");
     bytes.push(b'\n');
-    stream.write_all(&bytes).await.expect("write");
-    let (r, _w) = stream.split();
+    let (r, mut w) = tokio::io::split(stream);
+    w.write_all(&bytes).await.expect("write");
     let mut lines = BufReader::new(r).lines();
     let line = timeout(Duration::from_secs(5), lines.next_line())
         .await

@@ -38,7 +38,7 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 - **PluginAdapter (sub-process JSON-RPC over stdio)** — Moved to P4 alongside `mcp serve`. Both speak stdio JSON-RPC; build the framework once.
 - **nvim / tmux built-in adapters** — Will land as external plug-ins via PluginAdapter once #2 ships. Avoids dragging `nvim --headless` / `tmux -CC` into CI.
 - **wezterm engine real impl** — Blocked on `wezterm-term` being published to crates.io. Track only.
-- **Windows support** — Daemon is Unix-only; RFC §13.1 calls for TCP fallback. Windows dropped from CI matrix until the socket layer abstracts over both UDS and TCP. Targets the same milestone as `cargo-dist` cross-compile to `x86_64-pc-windows-msvc` in P4.
+- **Windows runtime — cycle W2 (signal mapping + `.exe` strip in adapter comm + re-enable `windows-latest` in CI).** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; Windows-specific signal handling (`GenerateConsoleCtrlEvent` / `TerminateProcess` instead of `killpg`) is the next ~80 LOC cycle. See `docs/windows-strategy.md` for the full plan.
 
 ### Recently paid down (this PR)
 

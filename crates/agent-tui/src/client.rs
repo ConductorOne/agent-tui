@@ -13,8 +13,9 @@ use std::time::Duration;
 use agent_tui_daemon::SocketLayout;
 use agent_tui_protocol::{Command, PROTOCOL_VERSION, Request, ResponseEnvelope, SessionId};
 use anyhow::{Context, Result, bail};
+use interprocess::local_socket::tokio::Stream;
+use interprocess::local_socket::traits::tokio::Stream as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::time::timeout;
 use tracing::debug;
 use uuid::Uuid;
@@ -22,22 +23,24 @@ use uuid::Uuid;
 /// Connect, send one request, read one response. Spawns the daemon if no
 /// socket is listening.
 pub async fn one_shot(layout: &SocketLayout, command: Command) -> Result<ResponseEnvelope> {
-    let stream = match connect(&layout.socket).await {
+    let stream = match connect(layout).await {
         Ok(s) => s,
         Err(e) if is_unreachable(&e) => {
             debug!(socket = %layout.socket.display(), "daemon unreachable, spawning");
             spawn_daemon(layout)?;
-            wait_for_socket(&layout.socket, Duration::from_secs(3)).await?
+            wait_for_socket(layout, Duration::from_secs(3)).await?
         }
         Err(e) => return Err(e),
     };
     send_and_recv(stream, command).await
 }
 
-async fn connect(socket: &Path) -> Result<UnixStream> {
-    UnixStream::connect(socket)
+async fn connect(layout: &SocketLayout) -> Result<Stream> {
+    let name = agent_tui_daemon::paths::socket_name(layout)
+        .with_context(|| format!("build socket name for {}", layout.socket.display()))?;
+    Stream::connect(name)
         .await
-        .with_context(|| format!("connect to daemon socket {}", socket.display()))
+        .with_context(|| format!("connect to daemon socket {}", layout.socket.display()))
 }
 
 fn is_unreachable(err: &anyhow::Error) -> bool {
@@ -80,24 +83,25 @@ fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for_socket(socket: &Path, max_wait: Duration) -> Result<UnixStream> {
+async fn wait_for_socket(layout: &SocketLayout, max_wait: Duration) -> Result<Stream> {
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
-        match UnixStream::connect(socket).await {
+        let name = agent_tui_daemon::paths::socket_name(layout)?;
+        match Stream::connect(name).await {
             Ok(s) => return Ok(s),
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
             Err(e) => bail!(
                 "daemon did not bind {} within {}ms: {e}",
-                socket.display(),
+                layout.socket.display(),
                 max_wait.as_millis()
             ),
         }
     }
 }
 
-async fn send_and_recv(mut stream: UnixStream, command: Command) -> Result<ResponseEnvelope> {
+async fn send_and_recv(stream: Stream, command: Command) -> Result<ResponseEnvelope> {
     let req = Request {
         id: Uuid::new_v4(),
         protocol: PROTOCOL_VERSION,
@@ -105,9 +109,9 @@ async fn send_and_recv(mut stream: UnixStream, command: Command) -> Result<Respo
     };
     let mut bytes = serde_json::to_vec(&req)?;
     bytes.push(b'\n');
-    stream.write_all(&bytes).await?;
 
-    let (reader, _writer) = stream.split();
+    let (reader, mut writer) = tokio::io::split(stream);
+    writer.write_all(&bytes).await?;
     let mut lines = BufReader::new(reader).lines();
     let line = timeout(Duration::from_secs(25), lines.next_line())
         .await
