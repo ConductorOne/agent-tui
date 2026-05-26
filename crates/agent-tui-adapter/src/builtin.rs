@@ -453,15 +453,14 @@ fn parse_vim_state(rows: &[String]) -> VimState {
     // Find the statusline: the highest-indexed row that LOOKS LIKE a
     // statusline (contains a "[N/M]" line/total pattern, or the trailing
     // `[+]` modified marker). Skip the command-line row.
-    let statusline_candidate = if last >= 1
-        && (state.commandline_row.is_some() || is_statusline_shape(&rows[last - 1]))
-    {
-        Some(last - 1)
-    } else if last_line.contains('[') && last_line.contains(']') {
-        Some(last)
-    } else {
-        None
-    };
+    let statusline_candidate =
+        if last >= 1 && (state.commandline_row.is_some() || is_statusline_shape(&rows[last - 1])) {
+            Some(last - 1)
+        } else if last_line.contains('[') && last_line.contains(']') {
+            Some(last)
+        } else {
+            None
+        };
 
     if let Some(row) = statusline_candidate
         && is_statusline_shape(&rows[row])

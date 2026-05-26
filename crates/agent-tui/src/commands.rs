@@ -21,9 +21,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         },
         CliCmd::Doctor(args) => doctor(&cli.globals, &args).await,
         CliCmd::Skills(args) => skills(&args),
-        CliCmd::Mcp(_) => Err(anyhow!(
-            "mcp serve not yet implemented (P4); track docs/RFC.md §13.4"
-        )),
+        CliCmd::Mcp(_) => crate::mcp::serve(cli.globals).await,
         // Everything else is a one-shot client RPC. The daemon currently
         // returns a friendly INTERNAL error for unwired ops; the CLI surfaces
         // that as a non-zero exit so callers can branch.

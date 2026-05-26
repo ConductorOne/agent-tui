@@ -53,6 +53,7 @@ tokio = { version = "1.43", features = [
     "fs",
     "sync",
     "io-util",
+    "io-std",
     "process",
     "signal",
     "time",

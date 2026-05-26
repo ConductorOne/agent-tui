@@ -13,6 +13,7 @@
 mod cli;
 mod client;
 mod commands;
+mod mcp;
 
 use anyhow::Result;
 use clap::Parser;
