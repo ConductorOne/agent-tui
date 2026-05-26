@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 
-use agent_tui_adapter::{Adapter, ClaudeCodeAdapter, GenericAdapter, PaneInfo, ShellAdapter};
+use agent_tui_adapter::{
+    Adapter, ClaudeCodeAdapter, GenericAdapter, PaneInfo, ShellAdapter, VimAdapter,
+};
 
 const MIN_CONFIDENCE: f32 = 0.05;
 
@@ -25,7 +27,7 @@ pub struct AdapterRegistry {
 
 impl AdapterRegistry {
     /// Build a registry pre-populated with the v1 built-ins:
-    /// `generic` (fallback), `claude-code`, `shell`.
+    /// `generic` (fallback), `claude-code`, `shell`, `vim`.
     #[must_use]
     pub fn with_builtins() -> Self {
         Self {
@@ -33,6 +35,7 @@ impl AdapterRegistry {
                 Arc::new(GenericAdapter),
                 Arc::new(ClaudeCodeAdapter),
                 Arc::new(ShellAdapter),
+                Arc::new(VimAdapter),
             ],
         }
     }

@@ -225,6 +225,365 @@ impl Adapter for ShellAdapter {
     }
 }
 
+/// Vim/Neovim adapter. Detects vim-family editors by argv and exposes a
+/// structured outline: mode (normal/insert/visual/command/search/replace),
+/// filename, modified flag, and the buffer body separately from the
+/// statusline + command-line rows.
+///
+/// Why this exists: with the generic adapter, an agent driving vim sees
+/// a flat block of cells and has to guess from the bytes what mode it's
+/// in. With this adapter, `snapshot.outline.nodes` carries `mode=insert`
+/// as a top-level field — the agent can read it directly instead of
+/// pattern-matching against escape sequences.
+///
+/// Detection is comm/argv-based today; first-bytes detection (look for
+/// alacritty's alt-screen toggle + the `--INSERT--` substring) lands
+/// later when the spawn handler starts buffering early output.
+pub struct VimAdapter;
+
+const VIM_BINS: &[&str] = &["vim", "nvim", "neovim", "view", "ex", "vimtutor", "vimdiff"];
+
+#[async_trait::async_trait]
+impl Adapter for VimAdapter {
+    fn name(&self) -> &'static str {
+        "vim"
+    }
+
+    async fn detect(&self, info: &PaneInfo) -> f32 {
+        if VIM_BINS.contains(&info.comm.as_str()) {
+            return 0.9;
+        }
+        // argv basename match — e.g. `["bash", "-c", "/usr/bin/vimtutor"]`.
+        if info
+            .argv
+            .iter()
+            .any(|a| VIM_BINS.iter().any(|n| basename_matches(a, n)))
+        {
+            return 0.7;
+        }
+        // `bash -c "cp foo bar && vim qux"` wrapper case — substring match
+        // against each argv entry. Lower confidence because a passing
+        // mention of "vim" in a long command isn't conclusive evidence
+        // that vim is the foreground program.
+        if info
+            .argv
+            .iter()
+            .any(|a| VIM_BINS.iter().any(|n| word_boundary_contains(a, n)))
+        {
+            return 0.55;
+        }
+        0.0
+    }
+
+    async fn initialize(&self) -> Result<Capabilities, AdapterError> {
+        Ok(default_caps())
+    }
+
+    async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
+        let rows = grid_rows(snap);
+        let parsed = parse_vim_state(&rows);
+
+        // Anchor of the buffer body: from row 0 to whichever row is the
+        // first chrome row (statusline or command-line, whichever is
+        // higher up).
+        let body_end = parsed
+            .statusline_row
+            .or(parsed.commandline_row)
+            .unwrap_or(rows.len());
+        let body = rows
+            .iter()
+            .take(body_end)
+            .filter(|r| !r.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut nodes = Vec::new();
+        let mut next_idx = 1u32;
+
+        nodes.push(OutlineNode {
+            r#ref: format!("@e{next_idx}"),
+            role: "mode".into(),
+            name: parsed.mode.to_string(),
+            value: parsed.command_line.clone(),
+            focused: false,
+            anchor: parsed.commandline_row.map(|r| (r as u16, 0)),
+            children: Vec::new(),
+        });
+        next_idx += 1;
+
+        if let Some(file) = parsed.filename {
+            nodes.push(OutlineNode {
+                r#ref: format!("@e{next_idx}"),
+                role: "file".into(),
+                name: file,
+                value: parsed.modified.then(|| "modified".to_string()),
+                focused: false,
+                anchor: parsed.statusline_row.map(|r| (r as u16, 0)),
+                children: Vec::new(),
+            });
+            next_idx += 1;
+        }
+
+        if let Some(row) = parsed.statusline_row {
+            nodes.push(OutlineNode {
+                r#ref: format!("@e{next_idx}"),
+                role: "status".into(),
+                name: rows[row].clone(),
+                value: None,
+                focused: false,
+                anchor: Some((row as u16, 0)),
+                children: Vec::new(),
+            });
+            next_idx += 1;
+        }
+
+        if !body.is_empty() {
+            nodes.push(OutlineNode {
+                r#ref: format!("@e{next_idx}"),
+                role: "buffer".into(),
+                name: body,
+                value: None,
+                focused: true,
+                anchor: Some((0, 0)),
+                children: Vec::new(),
+            });
+        }
+
+        Ok(Outline {
+            adapter: "vim".into(),
+            nodes,
+        })
+    }
+
+    async fn eval(&self, _expr: &str) -> Result<serde_json::Value, AdapterError> {
+        // Real eval would speak msgpack-RPC to `nvim --listen` or vim's
+        // `+server2client`. Lands when the JSON-RPC plugin path is wired.
+        Err(AdapterError::Refused(
+            "vim adapter eval not yet implemented".into(),
+        ))
+    }
+
+    async fn shutdown(&self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+}
+
+/// Parsed view of vim's chrome rows. None of the fields are mandatory —
+/// when vim isn't visible yet (still loading) or the statusline isn't
+/// configured, the values stay `None` / `Normal`.
+#[derive(Debug, Default)]
+struct VimState {
+    mode: VimMode,
+    /// Row index of the statusline, if found. Statusline is detected as
+    /// the second-to-last non-empty row matching a `<file> [N/M]` shape.
+    statusline_row: Option<usize>,
+    /// Row index of the command-line / mode-indicator row, if active.
+    commandline_row: Option<usize>,
+    /// Filename extracted from the statusline.
+    filename: Option<String>,
+    /// `[+]` modified marker present in the statusline.
+    modified: bool,
+    /// The literal command-line text (e.g. `:w` or `/foo`) when in
+    /// command or search mode.
+    command_line: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum VimMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    VisualLine,
+    VisualBlock,
+    Replace,
+    Command,
+    Search,
+    SearchBackward,
+}
+
+impl std::fmt::Display for VimMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Normal => "normal",
+            Self::Insert => "insert",
+            Self::Visual => "visual",
+            Self::VisualLine => "visual-line",
+            Self::VisualBlock => "visual-block",
+            Self::Replace => "replace",
+            Self::Command => "command",
+            Self::Search => "search",
+            Self::SearchBackward => "search-backward",
+        })
+    }
+}
+
+fn parse_vim_state(rows: &[String]) -> VimState {
+    let mut state = VimState::default();
+    if rows.is_empty() {
+        return state;
+    }
+
+    // Walk from the bottom looking for vim's chrome rows.
+    //
+    // Layout with `:set laststatus=2`:
+    //   row N-1: statusline (configured statusline text)
+    //   row N  : command-line area (empty in normal mode; "-- INSERT --"
+    //            in insert; ":foo" in command mode; "/bar" in search)
+    //
+    // Without laststatus=2, there's no permanent statusline row — only
+    // the command-line area.
+
+    let last = rows.len() - 1;
+    let last_line = rows[last].trim();
+
+    // Detect mode indicator from the last row.
+    state.mode = classify_mode(last_line);
+    if state.mode == VimMode::Command
+        || state.mode == VimMode::Search
+        || state.mode == VimMode::SearchBackward
+    {
+        state.commandline_row = Some(last);
+        state.command_line = Some(last_line.to_string());
+    } else if !last_line.is_empty() && is_mode_marker(last_line) {
+        state.commandline_row = Some(last);
+    }
+
+    // Find the statusline: the highest-indexed row that LOOKS LIKE a
+    // statusline (contains a "[N/M]" line/total pattern, or the trailing
+    // `[+]` modified marker). Skip the command-line row.
+    let statusline_candidate = if last >= 1
+        && (state.commandline_row.is_some() || is_statusline_shape(&rows[last - 1]))
+    {
+        Some(last - 1)
+    } else if last_line.contains('[') && last_line.contains(']') {
+        Some(last)
+    } else {
+        None
+    };
+
+    if let Some(row) = statusline_candidate
+        && is_statusline_shape(&rows[row])
+    {
+        state.statusline_row = Some(row);
+        let (file, modified) = parse_statusline(&rows[row]);
+        state.filename = file;
+        state.modified = modified;
+    }
+
+    state
+}
+
+/// `--INSERT--`, `--VISUAL--` etc. are how vim signals mode in the
+/// command-line area when `set showmode` is on (the default).
+///
+/// Real PTY output rarely has the mode marker alone on the row — vim
+/// commonly adds trailing context ("W10: Warning: Changing a readonly
+/// file", recording-macro indicators, recordings of `:reg` etc.). So
+/// we look for the marker as a PREFIX of the trimmed row, not an exact
+/// match.
+fn classify_mode(text: &str) -> VimMode {
+    let trimmed = text.trim();
+    if trimmed.starts_with(':') {
+        return VimMode::Command;
+    }
+    if trimmed.starts_with('/') {
+        return VimMode::Search;
+    }
+    if trimmed.starts_with('?') {
+        return VimMode::SearchBackward;
+    }
+    // Mode marker prefixes — match longest-first so VISUAL LINE wins
+    // over VISUAL.
+    let upper = trimmed.to_ascii_uppercase();
+    let markers: &[(&str, VimMode)] = &[
+        ("-- VISUAL LINE --", VimMode::VisualLine),
+        ("-- VISUAL BLOCK --", VimMode::VisualBlock),
+        ("-- V-LINE --", VimMode::VisualLine),
+        ("-- V-BLOCK --", VimMode::VisualBlock),
+        ("-- INSERT --", VimMode::Insert),
+        ("-- REPLACE --", VimMode::Replace),
+        ("-- VISUAL --", VimMode::Visual),
+        ("(INSERT)", VimMode::Insert),
+        ("(REPLACE)", VimMode::Replace),
+    ];
+    for (marker, mode) in markers {
+        if upper.starts_with(marker) {
+            return *mode;
+        }
+    }
+    VimMode::Normal
+}
+
+fn is_mode_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with("--") && trimmed.ends_with("--")
+}
+
+/// A statusline matches when it contains `[N/M]` (line/total) or `[+]`
+/// (modified marker). The fixture vimrc uses `%f [%l/%L]%m`.
+fn is_statusline_shape(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // The line/total pattern: a bracketed pair of digits separated by `/`.
+    let has_line_total = trimmed
+        .as_bytes()
+        .windows(3)
+        .any(|w| w[0] == b'[' && w[1].is_ascii_digit() && (w[2] == b'/' || w[2].is_ascii_digit()));
+    let has_modified = trimmed.contains("[+]") || trimmed.contains("[modified]");
+    has_line_total || has_modified
+}
+
+fn parse_statusline(text: &str) -> (Option<String>, bool) {
+    let trimmed = text.trim();
+    let modified = trimmed.contains("[+]") || trimmed.contains("[modified]");
+    // The fixture statusline format is `%f [%l/%L]%m` -> "filename [N/M]"
+    // optionally followed by "[+]". Filename is everything up to the
+    // first ' [' boundary, falling back to the first whitespace token.
+    let filename = trimmed
+        .split_once(" [")
+        .map(|(name, _)| name.trim().to_string())
+        .or_else(|| {
+            trimmed
+                .split_whitespace()
+                .next()
+                .map(std::string::ToString::to_string)
+        })
+        .filter(|s| !s.is_empty());
+    (filename, modified)
+}
+
+fn basename_matches(arg: &str, name: &str) -> bool {
+    let basename = arg.rsplit('/').next().unwrap_or(arg);
+    basename == name
+}
+
+/// Does `text` contain `needle` as a whole word? Used for fuzzy argv
+/// matching where `needle` ("vim") can appear inside a `bash -c "..."`
+/// command string. We require word boundaries on both sides to avoid
+/// matching `viminim` or `livening`.
+fn word_boundary_contains(text: &str, needle: &str) -> bool {
+    let mut start = 0;
+    while let Some(off) = text[start..].find(needle) {
+        let idx = start + off;
+        let before_ok = idx == 0
+            || !text.as_bytes()[idx - 1].is_ascii_alphanumeric()
+                && text.as_bytes()[idx - 1] != b'_';
+        let after_idx = idx + needle.len();
+        let after_ok = after_idx == text.len()
+            || !text.as_bytes()[after_idx].is_ascii_alphanumeric()
+                && text.as_bytes()[after_idx] != b'_';
+        if before_ok && after_ok {
+            return true;
+        }
+        start = idx + 1;
+    }
+    false
+}
+
 fn default_caps() -> Capabilities {
     Capabilities {
         supports_eval: false,
@@ -387,5 +746,136 @@ mod tests {
     async fn generic_empty_grid_returns_empty_nodes() {
         let outline = GenericAdapter.outline(&snap("\n\n")).await.unwrap();
         assert!(outline.nodes.is_empty());
+    }
+
+    // ----------------------------------------------------------------
+    // Vim adapter tests
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn vim_detects_vim_family_binaries() {
+        for name in ["vim", "nvim", "view", "ex", "vimtutor"] {
+            let score = VimAdapter.detect(&info_for(name)).await;
+            assert!(score >= 0.9, "{name}: expected >=0.9, got {score}");
+        }
+    }
+
+    #[tokio::test]
+    async fn vim_detects_through_bash_wrapper() {
+        let mut info = info_for("bash");
+        info.argv = vec!["bash".into(), "-c".into(), "/usr/bin/vimtutor".into()];
+        let score = VimAdapter.detect(&info).await;
+        assert!(
+            score >= 0.6,
+            "bash -c vimtutor: expected >=0.6, got {score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vim_skips_non_vim() {
+        for name in ["bash", "claude", "lazygit", "tmux"] {
+            let score = VimAdapter.detect(&info_for(name)).await;
+            assert!(score < f32::EPSILON, "{name}: expected 0, got {score}");
+        }
+    }
+
+    /// In normal mode the last row is empty; statusline shows file + [N/M].
+    #[tokio::test]
+    async fn vim_normal_mode_outline() {
+        let outline = VimAdapter
+            .outline(&snap("hello world\nsecond line\nsample.txt [1/2]\n"))
+            .await
+            .unwrap();
+        assert_eq!(outline.adapter, "vim");
+        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        assert_eq!(mode.name, "normal");
+        let file = outline.nodes.iter().find(|n| n.role == "file").unwrap();
+        assert_eq!(file.name, "sample.txt");
+        assert!(file.value.is_none(), "not modified");
+    }
+
+    /// Insert mode: command-line row shows `-- INSERT --`.
+    #[tokio::test]
+    async fn vim_insert_mode_outline() {
+        let outline = VimAdapter
+            .outline(&snap("typing here\n\nsample.txt [1/1][+]\n-- INSERT --"))
+            .await
+            .unwrap();
+        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        assert_eq!(mode.name, "insert");
+        // [+] in statusline -> modified=true via `value: "modified"`.
+        let file = outline.nodes.iter().find(|n| n.role == "file").unwrap();
+        assert_eq!(file.name, "sample.txt");
+        assert_eq!(file.value.as_ref().unwrap(), "modified");
+    }
+
+    /// Command mode: command-line row starts with `:`.
+    #[tokio::test]
+    async fn vim_command_mode_outline() {
+        let outline = VimAdapter
+            .outline(&snap("buffer\n\nsample.txt [1/1]\n:write"))
+            .await
+            .unwrap();
+        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        assert_eq!(mode.name, "command");
+        // command_line lives in the `value` field of the mode node.
+        assert_eq!(mode.value.as_ref().unwrap(), ":write");
+    }
+
+    /// Search mode: command-line row starts with `/`.
+    #[tokio::test]
+    async fn vim_search_mode_outline() {
+        let outline = VimAdapter
+            .outline(&snap("buffer\n\nsample.txt [1/1]\n/foo"))
+            .await
+            .unwrap();
+        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        assert_eq!(mode.name, "search");
+        assert_eq!(mode.value.as_ref().unwrap(), "/foo");
+    }
+
+    /// Visual modes: command-line row shows `-- VISUAL --` (or its line/block
+    /// variants).
+    #[tokio::test]
+    async fn vim_visual_modes_outline() {
+        let cases = [
+            ("-- VISUAL --", "visual"),
+            ("-- VISUAL LINE --", "visual-line"),
+            ("-- VISUAL BLOCK --", "visual-block"),
+            ("-- REPLACE --", "replace"),
+        ];
+        for (marker, expected) in cases {
+            let body = format!("buffer\n\nsample.txt [1/1]\n{marker}");
+            let outline = VimAdapter.outline(&snap(&body)).await.unwrap();
+            let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+            assert_eq!(mode.name, expected, "marker {marker:?}");
+        }
+    }
+
+    /// Buffer body excludes statusline + command-line rows.
+    #[tokio::test]
+    async fn vim_buffer_excludes_chrome_rows() {
+        let outline = VimAdapter
+            .outline(&snap("first\nsecond\nsample.txt [2/2]\n-- INSERT --"))
+            .await
+            .unwrap();
+        let buffer = outline.nodes.iter().find(|n| n.role == "buffer").unwrap();
+        assert_eq!(buffer.name, "first\nsecond");
+        assert!(!buffer.name.contains("sample.txt"));
+        assert!(!buffer.name.contains("INSERT"));
+    }
+
+    /// When the statusline is missing (e.g. `set laststatus=0`), the
+    /// adapter still emits a sensible outline with mode=normal and no
+    /// file node.
+    #[tokio::test]
+    async fn vim_outline_without_statusline() {
+        let outline = VimAdapter
+            .outline(&snap("just\nbuffer\ncontent"))
+            .await
+            .unwrap();
+        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        assert_eq!(mode.name, "normal");
+        assert!(outline.nodes.iter().all(|n| n.role != "file"));
     }
 }

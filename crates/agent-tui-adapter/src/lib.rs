@@ -110,4 +110,4 @@ pub trait Adapter: Send + Sync {
 
 pub mod builtin;
 
-pub use builtin::{ClaudeCodeAdapter, GenericAdapter, ShellAdapter};
+pub use builtin::{ClaudeCodeAdapter, GenericAdapter, ShellAdapter, VimAdapter};
