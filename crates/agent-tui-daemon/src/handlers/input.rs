@@ -14,14 +14,20 @@ use std::time::Duration;
 
 use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Warning, keymap};
 
+use crate::governance::{Governance, build};
 use crate::pane::{Registry, resolve_focused};
 
 const BARRIER_TIMEOUT_MS: u64 = 200;
 
 /// `press` — parse a key-token sequence and feed it to the pane.
-pub async fn press(registry: &Arc<Registry>, pane: Option<PaneId>, keys: String) -> Response {
-    let bytes = match keymap::parse_to_bytes(&keys) {
-        Ok(b) => b,
+pub async fn press(
+    registry: &Arc<Registry>,
+    governance: &Governance,
+    pane: Option<PaneId>,
+    keys: String,
+) -> Response {
+    let tokens = match keymap::parse(&keys) {
+        Ok(t) => t,
         Err(e) => {
             return Response::err(ErrorBody::new(
                 ErrorCode::KeyFormatError,
@@ -30,19 +36,39 @@ pub async fn press(registry: &Arc<Registry>, pane: Option<PaneId>, keys: String)
             ));
         }
     };
-    deliver(registry, pane, &bytes).await
+    let bytes = keymap::serialize(&tokens);
+    let key_tokens = Some(tokens.iter().map(|t| format!("{t:?}")).collect());
+    deliver(registry, governance, pane, &bytes, key_tokens).await
 }
 
 /// `type` — write literal UTF-8 text to the pane (no key interpretation).
-pub async fn type_text(registry: &Arc<Registry>, pane: Option<PaneId>, text: String) -> Response {
-    deliver(registry, pane, text.as_bytes()).await
+pub async fn type_text(
+    registry: &Arc<Registry>,
+    governance: &Governance,
+    pane: Option<PaneId>,
+    text: String,
+) -> Response {
+    deliver(registry, governance, pane, text.as_bytes(), None).await
 }
 
-async fn deliver(registry: &Arc<Registry>, pane: Option<PaneId>, bytes: &[u8]) -> Response {
+async fn deliver(
+    registry: &Arc<Registry>,
+    governance: &Governance,
+    pane: Option<PaneId>,
+    bytes: &[u8],
+    key_tokens: Option<Vec<String>>,
+) -> Response {
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
+
+    let decision = governance
+        .check(build::input(pane_arc.id.clone(), bytes, key_tokens))
+        .await;
+    if let Some(resp) = policy_response(&decision) {
+        return resp;
+    }
 
     // Step 1: subscribe BEFORE writing so we can't miss the mutation.
     let mut sub = pane_arc.engine.subscribe();
@@ -94,4 +120,21 @@ async fn deliver(registry: &Arc<Registry>, pane: Option<PaneId>, bytes: &[u8]) -
         });
     }
     resp
+}
+
+fn policy_response(decision: &agent_tui_protocol::Decision) -> Option<Response> {
+    use agent_tui_protocol::Verdict;
+    match decision.verdict {
+        Verdict::Allow => None,
+        Verdict::Deny => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyDenied,
+            decision.reason.clone(),
+            "input blocked by policy",
+        ))),
+        Verdict::RequireConfirm => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyPending,
+            decision.reason.clone(),
+            "human confirmation required",
+        ))),
+    }
 }

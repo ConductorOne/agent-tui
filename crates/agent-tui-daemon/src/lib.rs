@@ -13,6 +13,7 @@
 
 pub mod adapter_registry;
 pub mod classifier;
+pub mod governance;
 pub mod handlers;
 pub mod hash_window;
 pub mod osc133;

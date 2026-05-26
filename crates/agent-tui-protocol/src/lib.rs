@@ -17,7 +17,7 @@ pub mod request;
 pub mod response;
 pub mod snapshot;
 
-pub use action::{ActionDetail, ActionKind, Decision, Verdict};
+pub use action::{ActionDetail, ActionKind, AuditEvent, Decision, Verdict};
 pub use error::{ErrorCode, ProtocolError};
 pub use request::{Command, Request};
 pub use response::{ErrorBody, Response, ResponseEnvelope, ToolOutputDelim, Warning};

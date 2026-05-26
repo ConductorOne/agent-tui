@@ -34,6 +34,9 @@ portable-pty = "0.9"
 regex = "1.11"
 base64 = "0.22"
 dirs = "5.0"
+async-trait = "0.1"
+hex = { workspace = true }
+rand = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

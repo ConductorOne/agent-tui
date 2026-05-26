@@ -63,8 +63,15 @@ fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
     cmd.arg("--session")
         .arg(&session)
         .arg("--socket-dir")
-        .arg(&layout.root)
-        .arg("daemon")
+        .arg(&layout.root);
+    // Forward governance settings to the lazily-spawned daemon child. The
+    // CLI's `--allowed-binaries` value lives on the *parent* invocation; we
+    // propagate it via the env-var binding clap already declares so the
+    // daemon process sees the same allowlist.
+    if let Ok(csv) = std::env::var("AGENT_TUI_ALLOWED_BINARIES") {
+        cmd.env("AGENT_TUI_ALLOWED_BINARIES", csv);
+    }
+    cmd.arg("daemon")
         .arg("run")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

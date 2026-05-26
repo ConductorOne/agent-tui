@@ -29,6 +29,7 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         layout,
         engine: "alacritty".into(),
         binary_version: "0.0.0-test".into(),
+        allowed_binaries: None,
     };
     let handle = run_daemon(cfg.clone()).await.expect("run_daemon");
     tokio::task::yield_now().await;

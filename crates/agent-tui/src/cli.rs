@@ -49,6 +49,16 @@ pub struct GlobalArgs {
     /// Truncate snapshot payloads at N characters.
     #[arg(long, value_name = "N", global = true)]
     pub max_output: Option<usize>,
+    /// Comma-separated allowlist of binary basenames `spawn` will accept.
+    /// `*` allows everything (audit-only). Empty / unset = no restriction.
+    /// Env: `AGENT_TUI_ALLOWED_BINARIES`.
+    #[arg(
+        long,
+        env = "AGENT_TUI_ALLOWED_BINARIES",
+        value_name = "CSV",
+        global = true
+    )]
+    pub allowed_binaries: Option<String>,
 }
 
 /// VT engine selection.

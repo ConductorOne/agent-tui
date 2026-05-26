@@ -36,11 +36,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 
 async fn run_foreground_daemon(g: &crate::cli::GlobalArgs) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+    // `--allowed-binaries` is also wired to AGENT_TUI_ALLOWED_BINARIES via
+    // clap's `env` attr; the lazy-spawn path in client.rs forwards that env
+    // var to the daemon child so foreground and lazy invocations agree.
     let cfg = DaemonConfig {
         session: SessionId(g.session.clone()),
         layout,
         engine: g.engine.as_str().to_string(),
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
+        allowed_binaries: g.allowed_binaries.clone(),
     };
     let handle = run_daemon(cfg).await?;
     // Block until the daemon's shutdown notify fires. In v0.1.0 nothing

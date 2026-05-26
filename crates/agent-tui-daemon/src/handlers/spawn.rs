@@ -15,6 +15,7 @@ use agent_tui_recorder::{Recorder, RecorderConfig};
 use chrono::Utc;
 
 use crate::adapter_registry::AdapterRegistry;
+use crate::governance::{Governance, build};
 use crate::pane::{Pane, Registry};
 use crate::pty::PtyChild;
 
@@ -26,6 +27,7 @@ pub async fn run(
     session: &SessionId,
     registry: &Arc<Registry>,
     adapters: &AdapterRegistry,
+    governance: &Governance,
     argv: Vec<String>,
     cwd: Option<String>,
     size: Option<(u16, u16)>,
@@ -36,6 +38,14 @@ pub async fn run(
             "spawn requires a non-empty argv",
             "pass at least one positional argument",
         ));
+    }
+
+    // Governance gate — typed Spawn action through the configured Evaluator.
+    let decision = governance
+        .check(build::spawn(argv.clone(), cwd.clone().unwrap_or_default()))
+        .await;
+    if let Some(resp) = policy_response(&decision) {
+        return resp;
     }
 
     let (cols, rows) = size.unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
@@ -102,6 +112,25 @@ pub async fn run(
 
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// Translate a non-Allow `Decision` into a `POLICY_*` Response. Allow returns
+/// `None`, signalling the handler should proceed.
+fn policy_response(decision: &agent_tui_protocol::Decision) -> Option<Response> {
+    use agent_tui_protocol::Verdict;
+    match decision.verdict {
+        Verdict::Allow => None,
+        Verdict::Deny => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyDenied,
+            decision.reason.clone(),
+            "spawn blocked; loosen --allowed-binaries or pick a different argv",
+        ))),
+        Verdict::RequireConfirm => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyPending,
+            decision.reason.clone(),
+            "human confirmation required; `policy confirm <id>` lands in a follow-on cycle",
+        ))),
+    }
 }
 
 /// Open a recorder under `$XDG_STATE_HOME/agent-tui/<session>/`. Returns

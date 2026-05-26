@@ -4,14 +4,15 @@ Working knowledge that doesn't belong in source comments: decisions, follow-ups,
 
 ## Current phase
 
-**Deferred-work sweep complete.** P0a + P0b + P0 close + P1 + P2 partial all
-shipped on PR #1. The sweep cycle added focus tracking, marker/checkpoint
-recorder events, first-bytes adapter re-detection, and an OSC 133 raw-byte
-parser feeding the classifier.
+**P3 core complete.** P0a + P0b + P0 close + P1 + P2 partial + deferred-work
+sweep + P3 core all shipped on PR #1. P3 core added the typed-Action
+interceptor, two evaluators (allow-all + binary allowlist), per-snapshot
+nonced content-boundary delimiters, and the in-process AuditEvent firehose
+broadcast channel.
 
-Ready for the next major phase: **P3 (governance, auth vault, OPA-WASM,
-per-pane mpsc queue)** or **P4 (MCP server + cargo-dist + distribution
-channels)**.
+Next major chunks: **P3 follow-on** (OPA-WASM Rego evaluator, auth vault
+with mlock + kernel-keyring/Keychain, per-pane mpsc queue) or **P4** (MCP
+server + cargo-dist + distribution channels).
 
 ## Substrate decision
 
@@ -46,6 +47,8 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 - ✅ **First-bytes Detect re-attach** — PtyChild captures first 512 bytes; spawn fires a deferred re-detect that swaps the attached adapter if a better one wins on populated PaneInfo.
 - ✅ **OSC 133 raw-byte parser** — Pre-engine scanner upgrades `PaneState::Unknown` → `Shell` / `Running` on FinalTerm shell-integration markers.
 - ✅ **Stale comment sweep** — Removed every `lands in P0b` / `v0.1.0 wires only outline` lie.
+- ✅ **P3 core: typed Action governance** — `Governance::check` wraps `Spawn` and `Input` actions; `AllowlistEvaluator` enforces `--allowed-binaries`; `AuditEvent` broadcast channel fires on every Decision (Allow/Deny/RequireConfirm). New `POLICY_DENIED` / `POLICY_PENDING` error paths surface to callers.
+- ✅ **Per-snapshot nonced content-boundary delimiters** — Every snapshot response carries an `<<<AGENT_TUI_OUTPUT_xxxxxxxx>>>` / `<<<END_xxxxxxxx>>>` pair with a fresh 8-hex-char nonce so a malicious TUI can't inject a colliding marker.
 - **Snapshot `--mode cells/hybrid/adapter`** — Only `--mode outline` wired in P0a. Cycle 15.
 - **State classifier** — Returns `Unknown` unless alt-screen is on. Cycle 16. The 9-state heuristic stack ships with the recorder.
 - **Asciicast recorder** — Event types exist (`agent-tui-recorder`); no writer yet. Cycle 17–18.
@@ -64,7 +67,8 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 
 | Commit | Phase | Notes |
 |---|---|---|
-| (next) | Deferred-work sweep | Focus tracking, marker/checkpoint events, first-bytes redetect, OSC 133 parser, stale-comment sweep |
+| (next) | P3 core | Typed Action interceptor, AllowlistEvaluator, AuditEvent firehose, per-snapshot nonced delimiters |
+| 5ca9990 | Deferred-work sweep | Focus tracking, marker/checkpoint events, first-bytes redetect, OSC 133 parser, stale-comment sweep |
 | fcf460c | P2 partial | AdapterRegistry, sectioned generic outline, claude-code + shell built-ins |
 | e212d9c | P1 | wait subsystem, cells/hybrid snapshots, classifier, recorder + rotation/retention |
 | d7057f7 | P0 close | doctor wired to DaemonStatus |

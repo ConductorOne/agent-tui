@@ -29,6 +29,7 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         layout: layout.clone(),
         engine: "alacritty".into(),
         binary_version: "0.0.0-test".into(),
+        allowed_binaries: None,
     };
     let handle = run_daemon(cfg.clone()).await.expect("run_daemon");
     // Tiny yield so the accept loop is parked before we connect.
@@ -364,6 +365,53 @@ async fn snapshot_uses_attached_adapter_outline() {
     let data = snap.response.data.unwrap();
     assert_eq!(data["outline"]["adapter"], "shell");
     let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn snapshot_response_carries_nonced_delimiter() {
+    let (cfg, _h) = boot_daemon().await;
+    let _spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
+            cwd: None,
+            size: Some((10, 2)),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+        },
+    )
+    .await;
+    let delim = snap.tool_output_delim.expect("snapshot must carry delim");
+    assert!(delim.start.starts_with("<<<AGENT_TUI_OUTPUT_"));
+    assert!(delim.end.starts_with("<<<END_"));
+    // 8 hex chars in each marker => identical nonce body.
+    let nonce = delim
+        .start
+        .trim_start_matches("<<<AGENT_TUI_OUTPUT_")
+        .trim_end_matches(">>>");
+    assert_eq!(nonce.len(), 8, "8 hex chars of nonce");
+    assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
+    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn non_snapshot_responses_have_no_delim() {
+    let (cfg, _h) = boot_daemon().await;
+    let env = round_trip(&cfg, Command::DaemonStatus).await;
+    assert!(env.response.success);
+    assert!(
+        env.tool_output_delim.is_none(),
+        "DaemonStatus should not carry a delim"
+    );
 }
 
 #[tokio::test]
