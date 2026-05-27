@@ -576,13 +576,20 @@ fn spawn_with_custom_stdin(
 
 /// Allocate a pipe with both ends marked close-on-exec.
 ///
-/// `rustix::pipe::pipe_with(CLOEXEC)` is a single atomic syscall on
-/// every Unix target — `pipe2(O_CLOEXEC)` on Linux/BSD, and the
-/// `pipe()` + `fcntl(FD_CLOEXEC)` emulation on macOS. The wrapper
-/// hides the cfg-split that bit us in PR #2.
+/// `pipe2(O_CLOEXEC)` would be the single-syscall path but rustix
+/// (and libc) decline to provide it on Apple — macOS doesn't have a
+/// `pipe2` syscall. The portable path uses `pipe()` + `fcntl_setfd(
+/// CLOEXEC)` on each end. Non-atomic, but the daemon is
+/// single-threaded at spawn time, so a concurrent fork can't leak
+/// the fds in the window between calls.
 #[cfg(unix)]
 fn cloexec_pipe() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).context("pipe_with(CLOEXEC)")
+    let (r, w) = rustix::pipe::pipe().context("pipe()")?;
+    rustix::io::fcntl_setfd(&r, rustix::io::FdFlags::CLOEXEC)
+        .context("fcntl_setfd(CLOEXEC) on read end")?;
+    rustix::io::fcntl_setfd(&w, rustix::io::FdFlags::CLOEXEC)
+        .context("fcntl_setfd(CLOEXEC) on write end")?;
+    Ok((r, w))
 }
 
 /// Read the slave PTY's device path from a master fd.
