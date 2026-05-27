@@ -576,67 +576,27 @@ fn spawn_with_custom_stdin(
 
 /// Allocate a pipe with both ends marked close-on-exec.
 ///
-/// Linux + the BSD family expose `pipe2(O_CLOEXEC)` as a single
-/// atomic call. macOS doesn't — there `pipe(2)` returns inheritable
-/// fds and we have to `fcntl(F_SETFD, FD_CLOEXEC)` each end. The
-/// non-atomic path has a small window between `pipe` and `fcntl`
-/// where a concurrent fork would leak the fd, but the daemon is
-/// single-threaded at spawn time, so the race doesn't apply.
+/// `rustix::pipe::pipe_with(CLOEXEC)` is a single atomic syscall on
+/// every Unix target — `pipe2(O_CLOEXEC)` on Linux/BSD, and the
+/// `pipe()` + `fcntl(FD_CLOEXEC)` emulation on macOS. The wrapper
+/// hides the cfg-split that bit us in PR #2.
 #[cfg(unix)]
 fn cloexec_pipe() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    #[cfg(target_os = "linux")]
-    {
-        use nix::fcntl::OFlag;
-        nix::unistd::pipe2(OFlag::O_CLOEXEC).context("pipe2(O_CLOEXEC)")
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        use std::os::fd::AsRawFd;
-        let (r, w) = nix::unistd::pipe().context("pipe()")?;
-        for fd in [&r, &w] {
-            #[allow(unsafe_code)]
-            let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-            if rc < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("fcntl(F_SETFD, FD_CLOEXEC)");
-            }
-        }
-        Ok((r, w))
-    }
+    rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).context("pipe_with(CLOEXEC)")
 }
 
 /// Read the slave PTY's device path from a master fd.
 /// Resolve the slave PTY device path from the master fd.
 ///
-/// Linux exposes the reentrant `ptsname_r(fd, buf, len)`. macOS / BSD
-/// only ship the global-buffer `ptsname(fd)`. The daemon doesn't fork
-/// multiple PTYs in parallel, so the non-reentrant `ptsname` is safe
-/// here — we copy out before any other call could clobber the static
-/// buffer.
+/// `rustix::pty::ptsname` is cross-platform: it picks `ptsname_r` on
+/// Linux and a safe wrapper around the global-buffer `ptsname` on
+/// macOS, returning a fresh `CString` either way. We hand it a
+/// `BorrowedFd` made from the master raw fd.
 #[cfg(unix)]
 fn ptsname_owned(master_fd: i32) -> Result<std::ffi::CString> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut buf = [0u8; 256];
-        #[allow(unsafe_code)]
-        let rc = unsafe { libc::ptsname_r(master_fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if rc != 0 {
-            return Err(std::io::Error::from_raw_os_error(rc)).context("ptsname_r");
-        }
-        let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-        std::ffi::CString::new(&buf[..nul]).context("slave path has interior NUL")
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        #[allow(unsafe_code)]
-        let p = unsafe { libc::ptsname(master_fd) };
-        if p.is_null() {
-            return Err(std::io::Error::last_os_error()).context("ptsname");
-        }
-        #[allow(unsafe_code)]
-        let cstr = unsafe { std::ffi::CStr::from_ptr(p) };
-        Ok(cstr.to_owned())
-    }
+    #[allow(unsafe_code)]
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(master_fd) };
+    rustix::pty::ptsname(borrowed, Vec::new()).context("ptsname")
 }
 
 #[cfg(unix)]
