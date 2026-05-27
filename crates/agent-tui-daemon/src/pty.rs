@@ -211,7 +211,30 @@ impl PtyChild {
                     // already-allocated PTY pair. Pass the master because the
                     // slave fd isn't exposed by portable-pty's trait — we
                     // re-derive it via ptsname().
-                    spawn_with_custom_stdin(argv, cwd, &env_overrides, &*pair.master, stdin_mode)?
+                    //
+                    // Windows: the custom-stdin path is Unix-only because it
+                    // uses ptsname + dup + setsid. On Windows the spawn
+                    // returns an error pointing at the limitation; the
+                    // Windows port will land separately (see
+                    // `docs/windows-strategy.md`).
+                    #[cfg(unix)]
+                    {
+                        spawn_with_custom_stdin(
+                            argv,
+                            cwd,
+                            &env_overrides,
+                            &*pair.master,
+                            stdin_mode,
+                        )?
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
+                        return Err(anyhow!(
+                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/windows-strategy.md",
+                            stdin_mode
+                        ));
+                    }
                 }
             };
         let killer = child.clone_killer();
@@ -466,18 +489,20 @@ fn spawn_with_custom_stdin(
     let slave_out = dup_owned(&slave_owned)?;
     let slave_err = dup_owned(&slave_owned)?;
 
-    // For Pipe mode: pipe2(O_CLOEXEC). Both ends are close-on-exec
-    // so they DON'T leak into the child via inherited fds — a critical
+    // For Pipe mode: a pipe whose ends are close-on-exec, so they
+    // DON'T leak into the child via inherited fds — a critical
     // detail, because if the child inherits the write end, closing
-    // our daemon's write fd doesn't EOF the read end (the child holds
-    // it open against itself). The stdin Stdio's fd is exempted from
-    // CLOEXEC by std::process during dup2 → child fd 0, which is the
-    // right behavior.
+    // our daemon's write fd doesn't EOF the read end (the child
+    // holds it open against itself). The stdin Stdio's fd is
+    // exempted from CLOEXEC by std::process during dup2 → child
+    // fd 0, which is the right behavior.
+    //
+    // `pipe2(O_CLOEXEC)` is the one-syscall path on Linux but isn't
+    // available on macOS. `cloexec_pipe()` below picks the right
+    // implementation per target.
     let (stdin_pipe_writer, stdin_stdio): (Option<std::fs::File>, Stdio) = match stdin_mode {
         StdinMode::Pipe => {
-            use nix::fcntl::OFlag;
-            let (read_end, write_end) =
-                nix::unistd::pipe2(OFlag::O_CLOEXEC).context("pipe2(O_CLOEXEC)")?;
+            let (read_end, write_end) = cloexec_pipe()?;
             (
                 Some(std::fs::File::from(write_end)),
                 Stdio::from(std::fs::File::from(read_end)),
@@ -549,17 +574,69 @@ fn spawn_with_custom_stdin(
     Ok((boxed, stdin_pipe_writer))
 }
 
-/// Read the slave PTY's device path from a master fd via `ptsname_r`.
+/// Allocate a pipe with both ends marked close-on-exec.
+///
+/// Linux + the BSD family expose `pipe2(O_CLOEXEC)` as a single
+/// atomic call. macOS doesn't — there `pipe(2)` returns inheritable
+/// fds and we have to `fcntl(F_SETFD, FD_CLOEXEC)` each end. The
+/// non-atomic path has a small window between `pipe` and `fcntl`
+/// where a concurrent fork would leak the fd, but the daemon is
+/// single-threaded at spawn time, so the race doesn't apply.
+#[cfg(unix)]
+fn cloexec_pipe() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    #[cfg(target_os = "linux")]
+    {
+        use nix::fcntl::OFlag;
+        nix::unistd::pipe2(OFlag::O_CLOEXEC).context("pipe2(O_CLOEXEC)")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::os::fd::AsRawFd;
+        let (r, w) = nix::unistd::pipe().context("pipe()")?;
+        for fd in [&r, &w] {
+            #[allow(unsafe_code)]
+            let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+            if rc < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("fcntl(F_SETFD, FD_CLOEXEC)");
+            }
+        }
+        Ok((r, w))
+    }
+}
+
+/// Read the slave PTY's device path from a master fd.
+/// Resolve the slave PTY device path from the master fd.
+///
+/// Linux exposes the reentrant `ptsname_r(fd, buf, len)`. macOS / BSD
+/// only ship the global-buffer `ptsname(fd)`. The daemon doesn't fork
+/// multiple PTYs in parallel, so the non-reentrant `ptsname` is safe
+/// here — we copy out before any other call could clobber the static
+/// buffer.
 #[cfg(unix)]
 fn ptsname_owned(master_fd: i32) -> Result<std::ffi::CString> {
-    let mut buf = [0u8; 256];
-    #[allow(unsafe_code)]
-    let rc = unsafe { libc::ptsname_r(master_fd, buf.as_mut_ptr().cast(), buf.len()) };
-    if rc != 0 {
-        return Err(std::io::Error::from_raw_os_error(rc)).context("ptsname_r");
+    #[cfg(target_os = "linux")]
+    {
+        let mut buf = [0u8; 256];
+        #[allow(unsafe_code)]
+        let rc = unsafe { libc::ptsname_r(master_fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if rc != 0 {
+            return Err(std::io::Error::from_raw_os_error(rc)).context("ptsname_r");
+        }
+        let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        std::ffi::CString::new(&buf[..nul]).context("slave path has interior NUL")
     }
-    let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    std::ffi::CString::new(&buf[..nul]).context("slave path has interior NUL")
+    #[cfg(not(target_os = "linux"))]
+    {
+        #[allow(unsafe_code)]
+        let p = unsafe { libc::ptsname(master_fd) };
+        if p.is_null() {
+            return Err(std::io::Error::last_os_error()).context("ptsname");
+        }
+        #[allow(unsafe_code)]
+        let cstr = unsafe { std::ffi::CStr::from_ptr(p) };
+        Ok(cstr.to_owned())
+    }
 }
 
 #[cfg(unix)]
