@@ -58,6 +58,7 @@ pub mod fixtures {
     pub const VIM: BwrapFixture = BwrapFixture {
         name: "vim",
         env: &[],
+        needs_network: false,
     };
 
     /// bash with `FinalTerm`/OSC 133 integration baked in at
@@ -66,6 +67,7 @@ pub mod fixtures {
     pub const SHELL: BwrapFixture = BwrapFixture {
         name: "shell",
         env: &[],
+        needs_network: false,
     };
 
     /// lazygit + a deterministically-seeded git repo at
@@ -88,6 +90,7 @@ pub mod fixtures {
             ("GIT_CONFIG_GLOBAL", "/etc/gitconfig-fixture"),
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
         ],
+        needs_network: false,
     };
 
     /// `less` pager + a deterministic 200-line file at
@@ -96,6 +99,7 @@ pub mod fixtures {
     pub const LESS: BwrapFixture = BwrapFixture {
         name: "less",
         env: &[("LESS", "-M"), ("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")],
+        needs_network: false,
     };
 
     /// htop with an empty `~/.config/htop/htoprc` pre-staged so the
@@ -109,6 +113,7 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
     };
 
     /// tig + the same seeded git repo as the lazygit fixture
@@ -139,6 +144,7 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
     };
 
     /// fzf + a 10-item candidate list at `/fixtures/fruits.txt`.
@@ -152,6 +158,7 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
     };
 
     /// GNU nano + a 3-line file at `/fixtures/sample.txt`. `NO_COLOR=1`
@@ -166,6 +173,7 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
     };
 }
 
@@ -176,6 +184,12 @@ pub struct BwrapFixture {
     pub name: &'static str,
     /// Extra env vars injected into the sandbox via `--setenv`.
     pub env: &'static [(&'static str, &'static str)],
+    /// `true` means the sandbox can see host loopback. Required when
+    /// the fixture's program talks to a fake-inference HTTP server
+    /// running on `127.0.0.1` (`OpenCode`, `Pi`, etc.). When `false`
+    /// (default for everything else) we add `--unshare-net` for full
+    /// network isolation.
+    pub needs_network: bool,
 }
 
 /// One bwrap-backed scenario: a unique socket+state dir on the host,
@@ -383,7 +397,6 @@ impl BwrapScenario {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
             // Namespaces.
             "--unshare-user".into(),
-            "--unshare-net".into(),
             "--unshare-ipc".into(),
             "--unshare-uts".into(),
             "--hostname".into(),
@@ -391,6 +404,12 @@ impl BwrapScenario {
             // Get killed if the daemon dies.
             "--die-with-parent".into(),
         ];
+        // `--unshare-net` is omitted when the fixture needs network
+        // (e.g. an AI CLI talking to a localhost fake-inference server).
+        // Otherwise the sandbox gets full network isolation.
+        if !self.fixture.needs_network {
+            v.push("--unshare-net".into());
+        }
         for (k, val) in self.fixture.env {
             v.push("--setenv".into());
             v.push((*k).to_string());
@@ -411,6 +430,15 @@ impl BwrapScenario {
             // governance check applies to them; the only host process
             // is bwrap itself.
             .env("AGENT_TUI_ALLOWED_BINARIES", "*")
+            // Tie the daemon's lifetime to the test process. The
+            // daemon's polling parent-monitor and (on Linux) PDEATHSIG
+            // both activate only when `--monitor-parent` is forwarded —
+            // setting this env in the test scope opts in. When the test
+            // exits (clean or panic) the daemon dies within ~500ms.
+            .env(
+                "AGENT_TUI_MONITOR_PARENT_PID",
+                std::process::id().to_string(),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -514,9 +542,53 @@ impl Drop for BwrapScenario {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+
+        // Layer 4 of the cleanup story: SIGKILL the daemon by PID. If
+        // the graceful `daemon stop` above worked, this is a no-op
+        // (kill returns ESRCH, which we ignore). If it didn't — daemon
+        // wedged, socket closed prematurely, panic before connection —
+        // this is the last-mile guarantee that no zombie outlives the
+        // scenario.
+        //
+        // The daemon writes its PID to `<socket_dir>/<session>.pid` at
+        // startup; read that to know which process to reap.
+        kill_daemon_by_pidfile(&self.socket_dir);
+
         // Best-effort cleanup of the per-scenario state root.
         let _ = std::fs::remove_dir_all(&self.state_root);
     }
+}
+
+/// Read the daemon's PID from its sidecar pidfile and SIGKILL it.
+/// Silent on any error — this is best-effort reaping, not a hard
+/// failure. Unix-only; on Windows the daemon's process management
+/// model is still in design (RFC §13).
+fn kill_daemon_by_pidfile(socket_dir: &Path) {
+    #[cfg(unix)]
+    {
+        let Ok(entries) = std::fs::read_dir(socket_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("pid") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(pid) = text.trim().parse::<i32>() else {
+                continue;
+            };
+            // SIGKILL — we already tried SIGTERM via `daemon stop`.
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = socket_dir;
 }
 
 fn short_id() -> String {

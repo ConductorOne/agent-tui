@@ -44,6 +44,11 @@ impl McpClient {
             .env("XDG_STATE_HOME", state_home)
             .env("AGENT_TUI_SOCKET_DIR", socket_dir)
             .env("AGENT_TUI_ALLOWED_BINARIES", "*")
+            // Layer 1 cleanup: daemon dies with this test process.
+            .env(
+                "AGENT_TUI_MONITOR_PARENT_PID",
+                std::process::id().to_string(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

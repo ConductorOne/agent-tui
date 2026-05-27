@@ -35,6 +35,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 agent-tui-protocol = { workspace = true }
 uuid = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
 
 [dev-dependencies]
 # Optional Docker-API features in the dev tier so `cargo test -p

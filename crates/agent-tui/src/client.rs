@@ -74,9 +74,17 @@ fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
     if let Ok(csv) = std::env::var("AGENT_TUI_ALLOWED_BINARIES") {
         cmd.env("AGENT_TUI_ALLOWED_BINARIES", csv);
     }
-    cmd.arg("daemon")
-        .arg("run")
-        .stdin(Stdio::null())
+    cmd.arg("daemon").arg("run");
+    // Opt-in parent-monitor. The CLI process is ephemeral — using
+    // *our* PID would shut the daemon down the instant the CLI's
+    // one-shot RPC finishes, breaking the whole "daemon outlives CLI"
+    // design. Tests (and any other long-lived parent) opt into the
+    // cleanup behavior by setting `AGENT_TUI_MONITOR_PARENT_PID` to
+    // a PID they control before the lazy-spawn fires.
+    if let Ok(pid) = std::env::var("AGENT_TUI_MONITOR_PARENT_PID") {
+        cmd.arg("--monitor-parent").arg(pid);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _child = cmd.spawn().context("spawn daemon")?;

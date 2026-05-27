@@ -13,7 +13,10 @@ use crate::client;
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         CliCmd::Daemon(args) => match args.action {
-            DaemonAction::Run => run_foreground_daemon(&cli.globals).await,
+            DaemonAction::Run {
+                monitor_parent,
+                idle_timeout_secs,
+            } => run_foreground_daemon(&cli.globals, monitor_parent, idle_timeout_secs).await,
             DaemonAction::Status => one_shot_print(&cli.globals, Command::DaemonStatus).await,
             DaemonAction::Shutdown { force } => {
                 one_shot_print(&cli.globals, Command::DaemonShutdown { force }).await
@@ -32,7 +35,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
-async fn run_foreground_daemon(g: &crate::cli::GlobalArgs) -> Result<()> {
+async fn run_foreground_daemon(
+    g: &crate::cli::GlobalArgs,
+    monitor_parent: Option<u32>,
+    idle_timeout_secs: Option<u64>,
+) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
     // `--allowed-binaries` is also wired to AGENT_TUI_ALLOWED_BINARIES via
     // clap's `env` attr; the lazy-spawn path in client.rs forwards that env
@@ -43,11 +50,10 @@ async fn run_foreground_daemon(g: &crate::cli::GlobalArgs) -> Result<()> {
         engine: g.engine.as_str().to_string(),
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
         allowed_binaries: g.allowed_binaries.clone(),
+        monitor_parent,
+        idle_timeout_secs,
     };
     let handle = run_daemon(cfg).await?;
-    // Block until the daemon's shutdown notify fires. In v0.1.0 nothing
-    // sets this signal — `daemon shutdown` doesn't yet hook back; you
-    // need Ctrl-C.
     handle.shutdown.notified().await;
     Ok(())
 }

@@ -40,6 +40,8 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         engine: "alacritty".into(),
         binary_version: "0.0.0-test".into(),
         allowed_binaries: None,
+        monitor_parent: None,
+        idle_timeout_secs: None,
     };
     let handle = run_daemon(cfg.clone()).await.expect("run_daemon");
     // Tiny yield so the accept loop is parked before we connect.

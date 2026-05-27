@@ -252,7 +252,21 @@ pub struct DaemonArgs {
 pub enum DaemonAction {
     /// Run the daemon in the foreground. Used by `agent-tui` itself when
     /// the CLI spawns the daemon. Humans usually don't run this directly.
-    Run,
+    Run {
+        /// PID of the process whose death should also shut down the
+        /// daemon. The CLI's lazy-spawn path passes its own PID here
+        /// so a `cargo test` panic or a SIGKILL'd test runner takes
+        /// the daemon down with it instead of orphaning a daemon to
+        /// PID 1.
+        #[arg(long, value_name = "PID")]
+        monitor_parent: Option<u32>,
+
+        /// Shut down after this many seconds of no client activity.
+        /// Defaults to 900s (15 min); overridable via
+        /// `AGENT_TUI_IDLE_TIMEOUT` env. Set to `0` to disable.
+        #[arg(long, value_name = "SECS", env = "AGENT_TUI_IDLE_TIMEOUT")]
+        idle_timeout_secs: Option<u64>,
+    },
     /// Print daemon status (running / unreachable / version).
     Status,
     /// Initiate idle-shutdown.

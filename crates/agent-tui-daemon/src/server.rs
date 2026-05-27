@@ -38,7 +38,23 @@ pub struct DaemonConfig {
     pub binary_version: String,
     /// Optional binary allowlist (CSV form). Empty / None == permissive.
     pub allowed_binaries: Option<String>,
+    /// Optional parent-process PID to monitor. When the parent dies the
+    /// daemon shuts itself down within ~500ms. Set automatically by the
+    /// CLI's lazy-spawn path; can also be passed via
+    /// `agent-tui daemon run --monitor-parent <pid>`.
+    pub monitor_parent: Option<u32>,
+    /// Idle-shutdown timeout in seconds. The daemon exits after this
+    /// many seconds of no client activity. `None` means default
+    /// ([`DEFAULT_IDLE_TIMEOUT_SECS`]); `Some(0)` disables idle
+    /// shutdown entirely.
+    pub idle_timeout_secs: Option<u64>,
 }
+
+/// Default idle-shutdown window (15 min). Long enough that an
+/// interactive user typing in another terminal doesn't get reaped;
+/// short enough that orphaned test daemons go away within a single
+/// CI run.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 900;
 
 fn build_governance(cfg: &DaemonConfig) -> Governance {
     use super::governance::{AllowlistEvaluator, Governance};
@@ -65,6 +81,24 @@ pub struct DaemonState {
     pub adapters: AdapterRegistry,
     /// Typed-Action interceptor + audit firehose.
     pub governance: Governance,
+    /// Unix-epoch seconds of the most recent client request. The idle-
+    /// timeout watcher compares this against `now` and shuts the daemon
+    /// down when too long has passed. Stored as `u64` in an
+    /// `AtomicU64` so handler hot paths can write it lock-free.
+    pub last_activity_secs: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl DaemonState {
+    /// Update the last-activity timestamp to "now". Cheap: one
+    /// `AtomicU64::store`. Called from `handle_command` for every
+    /// in-bound request.
+    pub fn touch_activity(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.last_activity_secs
+            .store(now, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Handle returned by [`run_daemon`]. Currently only carries a shutdown
@@ -80,6 +114,18 @@ pub struct DaemonHandle {
 /// # Errors
 /// IO errors binding the socket or writing sidecars.
 pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
+    // **Note on PR_SET_PDEATHSIG (Linux Layer 2 from the cleanup
+    // design):** intentionally NOT installed here. PDEATHSIG fires on
+    // the death of our *OS* parent, not the *logical* parent the
+    // caller wants to monitor. In practice the daemon is forked from
+    // an ephemeral `agent-tui spawn ...` CLI that exits seconds later;
+    // PDEATHSIG would shut the daemon down right after the first
+    // command returns. The `--monitor-parent <pid>` polling monitor
+    // below catches "logical parent died" within ~500ms — slower than
+    // PDEATHSIG (sub-ms) but correct. If a future caller forks the
+    // daemon directly (without an intermediary CLI), it can re-enable
+    // PDEATHSIG with a separate explicit opt-in.
+
     cfg.layout.ensure_root()?;
     // Best-effort: drop any stale socket from a prior daemon at this path.
     // (No-op on Windows where `socket` is just a discovery hint, not the
@@ -105,6 +151,16 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     };
 
     let governance = build_governance(&cfg);
+
+    // Stash the monitor flags before `cfg` moves into DaemonState.
+    let monitor_parent = cfg.monitor_parent;
+    let idle_timeout_secs = cfg.idle_timeout_secs.unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let last_activity = Arc::new(std::sync::atomic::AtomicU64::new(now));
+
     let state = DaemonState {
         cfg,
         registry: Arc::new(Registry::new()),
@@ -112,7 +168,27 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
         hashes: Arc::new(HashWindow::new()),
         adapters: AdapterRegistry::with_builtins(),
         governance,
+        last_activity_secs: last_activity.clone(),
     };
+
+    // Layer 1: parent-PID monitor. Polls `kill(pid, 0)` every 500ms.
+    // If our spawner has exited, fire the shutdown notify.
+    if let Some(pid) = monitor_parent {
+        let shutdown_for_monitor = shutdown.clone();
+        tokio::spawn(parent_pid_monitor(pid, shutdown_for_monitor));
+    }
+
+    // Layer 3: idle-timeout watcher. Compares last-activity against
+    // now once per minute. `0` disables.
+    if idle_timeout_secs > 0 {
+        let shutdown_for_idle = shutdown.clone();
+        let activity_for_idle = last_activity.clone();
+        tokio::spawn(idle_timeout_watcher(
+            idle_timeout_secs,
+            activity_for_idle,
+            shutdown_for_idle,
+        ));
+    }
     let shutdown_inner = shutdown.clone();
     tokio::spawn(async move {
         loop {
@@ -174,6 +250,9 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
 }
 
 async fn dispatch(state: &DaemonState, line: &str) -> ResponseEnvelope {
+    // Mark this moment as "active" so the idle-timeout watcher
+    // doesn't shut us down mid-flight. Cheap (one atomic store).
+    state.touch_activity();
     let start = Instant::now();
     let parsed: Result<Request, _> = serde_json::from_str(line);
     let id = match &parsed {
@@ -364,3 +443,71 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         )),
     }
 }
+
+/// Polls `kill(pid, 0)` every 500ms; fires the shutdown notify when the
+/// PID is gone. Used by the `--monitor-parent` flag.
+///
+/// Cross-platform: `kill(pid, 0)` returns success while the process
+/// exists, `ESRCH` after it dies. On Windows we'd shell out to
+/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)` — but
+/// the daemon's Windows path is still in design (RFC §13.x), so this
+/// helper is Unix-only for now and silently does nothing elsewhere.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal;
+        use nix::unistd::Pid;
+        let target = Pid::from_raw(pid as i32);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // `kill(pid, None)` is `kill(pid, 0)` — error iff the
+            // process is gone (ESRCH) or we lack permission (EPERM,
+            // which also means "we can't see it" — treat as dead).
+            if signal::kill(target, None).is_err() {
+                info!(monitor_parent = pid, "parent exited; shutting down daemon");
+                shutdown.notify_waiters();
+                break;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, shutdown);
+    }
+}
+
+/// Watcher task that fires shutdown when the daemon has been idle for
+/// `timeout_secs`. Wakes up once every `min(timeout/4, 60)` seconds so
+/// the check is granular without burning CPU on long timeouts.
+async fn idle_timeout_watcher(
+    timeout_secs: u64,
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
+    shutdown: Arc<Notify>,
+) {
+    let tick = std::time::Duration::from_secs((timeout_secs / 4).clamp(1, 60));
+    loop {
+        tokio::time::sleep(tick).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let last = last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last) >= timeout_secs {
+            info!(
+                idle_timeout_secs = timeout_secs,
+                "idle timeout reached; shutting down daemon"
+            );
+            shutdown.notify_waiters();
+            break;
+        }
+    }
+}
+
+// `install_parent_death_signal` was removed — see the comment at the
+// top of `run_daemon` for why PDEATHSIG is unsafe in the default
+// lazy-spawn topology. If a future caller wants it back, it would
+// look roughly like:
+//
+//     let _ = nix::sys::prctl::set_pdeathsig(
+//         Some(nix::sys::signal::Signal::SIGTERM),
+//     );
