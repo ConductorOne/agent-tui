@@ -205,6 +205,13 @@ pub struct Snapshot {
     /// RLE-compressed cell grid (present for `--mode cells|hybrid`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cells: Option<CellGridRle>,
+    /// Visible cells flattened to a plain UTF-8 string, rows joined
+    /// with `\n` and trailing whitespace trimmed (present for
+    /// `--mode text|hybrid`). The most agent-friendly form when the
+    /// pane is unstructured text output and outline/cells are
+    /// overkill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     /// Mode flags at snapshot time.
     pub modes: ModeFlags,
     /// Ref map. Keys are the ref handles (`@e1`, `@e3.4`, …).

@@ -61,6 +61,30 @@ pub enum WaitCondition {
     Exit,
 }
 
+/// Where the child's stdin file descriptor comes from. Spawn-time choice.
+///
+/// Default is `Pty` (the slave PTY's fd) for backwards compatibility and
+/// because interactive apps need a TTY for stdin (canonical mode, line
+/// editing, signals). `Pipe` is the right answer for headless CLIs that
+/// do `isatty(0)` checks and refuse a TTY stdin (e.g. `claude -p`,
+/// `gh api`). `Closed` ties stdin to `/dev/null` for programs that don't
+/// read stdin but might inherit it accidentally.
+///
+/// Stdout and stderr are always the slave PTY — the engine needs to
+/// observe rendered output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StdinMode {
+    /// Slave PTY (default). Programs see `isatty(0) == true`.
+    #[default]
+    Pty,
+    /// Pipe. Programs see `isatty(0) == false`. Daemon retains the
+    /// write end so callers can `stdin <bytes>` and `close-stdin`.
+    Pipe,
+    /// `/dev/null`. Programs that try to read will see EOF immediately.
+    Closed,
+}
+
 /// Snapshot rendering mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,7 +96,12 @@ pub enum SnapshotMode {
     Cells,
     /// Adapter tree only (no outline traversal).
     Adapter,
-    /// Outline + cells + adapter.
+    /// Visible cells flattened to a plain UTF-8 string. Rows joined
+    /// with `\n`, trailing whitespace stripped. The right answer when
+    /// the pane is unstructured text and you want "what does the
+    /// screen say."
+    Text,
+    /// Outline + cells + adapter + text.
     Hybrid,
 }
 
@@ -93,6 +122,17 @@ pub enum Command {
         /// Optional initial size as `(cols, rows)`.
         #[serde(default)]
         size: Option<(u16, u16)>,
+        /// How to wire up the child's stdin. Default `Pty` matches
+        /// pre-RFC behavior. `Pipe` gives the child a pipe (not a
+        /// TTY) for stdin, which programs like `claude -p` need to
+        /// not refuse to read. `Closed` ties stdin to `/dev/null`.
+        #[serde(default)]
+        stdin: StdinMode,
+        /// Environment-variable overrides for the child. These ADD
+        /// to or override the daemon's inherited environment; they
+        /// don't clear it.
+        #[serde(default)]
+        env: Vec<(String, String)>,
     },
     /// List panes / sessions.
     List {
@@ -138,6 +178,52 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Hex-encoded raw bytes.
         bytes_hex: String,
+    },
+    /// Write bytes to the child's stdin **pipe**. Only works for panes
+    /// spawned with `stdin: Pipe`; returns an error otherwise. For
+    /// PTY-stdin panes, use `type` / `press` / `send-ansi` instead —
+    /// those write through the master PTY (which IS stdin for PTY mode).
+    Stdin {
+        /// Pane id; `None` = focused.
+        #[serde(default)]
+        pane: Option<PaneId>,
+        /// Hex-encoded raw bytes to push to the pipe.
+        bytes_hex: String,
+    },
+    /// Close the child's stdin pipe (EOF). Only meaningful for panes
+    /// spawned with `stdin: Pipe`; no-op otherwise.
+    CloseStdin {
+        /// Pane id; `None` = focused.
+        #[serde(default)]
+        pane: Option<PaneId>,
+    },
+    /// Return the raw bytes the child has written to stdout+stderr
+    /// since `since` (a cumulative byte offset). Useful for headless
+    /// CLIs (`subprocess as data` pattern) where the agent wants the
+    /// program's output stream, not the rendered terminal grid.
+    ///
+    /// **Streaming mode.** When `follow: true`, the daemon emits
+    /// multiple `ResponseEnvelope` lines on the same connection,
+    /// each carrying a chunk of newly-arrived bytes, terminated by
+    /// a final envelope with `data.type == "eof"`. Clients NOT
+    /// expecting streaming should call with `follow: false` (default).
+    Tail {
+        /// Pane id; `None` = focused.
+        #[serde(default)]
+        pane: Option<PaneId>,
+        /// Cumulative byte offset to read from. `0` returns
+        /// everything still in the ring buffer.
+        #[serde(default)]
+        since: u64,
+        /// If true, strip ANSI/CSI escape sequences from the
+        /// returned bytes. Useful when the agent wants plain text.
+        #[serde(default)]
+        strip_ansi: bool,
+        /// If true, stream new bytes as they arrive instead of
+        /// returning a single snapshot. The daemon emits one
+        /// envelope per chunk plus a final `{type:"eof"}` envelope.
+        #[serde(default)]
+        follow: bool,
     },
     /// Resize a pane.
     Resize {

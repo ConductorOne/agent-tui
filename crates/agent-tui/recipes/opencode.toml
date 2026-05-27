@@ -1,0 +1,14 @@
+# `agent-tui ask opencode "..."` recipe.
+#
+# opencode refuses a TTY stdin even when `agent-tui spawn --stdin pipe`
+# gives it one; the daemon-pipe doesn't look like the pipe opencode
+# wants. Wrap in `bash -c "cat | opencode ..."` so opencode's stdin
+# is the cat→opencode kernel pipe (the well-tested path).
+#
+# The flags after `run` are mandatory: --pure skips plugins,
+# --title fixed skips the hidden title-generation pre-call,
+# --dangerously-skip-permissions avoids tty prompts that hang us.
+
+argv = ["opencode", "run", "--pure", "--title", "fixed", "--dangerously-skip-permissions"]
+wrap_in_bash_cat = true
+default_max_ms = 90_000

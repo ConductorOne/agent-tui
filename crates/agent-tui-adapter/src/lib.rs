@@ -109,5 +109,7 @@ pub trait Adapter: Send + Sync {
 }
 
 pub mod builtin;
+pub mod manifest;
 
 pub use builtin::{ClaudeCodeAdapter, GenericAdapter, ShellAdapter, VimAdapter};
+pub use manifest::{AdapterManifest, ManifestAdapter, ManifestError};

@@ -1,0 +1,21 @@
+name = "tig"
+
+[detect]
+argv0 = ["tig"]
+argv_contains = ["tig"]
+
+# tig layout: title-bar at top, main scrollable view, status-line at bottom.
+[[regions]]
+name = "title"
+role = "title-bar"
+rows = [0, 0]
+
+[[regions]]
+name = "body"
+role = "buffer"
+rows = [1, -2]
+
+[[regions]]
+name = "status"
+role = "status-bar"
+rows = [-1, -1]

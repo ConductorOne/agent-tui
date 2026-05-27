@@ -82,11 +82,48 @@ impl EngineKind {
     }
 }
 
+/// CLI-side stdin mode (mirrors `agent_tui_protocol::request::StdinMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum StdinMode {
+    /// Slave PTY (default). Programs see `isatty(0) == true`.
+    #[default]
+    Pty,
+    /// Pipe. Programs see `isatty(0) == false`. Daemon retains the
+    /// write end for later `stdin <bytes>` / `close-stdin` calls.
+    Pipe,
+    /// `/dev/null`. Programs that try to read see EOF immediately.
+    Closed,
+}
+
+impl From<StdinMode> for agent_tui_protocol::request::StdinMode {
+    fn from(m: StdinMode) -> Self {
+        match m {
+            StdinMode::Pty => Self::Pty,
+            StdinMode::Pipe => Self::Pipe,
+            StdinMode::Closed => Self::Closed,
+        }
+    }
+}
+
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Spawn a PTY-backed pane running the given argv.
     Spawn {
+        /// How to wire up the child's stdin. `pty` (default) gives a
+        /// slave PTY for stdin — interactive programs need this.
+        /// `pipe` gives a pipe — headless CLIs that do isatty(0) want
+        /// this. `closed` ties stdin to /dev/null.
+        #[arg(long, value_enum, default_value_t = StdinMode::Pty)]
+        stdin: StdinMode,
+        /// Working directory for the child. Inherits from the daemon
+        /// when unset.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<String>,
+        /// Set an environment variable for the child. Format `K=V`.
+        /// Repeatable; later entries override earlier ones.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
         /// Argv to execute.
         #[arg(trailing_var_arg = true, num_args = 1..)]
         argv: Vec<String>,
@@ -135,6 +172,146 @@ pub enum Command {
         pane: Option<String>,
         /// Hex-encoded byte string.
         bytes_hex: String,
+    },
+    /// Write bytes to the child's stdin pipe (only for `--stdin pipe` panes).
+    /// Bytes can be passed literally as `--text` or hex-encoded as `--bytes-hex`.
+    Stdin {
+        #[arg(long)]
+        pane: Option<String>,
+        /// Literal UTF-8 text to push to stdin. Mutually exclusive with `--bytes-hex`.
+        #[arg(long, conflicts_with = "bytes_hex")]
+        text: Option<String>,
+        /// Hex-encoded bytes to push to stdin. Mutually exclusive with `--text`.
+        #[arg(long)]
+        bytes_hex: Option<String>,
+    },
+    /// Close the child's stdin pipe (EOF). No-op for non-pipe panes.
+    CloseStdin {
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Dump the CLI surface as JSON (hidden; used by xtask
+    /// cli-coverage). Output shape:
+    /// `{"subcommands":[{"name":"spawn","flags":["--stdin","..."],...}]}`.
+    #[command(name = "__surface", hide = true)]
+    DumpSurface,
+    /// Ask an AI CLI a question, get the answer. Sugar over `run`
+    /// that applies known recipes per CLI (claude → `claude -p`,
+    /// opencode → `cat | opencode run --pure --title fixed
+    /// --dangerously-skip-permissions`, …).
+    ///
+    /// `agent-tui ask claude "what is 40+2"` ≡ `agent-tui run --stdin
+    /// "what is 40+2" -- claude -p`.
+    Ask {
+        /// AI CLI name (claude, opencode, pi, codex). Recipes for
+        /// each are bundled in the binary.
+        provider: String,
+        /// The prompt text. Multiple positional args are joined with
+        /// spaces.
+        #[arg(trailing_var_arg = true)]
+        prompt: Vec<String>,
+        /// Per-invocation timeout in milliseconds.
+        #[arg(long, default_value_t = 120_000)]
+        max: u64,
+    },
+    /// Edit a file in `$EDITOR` (default vim) and return the
+    /// resulting content once the editor exits.
+    Edit {
+        /// File path. The editor is spawned under agent-tui's PTY.
+        path: String,
+        /// Override `$EDITOR`. Default: env `$EDITOR` or `vim`.
+        #[arg(long)]
+        editor: Option<String>,
+    },
+    /// Watch a long-running command's output. Streams chunks to
+    /// stdout until the child exits. Sugar over `spawn` + `tail
+    /// --follow`.
+    Watch {
+        /// argv to exec.
+        #[arg(trailing_var_arg = true, num_args = 1..)]
+        argv: Vec<String>,
+    },
+    /// Replay an asciicast through a fresh engine and snapshot the
+    /// result. Used for regression coverage: rerun saved sessions
+    /// against the current engine and check that the rendered
+    /// outline / text matches an expected snapshot.
+    Replay {
+        /// Path to the `.cast` file.
+        cast: String,
+        /// Optional path to an expected-snapshot JSON file (saved
+        /// from a prior `--json snapshot --mode <mode>`). If set, the
+        /// command exits non-zero on mismatch with a diff to stderr.
+        #[arg(long, value_name = "PATH")]
+        expect_snapshot: Option<String>,
+        /// Snapshot mode for output. Default `outline`.
+        #[arg(long, value_enum, default_value_t = SnapshotMode::Outline)]
+        mode: SnapshotMode,
+        /// Override geometry. Default 80×24.
+        #[arg(long, default_value_t = 80)]
+        cols: u16,
+        /// Override row count. Default 24.
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+    },
+    /// Sugar verb: spawn a child, optionally feed it stdin, wait for
+    /// it to exit, collect its output bytes, return everything in one
+    /// JSON envelope. The "subprocess as data" pattern. Equivalent
+    /// to `spawn --stdin pipe + stdin + close-stdin + wait --exit +
+    /// tail --strip-ansi + die`, bundled.
+    ///
+    /// Most agent-driven invocations of headless CLIs (claude -p,
+    /// gh api, gpg, ...) want this shape, not the interactive primitives.
+    Run {
+        /// Literal UTF-8 text to feed into the child's stdin. Mutually
+        /// exclusive with `--stdin-file`. If neither is given, stdin
+        /// is closed immediately (`/dev/null` from the child's POV).
+        #[arg(long, value_name = "TEXT", conflicts_with = "stdin_file")]
+        stdin: Option<String>,
+        /// File whose contents are sent to the child's stdin.
+        #[arg(long, value_name = "PATH")]
+        stdin_file: Option<String>,
+        /// Per-invocation timeout in milliseconds. Default 60s.
+        #[arg(long, value_name = "MS", default_value_t = 60_000)]
+        max: u64,
+        /// Don't strip ANSI escape sequences from the returned bytes.
+        /// Default behavior is `--strip-ansi`.
+        #[arg(long)]
+        raw: bool,
+        /// Keep the per-session daemon running after this `run`
+        /// returns. Default is to shut it down — `run` is one-shot.
+        #[arg(long)]
+        keep_daemon: bool,
+        /// Working directory for the child.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<String>,
+        /// Set environment variables. Format `K=V`. Repeatable.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
+        /// argv to exec.
+        #[arg(trailing_var_arg = true, num_args = 1..)]
+        argv: Vec<String>,
+    },
+    /// Read raw bytes the child has written since `--since`. For
+    /// headless CLIs where the agent wants the output stream, not the
+    /// rendered terminal grid.
+    Tail {
+        /// Pane id; defaults to focused.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Cumulative byte offset to read from. Defaults to 0
+        /// (everything still in the ring buffer).
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Strip ANSI escape sequences; return plain text in the
+        /// `text` field instead of base64 in `bytes_b64`.
+        #[arg(long)]
+        strip_ansi: bool,
+        /// Stream new bytes as they arrive instead of returning a
+        /// single snapshot. Prints each chunk to stdout (or one
+        /// NDJSON envelope per chunk under `--json`), terminating
+        /// when the child exits.
+        #[arg(long)]
+        follow: bool,
     },
     /// Resize the focused pane.
     Resize {
@@ -252,7 +429,21 @@ pub struct DaemonArgs {
 pub enum DaemonAction {
     /// Run the daemon in the foreground. Used by `agent-tui` itself when
     /// the CLI spawns the daemon. Humans usually don't run this directly.
-    Run,
+    Run {
+        /// PID of the process whose death should also shut down the
+        /// daemon. The CLI's lazy-spawn path passes its own PID here
+        /// so a `cargo test` panic or a SIGKILL'd test runner takes
+        /// the daemon down with it instead of orphaning a daemon to
+        /// PID 1.
+        #[arg(long, value_name = "PID")]
+        monitor_parent: Option<u32>,
+
+        /// Shut down after this many seconds of no client activity.
+        /// Defaults to 900s (15 min); overridable via
+        /// `AGENT_TUI_IDLE_TIMEOUT` env. Set to `0` to disable.
+        #[arg(long, value_name = "SECS", env = "AGENT_TUI_IDLE_TIMEOUT")]
+        idle_timeout_secs: Option<u64>,
+    },
     /// Print daemon status (running / unreachable / version).
     Status,
     /// Initiate idle-shutdown.
@@ -324,7 +515,9 @@ pub enum SnapshotMode {
     Cells,
     /// Adapter tree only.
     Adapter,
-    /// Outline + cells + adapter.
+    /// Visible cells as a plain UTF-8 string (rows joined with `\n`).
+    Text,
+    /// Outline + cells + adapter + text.
     Hybrid,
 }
 
@@ -334,6 +527,7 @@ impl From<SnapshotMode> for agent_tui_protocol::request::SnapshotMode {
             SnapshotMode::Outline => Self::Outline,
             SnapshotMode::Cells => Self::Cells,
             SnapshotMode::Adapter => Self::Adapter,
+            SnapshotMode::Text => Self::Text,
             SnapshotMode::Hybrid => Self::Hybrid,
         }
     }

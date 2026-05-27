@@ -10,6 +10,7 @@ members = [
     "crates/agent-tui-recorder",
     "crates/agent-tui-adapter",
     "crates/agent-tui-integration",
+    "crates/xtask",
 ]
 
 [workspace.package]

@@ -1,0 +1,1 @@
+Drive bash/zsh shell sessions; detect prompt vs. running command via OSC 133

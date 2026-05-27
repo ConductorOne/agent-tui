@@ -194,12 +194,24 @@ fn quiet_match(pane: &Pane, cond: &WaitCondition) -> Option<u64> {
 fn finish(pane: &Pane, outcome: &Outcome) -> Response {
     let snap = pane.engine.snapshot();
     match outcome {
-        Outcome::Matched { sequence } => Response::ok(serde_json::json!({
-            "pane": pane.id,
-            "sequence": sequence,
-            "hash": snap.canonical_hash(),
-            "alt_screen": snap.modes.alt_screen,
-        })),
+        Outcome::Matched { sequence } => {
+            // If the child has exited, surface the exit code so
+            // callers can branch on success/failure without an extra
+            // round-trip. Cheap probe (try_exit_code never blocks).
+            let exit_code = pane.pty.try_exit_code().ok().flatten();
+            let mut payload = serde_json::json!({
+                "pane": pane.id,
+                "sequence": sequence,
+                "hash": snap.canonical_hash(),
+                "alt_screen": snap.modes.alt_screen,
+            });
+            if let Some(code) = exit_code
+                && let Some(obj) = payload.as_object_mut()
+            {
+                obj.insert("exit_code".into(), serde_json::json!(code));
+            }
+            Response::ok(payload)
+        }
         Outcome::Timeout => Response::err(ErrorBody::new(
             ErrorCode::WaitTimeout,
             "wait condition not satisfied within --max",

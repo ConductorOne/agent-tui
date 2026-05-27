@@ -83,6 +83,170 @@ pub async fn resize(
     }))
 }
 
+/// `stdin` — write bytes to the child's stdin pipe (Pipe-mode panes).
+pub async fn stdin(registry: &Arc<Registry>, pane: Option<PaneId>, bytes_hex: String) -> Response {
+    let bytes = match hex_decode(&bytes_hex) {
+        Ok(b) => b,
+        Err(reason) => {
+            return Response::err(ErrorBody::new(
+                ErrorCode::InvalidArgs,
+                reason,
+                "bytes_hex must be a hex string with optional whitespace",
+            ));
+        }
+    };
+    let pane_arc = match resolve_focused(registry, pane).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = pane_arc.pty.write_stdin_pipe(&bytes) {
+        return Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            format!("{e}"),
+            "respawn the pane with `--stdin pipe` to use this verb",
+        ));
+    }
+    Response::ok(serde_json::json!({
+        "pane": pane_arc.id,
+        "bytes_written": bytes.len(),
+    }))
+}
+
+/// `tail` — return raw output bytes since `since`. Pairs with the
+/// per-pane output ring buffer in pty.rs. Use `strip_ansi` to get
+/// plain text instead of bytes-with-escape-sequences.
+pub async fn tail(
+    registry: &Arc<Registry>,
+    pane: Option<PaneId>,
+    since: u64,
+    strip_ansi: bool,
+) -> Response {
+    let pane_arc = match resolve_focused(registry, pane).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let read = pane_arc.pty.tail(since);
+    let payload: serde_json::Value = if strip_ansi {
+        let text = strip_ansi_bytes(&read.bytes);
+        serde_json::json!({
+            "pane": pane_arc.id,
+            "text": text,
+            "next_since": read.total,
+            "lost_bytes": read.lost_bytes,
+        })
+    } else {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&read.bytes);
+        serde_json::json!({
+            "pane": pane_arc.id,
+            "bytes_b64": encoded,
+            "next_since": read.total,
+            "lost_bytes": read.lost_bytes,
+        })
+    };
+    Response::ok(payload)
+}
+
+/// Public re-export of [`strip_ansi_bytes`] for the streaming `tail
+/// --follow` path in `server.rs`. Kept under a distinct name so
+/// renames here propagate visibly to that caller.
+#[must_use]
+pub(crate) fn strip_ansi_for_streaming(bytes: &[u8]) -> String {
+    strip_ansi_bytes(bytes)
+}
+
+/// Strip CSI/SGR/OSC escape sequences and return the remaining UTF-8
+/// text. `\r\n` → `\n` so the output is POSIX-flavored. Non-UTF-8
+/// bytes are replaced via `from_utf8_lossy`.
+fn strip_ansi_bytes(bytes: &[u8]) -> String {
+    let mut cleaned = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1B {
+            // ESC <next> — skip the sequence.
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            let next = bytes[i];
+            i += 1;
+            match next {
+                // CSI: 0x1B 0x5B ... <final 0x40..0x7E>
+                b'[' => {
+                    while i < bytes.len() {
+                        let c = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7E).contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: 0x1B 0x5D ... BEL or ESC \
+                b']' => {
+                    while i < bytes.len() {
+                        let c = bytes[i];
+                        if c == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if c == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                // 3-byte char-set / line-attribute escapes:
+                //   ESC ( <selector>  (G0 designation)
+                //   ESC ) <selector>  (G1)
+                //   ESC * <selector>  (G2)
+                //   ESC + <selector>  (G3)
+                //   ESC # <param>     (DEC line attrs)
+                // Each consumes one more byte (the selector).
+                b'(' | b')' | b'*' | b'+' | b'#' if i < bytes.len() => {
+                    i += 1;
+                }
+                // 2-byte escapes: nothing more to consume.
+                _ => {}
+            }
+        } else if b == b'\r' {
+            cleaned.push(b'\n');
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'\n' {
+                i += 1;
+            }
+        } else if b == b'\n' || b == b'\t' || b >= 0x20 {
+            cleaned.push(b);
+            i += 1;
+        } else {
+            // Drop other C0 controls (backspace, vertical-tab, …).
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&cleaned).into_owned()
+}
+
+/// `close-stdin` — close the child's stdin pipe (EOF). No-op for
+/// non-pipe panes.
+pub async fn close_stdin(registry: &Arc<Registry>, pane: Option<PaneId>) -> Response {
+    let pane_arc = match resolve_focused(registry, pane).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = pane_arc.pty.close_stdin_pipe() {
+        return Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            format!("close_stdin failed: {e}"),
+            "pane may be invalid",
+        ));
+    }
+    Response::ok(serde_json::json!({
+        "pane": pane_arc.id,
+        "stdin_mode": format!("{:?}", pane_arc.pty.stdin_mode()),
+    }))
+}
+
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     // Strip ASCII whitespace so agents can write "1b 5b 41" or "1b5b41".
     let cleaned: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();

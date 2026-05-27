@@ -45,6 +45,13 @@ impl McpClient {
             .env("AGENT_TUI_SOCKET_DIR", socket_dir)
             // Allow anything — these tests spawn whatever fixture they need.
             .env("AGENT_TUI_ALLOWED_BINARIES", "*")
+            // Tie any lazy-spawned daemon's lifetime to this test
+            // process so a panic or SIGKILL'd test runner doesn't
+            // orphan a daemon (Layer 1 of the cleanup architecture).
+            .env(
+                "AGENT_TUI_MONITOR_PARENT_PID",
+                std::process::id().to_string(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

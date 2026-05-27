@@ -30,6 +30,9 @@ pub mod scenario;
 #[cfg(feature = "bwrap")]
 pub mod bwrap;
 
+#[cfg(feature = "bwrap")]
+pub mod fake_inference;
+
 /// Wrapper around a snapshot response with the assertion helpers.
 ///
 /// Lives in `lib.rs` so both the Docker backend (`scenario.rs`) and the

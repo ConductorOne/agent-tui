@@ -40,6 +40,8 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         engine: "alacritty".into(),
         binary_version: "0.0.0-test".into(),
         allowed_binaries: None,
+        monitor_parent: None,
+        idle_timeout_secs: None,
     };
     let handle = run_daemon(cfg.clone()).await.expect("run_daemon");
     tokio::task::yield_now().await;
@@ -74,6 +76,8 @@ async fn spawn_cat(cfg: &DaemonConfig) {
             argv: vec!["/bin/cat".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -164,6 +168,8 @@ async fn wait_text_matches_when_pattern_appears() {
             argv: vec!["/bin/sh".into(), "-c".into(), "printf hello-world".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -201,6 +207,8 @@ async fn wait_alt_screen_returns_on_toggle() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;

@@ -32,6 +32,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -58,6 +59,8 @@ pub mod fixtures {
     pub const VIM: BwrapFixture = BwrapFixture {
         name: "vim",
         env: &[],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// bash with `FinalTerm`/OSC 133 integration baked in at
@@ -66,6 +69,8 @@ pub mod fixtures {
     pub const SHELL: BwrapFixture = BwrapFixture {
         name: "shell",
         env: &[],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// lazygit + a deterministically-seeded git repo at
@@ -88,6 +93,8 @@ pub mod fixtures {
             ("GIT_CONFIG_GLOBAL", "/etc/gitconfig-fixture"),
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
         ],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// `less` pager + a deterministic 200-line file at
@@ -96,6 +103,8 @@ pub mod fixtures {
     pub const LESS: BwrapFixture = BwrapFixture {
         name: "less",
         env: &[("LESS", "-M"), ("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// htop with an empty `~/.config/htop/htoprc` pre-staged so the
@@ -109,6 +118,8 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// tig + the same seeded git repo as the lazygit fixture
@@ -139,6 +150,8 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// fzf + a 10-item candidate list at `/fixtures/fruits.txt`.
@@ -152,6 +165,8 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
+        persist_home: false,
     };
 
     /// GNU nano + a 3-line file at `/fixtures/sample.txt`. `NO_COLOR=1`
@@ -166,6 +181,68 @@ pub mod fixtures {
             ("LANG", "C.UTF-8"),
             ("LC_ALL", "C.UTF-8"),
         ],
+        needs_network: false,
+        persist_home: false,
+    };
+
+    /// `OpenCode` (`sst/opencode`) v1.15.10 — Bun + Ink TUI AI coding
+    /// agent. Uses the new `OpenAI` Responses API (`/v1/responses`),
+    /// not chat completions; the fake-inference server's
+    /// `is_responses_api` path emits the matching event stream.
+    ///
+    /// Scenarios write a per-test `opencode.json` to
+    /// `<scratch>/work/opencode.json` pointing the built-in `openai`
+    /// provider at the local `FakeServer`. They invoke `opencode run`
+    /// with `--dangerously-skip-permissions` and stdin closed so
+    /// `OpenCode` doesn't wait on TTY prompts.
+    pub const OPENCODE: BwrapFixture = BwrapFixture {
+        name: "opencode",
+        env: &[
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            ("TERM", "xterm-256color"),
+            // Force OpenAI client to point at our fake server. The
+            // per-scenario opencode.json's `provider.openai.options.
+            // baseURL` is also set; this env is a belt-and-suspenders
+            // for any code path that reads it directly.
+            ("OPENAI_API_KEY", "test-key-not-real"),
+        ],
+        needs_network: true,
+        // OpenCode persists session state under ~/.local/share/opencode/
+        // (SQLite DB). We bind /root to a host path so tests can read
+        // back the assistant message from the DB after the run.
+        persist_home: true,
+    };
+
+    /// Pi (`earendil-works/pi`) v0.75.5 — minimalist open-source TUI AI
+    /// coding agent. Reaches a localhost fake-inference server, so
+    /// `needs_network: true`. Scenarios write a `models.json` to
+    /// `<scratch>/pi-agent/models.json` and set
+    /// `PI_CODING_AGENT_DIR=/work/pi-agent` so Pi finds it.
+    ///
+    /// Pi uses the `OpenAI` Chat Completions API (NOT the new Responses
+    /// API that `OpenCode` uses), so the fake-inference server just
+    /// needs to handle `/v1/chat/completions` with standard SSE
+    /// streaming. Much simpler than `OpenCode`'s protocol surface.
+    pub const PI: BwrapFixture = BwrapFixture {
+        name: "pi",
+        env: &[
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            // Disable Pi's startup network operations (telemetry,
+            // version check). The fake server still gets reached for
+            // the actual chat completion.
+            ("PI_OFFLINE", "1"),
+            // Point Pi at the per-scenario config dir written by the
+            // test BEFORE spawn. Lives under /work which the BwrapScenario
+            // binds from the host scratch dir.
+            ("PI_CODING_AGENT_DIR", "/work/pi-agent"),
+            ("PI_CODING_AGENT_SESSION_DIR", "/work/pi-sessions"),
+        ],
+        needs_network: true,
+        persist_home: false,
     };
 }
 
@@ -176,6 +253,18 @@ pub struct BwrapFixture {
     pub name: &'static str,
     /// Extra env vars injected into the sandbox via `--setenv`.
     pub env: &'static [(&'static str, &'static str)],
+    /// `true` means the sandbox can see host loopback. Required when
+    /// the fixture's program talks to a fake-inference HTTP server
+    /// running on `127.0.0.1` (`OpenCode`, `Pi`, etc.). When `false`
+    /// (default for everything else) we add `--unshare-net` for full
+    /// network isolation.
+    pub needs_network: bool,
+    /// When `true`, `/root` is bound to a per-scenario host directory
+    /// (`<state_root>/home`) instead of being a fresh tmpfs. Used by
+    /// fixtures whose program writes important state under `$HOME`
+    /// that tests need to inspect after the run — e.g. `OpenCode`'s
+    /// SQLite session DB at `~/.local/share/opencode/`.
+    pub persist_home: bool,
 }
 
 /// One bwrap-backed scenario: a unique socket+state dir on the host,
@@ -193,6 +282,10 @@ pub struct BwrapScenario {
     socket_dir: PathBuf,
     state_home: PathBuf,
     scratch: PathBuf,
+    /// Host directory bound at `/root` when `fixture.persist_home`
+    /// is `true`. Always allocated (under `state_root/home`) even
+    /// when persist is off — saves a branch in the constructor.
+    home_persist: PathBuf,
     /// Host path to the agent-tui binary that runs as the daemon.
     agent_tui: PathBuf,
     artifacts: Arc<ArtifactDir>,
@@ -239,7 +332,8 @@ impl BwrapScenario {
         let socket_dir = state_root.join("s");
         let state_home = state_root.join("x");
         let scratch = state_root.join("w");
-        for d in [&socket_dir, &state_home, &scratch] {
+        let home_persist = state_root.join("home");
+        for d in [&socket_dir, &state_home, &scratch, &home_persist] {
             std::fs::create_dir_all(d)
                 .with_context(|| format!("create scenario dir {}", d.display()))?;
         }
@@ -254,11 +348,21 @@ impl BwrapScenario {
             socket_dir,
             state_home,
             scratch,
+            home_persist,
             agent_tui,
             artifacts,
             started_at: Instant::now(),
             name: name.to_string(),
         })
+    }
+
+    /// Host path bound at `/root` inside the sandbox when the fixture
+    /// has `persist_home: true`. Tests that want to inspect files the
+    /// program wrote under `$HOME` (config, SQLite DBs, caches) read
+    /// from this path after the scenario exits.
+    #[must_use]
+    pub fn home_persist_host_path(&self) -> &Path {
+        &self.home_persist
     }
 
     /// `agent-tui spawn -- <bwrap flags> -- <argv>` against the daemon
@@ -365,8 +469,6 @@ impl BwrapScenario {
             "/run".into(),
             "--tmpfs".into(),
             "/home".into(),
-            "--tmpfs".into(),
-            "/root".into(),
             // Per-test scratch bound at /work.
             "--bind".into(),
             self.scratch.to_string_lossy().into_owned(),
@@ -383,7 +485,6 @@ impl BwrapScenario {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
             // Namespaces.
             "--unshare-user".into(),
-            "--unshare-net".into(),
             "--unshare-ipc".into(),
             "--unshare-uts".into(),
             "--hostname".into(),
@@ -391,6 +492,23 @@ impl BwrapScenario {
             // Get killed if the daemon dies.
             "--die-with-parent".into(),
         ];
+        // `/root` is either a fresh tmpfs (default) OR a host-backed
+        // bind dir (`persist_home: true`) so tests can inspect files
+        // the fixture wrote under `$HOME` after the run finishes.
+        if self.fixture.persist_home {
+            v.push("--bind".into());
+            v.push(self.home_persist.to_string_lossy().into_owned());
+            v.push("/root".into());
+        } else {
+            v.push("--tmpfs".into());
+            v.push("/root".into());
+        }
+        // `--unshare-net` is omitted when the fixture needs network
+        // (e.g. an AI CLI talking to a localhost fake-inference server).
+        // Otherwise the sandbox gets full network isolation.
+        if !self.fixture.needs_network {
+            v.push("--unshare-net".into());
+        }
         for (k, val) in self.fixture.env {
             v.push("--setenv".into());
             v.push((*k).to_string());
@@ -411,6 +529,15 @@ impl BwrapScenario {
             // governance check applies to them; the only host process
             // is bwrap itself.
             .env("AGENT_TUI_ALLOWED_BINARIES", "*")
+            // Tie the daemon's lifetime to the test process. The
+            // daemon's polling parent-monitor and (on Linux) PDEATHSIG
+            // both activate only when `--monitor-parent` is forwarded —
+            // setting this env in the test scope opts in. When the test
+            // exits (clean or panic) the daemon dies within ~500ms.
+            .env(
+                "AGENT_TUI_MONITOR_PARENT_PID",
+                std::process::id().to_string(),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -474,6 +601,15 @@ impl BwrapScenario {
         if png_path.exists() {
             let _ = std::fs::copy(&png_path, self.artifacts.root().join("last-snapshot.png"));
         }
+
+        // Persist-home fixtures put $HOME-backed state (SQLite DBs,
+        // config, caches) at `<state_root>/home`. Capture that into
+        // the artifacts dir BEFORE we wipe state_root in Drop, so a
+        // failing assertion can be post-mortem'd from the saved DB.
+        if self.fixture.persist_home && self.home_persist.exists() {
+            let dst = self.artifacts.root().join("home");
+            let _ = copy_dir_recursive(&self.home_persist, &dst);
+        }
     }
 
     /// Helper for tests that want to introspect the scenario's bwrap arg
@@ -514,9 +650,53 @@ impl Drop for BwrapScenario {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+
+        // Layer 4 of the cleanup story: SIGKILL the daemon by PID. If
+        // the graceful `daemon stop` above worked, this is a no-op
+        // (kill returns ESRCH, which we ignore). If it didn't — daemon
+        // wedged, socket closed prematurely, panic before connection —
+        // this is the last-mile guarantee that no zombie outlives the
+        // scenario.
+        //
+        // The daemon writes its PID to `<socket_dir>/<session>.pid` at
+        // startup; read that to know which process to reap.
+        kill_daemon_by_pidfile(&self.socket_dir);
+
         // Best-effort cleanup of the per-scenario state root.
         let _ = std::fs::remove_dir_all(&self.state_root);
     }
+}
+
+/// Read the daemon's PID from its sidecar pidfile and SIGKILL it.
+/// Silent on any error — this is best-effort reaping, not a hard
+/// failure. Unix-only; on Windows the daemon's process management
+/// model is still in design (RFC §13).
+fn kill_daemon_by_pidfile(socket_dir: &Path) {
+    #[cfg(unix)]
+    {
+        let Ok(entries) = std::fs::read_dir(socket_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("pid") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(pid) = text.trim().parse::<i32>() else {
+                continue;
+            };
+            // SIGKILL — we already tried SIGTERM via `daemon stop`.
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = socket_dir;
 }
 
 fn short_id() -> String {
@@ -526,6 +706,27 @@ fn short_id() -> String {
         "{:02x}{:02x}{:02x}{:02x}",
         bytes[0], bytes[1], bytes[2], bytes[3]
     )
+}
+
+/// Recursively copy `src` to `dst`. Used by the artifact-capture path
+/// to snapshot the persisted home dir before the per-scenario state
+/// root is wiped on Drop. Skips symlinks (don't want to follow the
+/// fixture's `/root/.cache/opencode/bin/rg` → `/usr/bin/rg` link).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+        // Symlinks intentionally skipped.
+    }
+    Ok(())
 }
 
 /// `bwrap --version` exits 0 iff bwrap is callable. Cheaper than a full

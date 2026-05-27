@@ -189,7 +189,13 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                     None
                 }
             });
-            Ok(Command::Spawn { argv, cwd, size })
+            Ok(Command::Spawn {
+                argv,
+                cwd,
+                size,
+                stdin: agent_tui_protocol::request::StdinMode::default(),
+                env: Vec::new(),
+            })
         }
         "list" => Ok(Command::List {
             all: obj.get("all").and_then(Value::as_bool).unwrap_or(false),

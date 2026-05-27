@@ -1,0 +1,21 @@
+name = "htop"
+
+[detect]
+argv0 = ["htop", "btop", "btop4linux"]
+argv_contains = ["htop"]
+
+# htop layout: meters + summary at top, process table, F-key footer.
+[[regions]]
+name = "meters"
+role = "meters"
+rows = [0, 7]
+
+[[regions]]
+name = "processes"
+role = "table"
+rows = [8, -2]
+
+[[regions]]
+name = "fkeys"
+role = "footer"
+rows = [-1, -1]

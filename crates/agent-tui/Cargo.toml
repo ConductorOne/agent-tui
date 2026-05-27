@@ -20,6 +20,7 @@ agent-tui-protocol = { workspace = true }
 agent-tui-daemon = { workspace = true }
 agent-tui-engine = { workspace = true }
 agent-tui-engine-wezterm = { workspace = true }
+agent-tui-engine-alacritty = { workspace = true }
 agent-tui-recorder = { workspace = true }
 agent-tui-adapter = { workspace = true }
 
@@ -29,6 +30,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
+base64 = "0.22"
+toml = "0.8"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

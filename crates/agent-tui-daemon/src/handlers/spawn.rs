@@ -23,6 +23,7 @@ const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 
 /// Spawn a PTY-backed pane running `argv` under the active session.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     session: &SessionId,
     registry: &Arc<Registry>,
@@ -31,6 +32,8 @@ pub async fn run(
     argv: Vec<String>,
     cwd: Option<String>,
     size: Option<(u16, u16)>,
+    stdin_mode: agent_tui_protocol::request::StdinMode,
+    env: Vec<(String, String)>,
 ) -> Response {
     if argv.is_empty() {
         return Response::err(ErrorBody::new(
@@ -65,6 +68,8 @@ pub async fn run(
         rows,
         engine.clone(),
         recorder,
+        stdin_mode,
+        &env,
     ) {
         Ok(p) => p,
         Err(e) => {

@@ -1,0 +1,36 @@
+name = "lazygit"
+
+[detect]
+argv0 = ["lazygit"]
+argv_contains = ["lazygit"]
+
+# Layout overview (typical 80×24):
+#   Row 0     : top status bar (path, branch)
+#   Rows 1-N  : two-pane main area — Files/Branches/Commits on left,
+#               diff/log/etc. on right
+#   Row -3,-2 : key-hint footer
+#   Row -1    : command/input line (mostly empty)
+#
+# We carve four outline nodes: status, left-panel, main-panel, footer.
+
+[[regions]]
+name = "status"
+role = "status-bar"
+rows = [0, 0]
+
+[[regions]]
+name = "panels"
+role = "list"
+rows = [1, -3]
+cols = [0, 40]
+
+[[regions]]
+name = "main"
+role = "detail"
+rows = [1, -3]
+cols = [41, -1]
+
+[[regions]]
+name = "footer"
+role = "footer"
+rows = [-2, -1]

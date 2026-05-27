@@ -74,9 +74,17 @@ fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
     if let Ok(csv) = std::env::var("AGENT_TUI_ALLOWED_BINARIES") {
         cmd.env("AGENT_TUI_ALLOWED_BINARIES", csv);
     }
-    cmd.arg("daemon")
-        .arg("run")
-        .stdin(Stdio::null())
+    cmd.arg("daemon").arg("run");
+    // Opt-in parent-monitor. The CLI process is ephemeral — using
+    // *our* PID would shut the daemon down the instant the CLI's
+    // one-shot RPC finishes, breaking the whole "daemon outlives CLI"
+    // design. Tests (and any other long-lived parent) opt into the
+    // cleanup behavior by setting `AGENT_TUI_MONITOR_PARENT_PID` to
+    // a PID they control before the lazy-spawn fires.
+    if let Ok(pid) = std::env::var("AGENT_TUI_MONITOR_PARENT_PID") {
+        cmd.arg("--monitor-parent").arg(pid);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _child = cmd.spawn().context("spawn daemon")?;
@@ -99,6 +107,50 @@ async fn wait_for_socket(layout: &SocketLayout, max_wait: Duration) -> Result<St
             ),
         }
     }
+}
+
+/// Streaming variant of [`one_shot`]: send the command, then invoke
+/// `on_envelope` for every `ResponseEnvelope` the daemon emits until
+/// the connection closes or the envelope's `data.type == "eof"`.
+/// Used by `tail --follow`.
+pub async fn stream(
+    layout: &SocketLayout,
+    command: Command,
+    mut on_envelope: impl FnMut(&ResponseEnvelope) -> Result<bool>,
+) -> Result<()> {
+    let stream = match connect(layout).await {
+        Ok(s) => s,
+        Err(e) if is_unreachable(&e) => {
+            debug!(socket = %layout.socket.display(), "daemon unreachable, spawning");
+            spawn_daemon(layout)?;
+            wait_for_socket(layout, Duration::from_secs(3)).await?
+        }
+        Err(e) => return Err(e),
+    };
+    let req = Request {
+        id: Uuid::new_v4(),
+        protocol: PROTOCOL_VERSION,
+        command,
+    };
+    let mut bytes = serde_json::to_vec(&req)?;
+    bytes.push(b'\n');
+
+    let (reader, mut writer) = tokio::io::split(stream);
+    writer.write_all(&bytes).await?;
+
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let env: ResponseEnvelope = serde_json::from_str(&line)
+            .with_context(|| format!("parse streaming envelope: {line}"))?;
+        let keep_going = on_envelope(&env)?;
+        if !keep_going {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 async fn send_and_recv(stream: Stream, command: Command) -> Result<ResponseEnvelope> {
