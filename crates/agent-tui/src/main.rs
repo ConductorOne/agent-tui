@@ -14,6 +14,8 @@ mod cli;
 mod client;
 mod commands;
 mod mcp;
+mod recipes;
+mod skills;
 
 use anyhow::Result;
 use clap::Parser;

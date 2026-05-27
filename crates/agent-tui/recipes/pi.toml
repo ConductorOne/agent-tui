@@ -1,0 +1,4 @@
+# `agent-tui ask pi "..."` recipe.
+
+argv = ["pi", "--print"]
+default_max_ms = 60_000

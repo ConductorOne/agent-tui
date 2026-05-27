@@ -1,0 +1,21 @@
+# `agent-tui ask codex "..."` recipe.
+#
+# codex emits a session-metadata block around the actual answer:
+#   ┌── header ──
+#   workdir: ...
+#   model: ...
+#   ...
+#   ───────
+#   user
+#   <prompt>
+#   ...
+#   codex
+#   <THE ANSWER>
+#   tokens used
+#   ...
+# The extractor pulls just the lines between `codex` and `tokens used`.
+
+argv = ["codex", "exec"]
+default_max_ms = 120_000
+extract_after_line = "codex"
+extract_until_line = "tokens used"

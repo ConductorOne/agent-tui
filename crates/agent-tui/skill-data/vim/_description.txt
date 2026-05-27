@@ -1,0 +1,1 @@
+Open files, edit, save, search in vim/nvim with adapter-aware state

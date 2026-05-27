@@ -1,0 +1,7 @@
+# `agent-tui ask claude "..."` recipe.
+#
+# claude `-p` reads the prompt from stdin (or argv) and emits the
+# answer plainly. No extraction needed.
+
+argv = ["claude", "-p"]
+default_max_ms = 60_000

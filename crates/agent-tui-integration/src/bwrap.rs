@@ -32,6 +32,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -59,6 +60,7 @@ pub mod fixtures {
         name: "vim",
         env: &[],
         needs_network: false,
+        persist_home: false,
     };
 
     /// bash with `FinalTerm`/OSC 133 integration baked in at
@@ -68,6 +70,7 @@ pub mod fixtures {
         name: "shell",
         env: &[],
         needs_network: false,
+        persist_home: false,
     };
 
     /// lazygit + a deterministically-seeded git repo at
@@ -91,6 +94,7 @@ pub mod fixtures {
             ("GIT_CONFIG_SYSTEM", "/dev/null"),
         ],
         needs_network: false,
+        persist_home: false,
     };
 
     /// `less` pager + a deterministic 200-line file at
@@ -100,6 +104,7 @@ pub mod fixtures {
         name: "less",
         env: &[("LESS", "-M"), ("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")],
         needs_network: false,
+        persist_home: false,
     };
 
     /// htop with an empty `~/.config/htop/htoprc` pre-staged so the
@@ -114,6 +119,7 @@ pub mod fixtures {
             ("LC_ALL", "C.UTF-8"),
         ],
         needs_network: false,
+        persist_home: false,
     };
 
     /// tig + the same seeded git repo as the lazygit fixture
@@ -145,6 +151,7 @@ pub mod fixtures {
             ("LC_ALL", "C.UTF-8"),
         ],
         needs_network: false,
+        persist_home: false,
     };
 
     /// fzf + a 10-item candidate list at `/fixtures/fruits.txt`.
@@ -159,6 +166,7 @@ pub mod fixtures {
             ("LC_ALL", "C.UTF-8"),
         ],
         needs_network: false,
+        persist_home: false,
     };
 
     /// GNU nano + a 3-line file at `/fixtures/sample.txt`. `NO_COLOR=1`
@@ -174,6 +182,37 @@ pub mod fixtures {
             ("LC_ALL", "C.UTF-8"),
         ],
         needs_network: false,
+        persist_home: false,
+    };
+
+    /// `OpenCode` (`sst/opencode`) v1.15.10 — Bun + Ink TUI AI coding
+    /// agent. Uses the new `OpenAI` Responses API (`/v1/responses`),
+    /// not chat completions; the fake-inference server's
+    /// `is_responses_api` path emits the matching event stream.
+    ///
+    /// Scenarios write a per-test `opencode.json` to
+    /// `<scratch>/work/opencode.json` pointing the built-in `openai`
+    /// provider at the local `FakeServer`. They invoke `opencode run`
+    /// with `--dangerously-skip-permissions` and stdin closed so
+    /// `OpenCode` doesn't wait on TTY prompts.
+    pub const OPENCODE: BwrapFixture = BwrapFixture {
+        name: "opencode",
+        env: &[
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            ("TERM", "xterm-256color"),
+            // Force OpenAI client to point at our fake server. The
+            // per-scenario opencode.json's `provider.openai.options.
+            // baseURL` is also set; this env is a belt-and-suspenders
+            // for any code path that reads it directly.
+            ("OPENAI_API_KEY", "test-key-not-real"),
+        ],
+        needs_network: true,
+        // OpenCode persists session state under ~/.local/share/opencode/
+        // (SQLite DB). We bind /root to a host path so tests can read
+        // back the assistant message from the DB after the run.
+        persist_home: true,
     };
 
     /// Pi (`earendil-works/pi`) v0.75.5 — minimalist open-source TUI AI
@@ -203,6 +242,7 @@ pub mod fixtures {
             ("PI_CODING_AGENT_SESSION_DIR", "/work/pi-sessions"),
         ],
         needs_network: true,
+        persist_home: false,
     };
 }
 
@@ -219,6 +259,12 @@ pub struct BwrapFixture {
     /// (default for everything else) we add `--unshare-net` for full
     /// network isolation.
     pub needs_network: bool,
+    /// When `true`, `/root` is bound to a per-scenario host directory
+    /// (`<state_root>/home`) instead of being a fresh tmpfs. Used by
+    /// fixtures whose program writes important state under `$HOME`
+    /// that tests need to inspect after the run — e.g. `OpenCode`'s
+    /// SQLite session DB at `~/.local/share/opencode/`.
+    pub persist_home: bool,
 }
 
 /// One bwrap-backed scenario: a unique socket+state dir on the host,
@@ -236,6 +282,10 @@ pub struct BwrapScenario {
     socket_dir: PathBuf,
     state_home: PathBuf,
     scratch: PathBuf,
+    /// Host directory bound at `/root` when `fixture.persist_home`
+    /// is `true`. Always allocated (under `state_root/home`) even
+    /// when persist is off — saves a branch in the constructor.
+    home_persist: PathBuf,
     /// Host path to the agent-tui binary that runs as the daemon.
     agent_tui: PathBuf,
     artifacts: Arc<ArtifactDir>,
@@ -282,7 +332,8 @@ impl BwrapScenario {
         let socket_dir = state_root.join("s");
         let state_home = state_root.join("x");
         let scratch = state_root.join("w");
-        for d in [&socket_dir, &state_home, &scratch] {
+        let home_persist = state_root.join("home");
+        for d in [&socket_dir, &state_home, &scratch, &home_persist] {
             std::fs::create_dir_all(d)
                 .with_context(|| format!("create scenario dir {}", d.display()))?;
         }
@@ -297,11 +348,21 @@ impl BwrapScenario {
             socket_dir,
             state_home,
             scratch,
+            home_persist,
             agent_tui,
             artifacts,
             started_at: Instant::now(),
             name: name.to_string(),
         })
+    }
+
+    /// Host path bound at `/root` inside the sandbox when the fixture
+    /// has `persist_home: true`. Tests that want to inspect files the
+    /// program wrote under `$HOME` (config, SQLite DBs, caches) read
+    /// from this path after the scenario exits.
+    #[must_use]
+    pub fn home_persist_host_path(&self) -> &Path {
+        &self.home_persist
     }
 
     /// `agent-tui spawn -- <bwrap flags> -- <argv>` against the daemon
@@ -408,8 +469,6 @@ impl BwrapScenario {
             "/run".into(),
             "--tmpfs".into(),
             "/home".into(),
-            "--tmpfs".into(),
-            "/root".into(),
             // Per-test scratch bound at /work.
             "--bind".into(),
             self.scratch.to_string_lossy().into_owned(),
@@ -433,6 +492,17 @@ impl BwrapScenario {
             // Get killed if the daemon dies.
             "--die-with-parent".into(),
         ];
+        // `/root` is either a fresh tmpfs (default) OR a host-backed
+        // bind dir (`persist_home: true`) so tests can inspect files
+        // the fixture wrote under `$HOME` after the run finishes.
+        if self.fixture.persist_home {
+            v.push("--bind".into());
+            v.push(self.home_persist.to_string_lossy().into_owned());
+            v.push("/root".into());
+        } else {
+            v.push("--tmpfs".into());
+            v.push("/root".into());
+        }
         // `--unshare-net` is omitted when the fixture needs network
         // (e.g. an AI CLI talking to a localhost fake-inference server).
         // Otherwise the sandbox gets full network isolation.
@@ -531,6 +601,15 @@ impl BwrapScenario {
         if png_path.exists() {
             let _ = std::fs::copy(&png_path, self.artifacts.root().join("last-snapshot.png"));
         }
+
+        // Persist-home fixtures put $HOME-backed state (SQLite DBs,
+        // config, caches) at `<state_root>/home`. Capture that into
+        // the artifacts dir BEFORE we wipe state_root in Drop, so a
+        // failing assertion can be post-mortem'd from the saved DB.
+        if self.fixture.persist_home && self.home_persist.exists() {
+            let dst = self.artifacts.root().join("home");
+            let _ = copy_dir_recursive(&self.home_persist, &dst);
+        }
     }
 
     /// Helper for tests that want to introspect the scenario's bwrap arg
@@ -627,6 +706,27 @@ fn short_id() -> String {
         "{:02x}{:02x}{:02x}{:02x}",
         bytes[0], bytes[1], bytes[2], bytes[3]
     )
+}
+
+/// Recursively copy `src` to `dst`. Used by the artifact-capture path
+/// to snapshot the persisted home dir before the per-scenario state
+/// root is wiped on Drop. Skips symlinks (don't want to follow the
+/// fixture's `/root/.cache/opencode/bin/rg` → `/usr/bin/rg` link).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+        // Symlinks intentionally skipped.
+    }
+    Ok(())
 }
 
 /// `bwrap --version` exits 0 iff bwrap is callable. Cheaper than a full

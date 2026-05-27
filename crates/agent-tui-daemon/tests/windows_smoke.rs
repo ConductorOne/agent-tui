@@ -75,6 +75,8 @@ async fn windows_spawn_cmd_echoes() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;

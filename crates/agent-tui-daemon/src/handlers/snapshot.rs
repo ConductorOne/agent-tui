@@ -103,10 +103,15 @@ async fn build_snapshot(
     };
     let outline_for_mode = adapter_outline.unwrap_or_else(|| generic_outline(engine_snap));
 
-    let (outline, cells) = match mode {
-        SnapshotMode::Outline | SnapshotMode::Adapter => (Some(outline_for_mode), None),
-        SnapshotMode::Cells => (None, Some(rle_grid(engine_snap))),
-        SnapshotMode::Hybrid => (Some(outline_for_mode), Some(rle_grid(engine_snap))),
+    let (outline, cells, text) = match mode {
+        SnapshotMode::Outline | SnapshotMode::Adapter => (Some(outline_for_mode), None, None),
+        SnapshotMode::Cells => (None, Some(rle_grid(engine_snap)), None),
+        SnapshotMode::Text => (None, None, Some(grid_to_text(engine_snap))),
+        SnapshotMode::Hybrid => (
+            Some(outline_for_mode),
+            Some(rle_grid(engine_snap)),
+            Some(grid_to_text(engine_snap)),
+        ),
     };
 
     let mut refs = std::collections::BTreeMap::new();
@@ -131,9 +136,43 @@ async fn build_snapshot(
         hash,
         outline,
         cells,
+        text,
         modes: engine_snap.modes.clone(),
         refs,
     }
+}
+
+/// Flatten the cell grid into a plain UTF-8 string. Rows joined with
+/// `\n`, per-row trailing whitespace trimmed. Empty trailing rows are
+/// dropped — agents reading "what does the screen say" rarely want
+/// the blank padding.
+fn grid_to_text(snap: &EngineSnapshot) -> String {
+    let cols = usize::from(snap.grid.cols);
+    let rows = usize::from(snap.grid.rows);
+    let mut lines: Vec<String> = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let mut line = String::with_capacity(cols);
+        let start = row * cols;
+        for col in 0..cols {
+            let cell = &snap.grid.cells[start + col];
+            // `cell.ch` is a string (may be multi-byte/multi-char for
+            // graphemes); just append. Empty `ch` slots are spaces.
+            if cell.ch.is_empty() {
+                line.push(' ');
+            } else {
+                line.push_str(&cell.ch);
+            }
+        }
+        // Trim per-row trailing spaces — almost always padding noise.
+        let trimmed = line.trim_end().to_string();
+        lines.push(trimmed);
+    }
+    // Drop trailing all-empty rows so a mostly-empty screen doesn't
+    // emit a wall of blank lines.
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 /// RLE-compress the cell grid row-by-row and base64-encode each row's JSON.

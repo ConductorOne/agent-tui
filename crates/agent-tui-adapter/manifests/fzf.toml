@@ -1,0 +1,24 @@
+name = "fzf"
+
+[detect]
+argv0 = ["fzf"]
+argv_contains = ["fzf"]
+
+# fzf layout (default reverse-flow):
+#   Row 0    : query prompt (`> needle`)
+#   Row 1    : counter (`23/45`)
+#   Rows 2-N : candidate list
+[[regions]]
+name = "query"
+role = "input"
+rows = [0, 0]
+
+[[regions]]
+name = "counter"
+role = "status"
+rows = [1, 1]
+
+[[regions]]
+name = "candidates"
+role = "list"
+rows = [2, -1]

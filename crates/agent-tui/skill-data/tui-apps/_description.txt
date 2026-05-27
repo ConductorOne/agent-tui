@@ -1,0 +1,1 @@
+Drive common TUI apps — htop, less, lazygit, tig, fzf, nano — for engine-correctness coverage

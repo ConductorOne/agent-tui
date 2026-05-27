@@ -76,6 +76,8 @@ async fn spawn_cat(cfg: &DaemonConfig) {
             argv: vec!["/bin/cat".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -166,6 +168,8 @@ async fn wait_text_matches_when_pattern_appears() {
             argv: vec!["/bin/sh".into(), "-c".into(), "printf hello-world".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -203,6 +207,8 @@ async fn wait_alt_screen_returns_on_toggle() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;

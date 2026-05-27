@@ -100,6 +100,8 @@ async fn pty_echo_round_trip() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -142,6 +144,8 @@ async fn spawn_list_die_lifecycle() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -181,6 +185,8 @@ async fn press_round_trip_through_pty() {
             argv: vec!["/bin/cat".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -228,6 +234,8 @@ async fn quiesce_barrier_advances_sequence() {
             argv: vec!["/bin/cat".into()],
             cwd: None,
             size: Some((20, 3)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -262,6 +270,8 @@ async fn signal_term_kills_child() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 60".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -288,6 +298,8 @@ async fn signal_bogus_name_rejected() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -314,6 +326,8 @@ async fn resize_updates_engine_geometry() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -352,6 +366,8 @@ async fn spawn_attaches_shell_adapter_for_bash() {
             argv: vec!["/bin/bash".into(), "-c".into(), "sleep 2".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -374,6 +390,8 @@ async fn snapshot_uses_attached_adapter_outline() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -402,6 +420,8 @@ async fn snapshot_response_carries_nonced_delimiter() {
             argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
             cwd: None,
             size: Some((10, 2)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -454,6 +474,8 @@ async fn osc133_marker_upgrades_state_to_shell() {
             ],
             cwd: None,
             size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -486,6 +508,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -495,6 +519,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -561,6 +587,8 @@ async fn focus_cleared_when_focused_pane_dies() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -570,6 +598,8 @@ async fn focus_cleared_when_focused_pane_dies() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
             cwd: None,
             size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -618,6 +648,8 @@ async fn snapshot_cells_mode_returns_rle_grid() {
             argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
             cwd: None,
             size: Some((10, 2)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -665,6 +697,8 @@ async fn snapshot_hybrid_mode_carries_both() {
             argv: vec!["/bin/sh".into(), "-c".into(), "printf hi; sleep 1".into()],
             cwd: None,
             size: Some((8, 2)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;
@@ -695,6 +729,8 @@ async fn snapshot_hash_changes_after_output() {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
             cwd: None,
             size: Some((20, 3)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
         },
     )
     .await;

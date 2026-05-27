@@ -86,6 +86,9 @@ pub struct DaemonState {
     /// down when too long has passed. Stored as `u64` in an
     /// `AtomicU64` so handler hot paths can write it lock-free.
     pub last_activity_secs: Arc<std::sync::atomic::AtomicU64>,
+    /// Notify channel that triggers daemon shutdown. The `daemon
+    /// shutdown` handler fires this; the accept loop watches it.
+    pub shutdown: Arc<Notify>,
 }
 
 impl DaemonState {
@@ -169,6 +172,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
         adapters: AdapterRegistry::with_builtins(),
         governance,
         last_activity_secs: last_activity.clone(),
+        shutdown: shutdown.clone(),
     };
 
     // Layer 1: parent-PID monitor. Polls `kill(pid, 0)` every 500ms.
@@ -223,6 +227,27 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
                 if line.trim().is_empty() {
                     continue;
                 }
+                // Detect streaming requests early so we can branch
+                // to the multi-envelope path. Currently only
+                // `Tail { follow: true }` streams.
+                let parsed_for_branch: Result<Request, _> = serde_json::from_str(&line);
+                let is_streaming = matches!(
+                    &parsed_for_branch,
+                    Ok(req)
+                        if matches!(
+                            &req.command,
+                            agent_tui_protocol::Command::Tail { follow: true, .. }
+                        )
+                );
+                if is_streaming {
+                    if let Err(e) =
+                        handle_streaming_tail(&state, parsed_for_branch.unwrap(), &mut writer).await
+                    {
+                        debug!(error = %e, "streaming tail aborted");
+                        return;
+                    }
+                    continue;
+                }
                 let response = dispatch(&state, &line).await;
                 let bytes = match serde_json::to_vec(&response) {
                     Ok(b) => b,
@@ -247,6 +272,138 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
             }
         }
     }
+}
+
+/// Stream the child's output to the client as new bytes arrive.
+/// Emits one envelope per chunk plus a final `{type:"eof"}` envelope.
+///
+/// Polling cadence (~50ms) is chosen so:
+///   - the response feels live for human-visible output rates
+///   - the daemon doesn't spin on idle children
+///   - the overhead per empty poll is one mutex-lock + one u64-compare
+///
+/// Subscribing to the engine's mutation broadcast would be more
+/// elegant, but for `tail` we want byte-level deltas (which are
+/// upstream of engine mutations), so a polling loop on the output
+/// ring is the right primitive.
+async fn handle_streaming_tail(
+    state: &DaemonState,
+    req: Request,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> std::io::Result<()> {
+    use agent_tui_protocol::Command;
+    let agent_tui_protocol::request::Command::Tail {
+        pane,
+        since,
+        strip_ansi,
+        follow: _,
+    } = req.command
+    else {
+        // Already guarded; defensive bail.
+        return Ok(());
+    };
+    let _ = Command::Tail {
+        pane: pane.clone(),
+        since,
+        strip_ansi,
+        follow: false,
+    };
+    state.touch_activity();
+    let pane_arc = match crate::pane::resolve_focused(&state.registry, pane.clone()).await {
+        Ok(p) => p,
+        Err(resp) => {
+            let env = wrap_envelope(state, req.id, resp);
+            return write_envelope(writer, &env).await;
+        }
+    };
+
+    let mut cursor: u64 = since;
+    let poll_interval = tokio::time::Duration::from_millis(50);
+    loop {
+        // Mark activity each tick — a live `tail --follow` shouldn't
+        // count as idle.
+        state.touch_activity();
+        let read = pane_arc.pty.tail(cursor);
+        if !read.bytes.is_empty() {
+            let payload = if strip_ansi {
+                let text = strip_ansi_for_streaming(&read.bytes);
+                serde_json::json!({
+                    "type": "chunk",
+                    "pane": pane_arc.id,
+                    "text": text,
+                    "next_since": read.total,
+                    "lost_bytes": read.lost_bytes,
+                })
+            } else {
+                use base64::Engine as _;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&read.bytes);
+                serde_json::json!({
+                    "type": "chunk",
+                    "pane": pane_arc.id,
+                    "bytes_b64": encoded,
+                    "next_since": read.total,
+                    "lost_bytes": read.lost_bytes,
+                })
+            };
+            let env = wrap_envelope(state, req.id, Response::ok(payload));
+            write_envelope(writer, &env).await?;
+            cursor = read.total;
+        }
+        // Check child exit AFTER reading any final bytes the child
+        // wrote on its way out.
+        if pane_arc.pty.try_exit_code().ok().flatten().is_some() {
+            let payload = serde_json::json!({
+                "type": "eof",
+                "pane": pane_arc.id,
+                "next_since": cursor,
+                "exit_code": pane_arc.pty.try_exit_code().ok().flatten(),
+            });
+            let env = wrap_envelope(state, req.id, Response::ok(payload));
+            return write_envelope(writer, &env).await;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// Build a `ResponseEnvelope` mirroring `dispatch`'s shape but without
+/// the `tool_output_delim` (streaming chunks don't need per-chunk
+/// nonces; the consuming agent should grant trust to the stream as
+/// a whole).
+fn wrap_envelope(state: &DaemonState, id: uuid::Uuid, response: Response) -> ResponseEnvelope {
+    ResponseEnvelope {
+        id,
+        protocol: PROTOCOL_VERSION,
+        version: state.cfg.binary_version.clone(),
+        session: Some(state.cfg.session.clone()),
+        pane: None,
+        generation: None,
+        sequence: None,
+        elapsed_ms: 0,
+        tool_output_delim: None,
+        response,
+    }
+}
+
+async fn write_envelope(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    env: &ResponseEnvelope,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(env).map_err(std::io::Error::other)?;
+    writer.write_all(&bytes).await?;
+    writer.write_all(b"\n").await?;
+    Ok(())
+}
+
+/// Same ANSI-stripping logic as the one-shot `tail` handler. Kept
+/// inline here so the streaming path doesn't depend on handler
+/// module visibility.
+fn strip_ansi_for_streaming(bytes: &[u8]) -> String {
+    // Delegate to the existing implementation via the public path
+    // (call into the tail handler indirectly by simulating a non-
+    // follow tail and re-using its result). The simpler thing is to
+    // call into the same internal function — exposed via a small
+    // pub(crate) shim.
+    crate::handlers::raw::strip_ansi_for_streaming(bytes)
 }
 
 async fn dispatch(state: &DaemonState, line: &str) -> ResponseEnvelope {
@@ -350,6 +507,9 @@ fn op_name_of(cmd: &agent_tui_protocol::Command) -> &'static str {
         Command::Press { .. } => "press",
         Command::Type { .. } => "type",
         Command::SendAnsi { .. } => "send_ansi",
+        Command::Stdin { .. } => "stdin",
+        Command::CloseStdin { .. } => "close_stdin",
+        Command::Tail { .. } => "tail",
         Command::Resize { .. } => "resize",
         Command::Signal { .. } => "signal",
         Command::Die { .. } => "die",
@@ -368,6 +528,9 @@ fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol:
         | Command::Press { pane, .. }
         | Command::Type { pane, .. }
         | Command::SendAnsi { pane, .. }
+        | Command::Stdin { pane, .. }
+        | Command::CloseStdin { pane, .. }
+        | Command::Tail { pane, .. }
         | Command::Resize { pane, .. }
         | Command::Signal { pane, .. }
         | Command::Die { pane }
@@ -382,7 +545,13 @@ fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol:
 async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
     match cmd {
-        Command::Spawn { argv, cwd, size } => {
+        Command::Spawn {
+            argv,
+            cwd,
+            size,
+            stdin,
+            env,
+        } => {
             handlers::spawn::run(
                 &state.cfg.session,
                 &state.registry,
@@ -391,6 +560,8 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
                 argv,
                 cwd,
                 size,
+                stdin,
+                env,
             )
             .await
         }
@@ -420,6 +591,16 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         Command::SendAnsi { pane, bytes_hex } => {
             handlers::raw::send_ansi(&state.registry, pane, bytes_hex).await
         }
+        Command::Stdin { pane, bytes_hex } => {
+            handlers::raw::stdin(&state.registry, pane, bytes_hex).await
+        }
+        Command::CloseStdin { pane } => handlers::raw::close_stdin(&state.registry, pane).await,
+        Command::Tail {
+            pane,
+            since,
+            strip_ansi,
+            follow: _, // streaming follow is dispatched above; this is the one-shot path
+        } => handlers::raw::tail(&state.registry, pane, since, strip_ansi).await,
         Command::Resize { pane, cols, rows } => {
             handlers::raw::resize(&state.registry, pane, cols, rows).await
         }
@@ -432,8 +613,23 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             "panes": state.registry.count().await,
         })),
         Command::DaemonShutdown { force: _ } => {
-            // P0 follow-up: actually shut down. For now, just acknowledge.
-            Response::ok(serde_json::json!({ "queued": true }))
+            // Fire the shutdown notify. The accept loop wakes up,
+            // closes the listener, and the daemon exits. We respond
+            // BEFORE notifying so the client gets the ack — otherwise
+            // the daemon could tear down the socket mid-response.
+            //
+            // `notify_waiters` wakes all current and future waiters
+            // (the accept loop has multiple await points on this).
+            let shutdown = state.shutdown.clone();
+            tokio::spawn(async move {
+                // Tiny defer so this response flushes before the
+                // socket goes away.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                shutdown.notify_waiters();
+            });
+            Response::ok(serde_json::json!({
+                "status": "shutting_down",
+            }))
         }
         Command::Focus { pane } => handlers::focus::run(&state.registry, pane).await,
         Command::Eval { .. } => Response::err(ErrorBody::new(

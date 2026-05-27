@@ -74,8 +74,17 @@ async fn pty_spawn_sets_lines_columns_to_pty_size() {
         // keeps the PTY readable while we drain the engine.
         "printf 'L=%s C=%s S=%s\\n' \"$LINES\" \"$COLUMNS\" \"$(stty size)\"; sleep 1".to_string(),
     ];
-    let _pty = PtyChild::spawn(&argv, None, cols, rows, engine.clone(), None)
-        .expect("spawn child under PTY");
+    let _pty = PtyChild::spawn(
+        &argv,
+        None,
+        cols,
+        rows,
+        engine.clone(),
+        None,
+        agent_tui_protocol::request::StdinMode::Pty,
+        &[],
+    )
+    .expect("spawn child under PTY");
 
     // The child's printf line should land in the engine grid within a
     // second on any reasonable machine.

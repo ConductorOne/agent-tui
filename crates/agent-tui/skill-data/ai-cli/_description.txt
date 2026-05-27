@@ -1,0 +1,1 @@
+Drive AI CLIs (opencode, pi, codex, claude-code, …) — auth, streaming, tool use, sessions

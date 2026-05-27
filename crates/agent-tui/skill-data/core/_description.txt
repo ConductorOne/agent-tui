@@ -1,0 +1,1 @@
+agent-tui usage — spawn, snapshot, wait, interact with PTY apps via @eN refs

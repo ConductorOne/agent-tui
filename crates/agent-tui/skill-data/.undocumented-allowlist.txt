@@ -1,0 +1,34 @@
+# Each line names a (subcommand, flag) pair that intentionally has no
+# skill-data coverage. Format:
+#
+#     <subcommand>[ --<flag>]
+#
+# Comments start with `#`. Empty lines ignored.
+#
+# Drift policy: a CLI surface item that lands in `cli.rs` without
+# being documented must be added here explicitly. We fail-closed by
+# default so undocumented features stay loud, not silent.
+
+# Internal daemon subcommands are operator-facing, not agent-facing.
+daemon run
+daemon status
+daemon shutdown
+daemon run --idle-timeout-secs
+daemon shutdown --force
+# Engine subcommand isn't user-facing yet.
+eval
+eval --adapter
+# Doctor's repair-mode flags are operator-facing.
+doctor --fix
+doctor --quick
+doctor --diagnostic-bundle
+# --keep-daemon is documented in the `run` SKILL section but the
+# typed-surface dump doesn't differentiate documented bool flags.
+run --keep-daemon
+# replay verb is regression-testing infrastructure, not a user-facing
+# workflow. Skill page for it lands when we add the replay corpus.
+replay
+replay --expect-snapshot
+replay --mode
+replay --cols
+replay --rows

@@ -1,0 +1,21 @@
+name = "top"
+
+[detect]
+argv0 = ["top"]
+
+# top layout (default): system summary (5 lines), task list header
+# (1 line), processes (rest).
+[[regions]]
+name = "summary"
+role = "summary"
+rows = [0, 4]
+
+[[regions]]
+name = "task_header"
+role = "table-header"
+rows = [5, 6]
+
+[[regions]]
+name = "processes"
+role = "table"
+rows = [7, -1]

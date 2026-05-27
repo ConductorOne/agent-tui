@@ -20,3 +20,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
+toml = "0.8"
+regex = "1"
