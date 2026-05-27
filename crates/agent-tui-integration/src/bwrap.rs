@@ -175,6 +175,35 @@ pub mod fixtures {
         ],
         needs_network: false,
     };
+
+    /// Pi (`earendil-works/pi`) v0.75.5 — minimalist open-source TUI AI
+    /// coding agent. Reaches a localhost fake-inference server, so
+    /// `needs_network: true`. Scenarios write a `models.json` to
+    /// `<scratch>/pi-agent/models.json` and set
+    /// `PI_CODING_AGENT_DIR=/work/pi-agent` so Pi finds it.
+    ///
+    /// Pi uses the `OpenAI` Chat Completions API (NOT the new Responses
+    /// API that `OpenCode` uses), so the fake-inference server just
+    /// needs to handle `/v1/chat/completions` with standard SSE
+    /// streaming. Much simpler than `OpenCode`'s protocol surface.
+    pub const PI: BwrapFixture = BwrapFixture {
+        name: "pi",
+        env: &[
+            ("HOME", "/root"),
+            ("LANG", "C.UTF-8"),
+            ("LC_ALL", "C.UTF-8"),
+            // Disable Pi's startup network operations (telemetry,
+            // version check). The fake server still gets reached for
+            // the actual chat completion.
+            ("PI_OFFLINE", "1"),
+            // Point Pi at the per-scenario config dir written by the
+            // test BEFORE spawn. Lives under /work which the BwrapScenario
+            // binds from the host scratch dir.
+            ("PI_CODING_AGENT_DIR", "/work/pi-agent"),
+            ("PI_CODING_AGENT_SESSION_DIR", "/work/pi-sessions"),
+        ],
+        needs_network: true,
+    };
 }
 
 /// Static descriptor for a bwrap fixture.
