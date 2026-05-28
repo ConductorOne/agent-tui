@@ -58,8 +58,9 @@ agent-tui wait --ref '@vim.statusline[value~=/written/]'  # save confirmed
 agent-tui press ":q<cr>"
 ```
 
-`<esc>` returns to normal mode. `@vim.mode.value` carries the mode
-name as a string the agent can read directly.
+`<esc>` returns to normal mode. `@vim.mode` carries the current mode
+name in its `value` field (e.g. `value=insert`) — predicate
+`@vim.mode[value=insert]` is the right test.
 
 ## Searching
 <!-- tested-by: bwrap_vim_search_finds_target -->

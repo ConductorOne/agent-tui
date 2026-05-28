@@ -331,8 +331,12 @@ impl Adapter for VimAdapter {
         children.push(OutlineNode {
             r#ref: "@vim.mode".into(),
             role: "mode".into(),
-            name: parsed.mode.to_string(),
-            value: parsed.command_line.clone(),
+            // The mode string (normal/insert/visual/…) is the
+            // semantic *value* of the mode indicator. Predicate
+            // usage: `[value=insert]`. The `name` field is empty
+            // here — the role already names what the node is.
+            name: String::new(),
+            value: Some(parsed.mode.to_string()),
             focused: false,
             anchor: parsed.commandline_row.map(|r| (r as u16, 0)),
             durable: true,
@@ -875,7 +879,7 @@ mod tests {
             .unwrap();
         let kids = vim_children(&outline);
         let mode = find_by_role(kids, "mode").unwrap();
-        assert_eq!(mode.name, "normal");
+        assert_eq!(mode.value.as_deref(), Some("normal"));
         assert!(mode.durable, "@vim.mode should be durable");
         let file = find_by_role(kids, "file").unwrap();
         assert_eq!(file.name, "sample.txt");
@@ -891,7 +895,7 @@ mod tests {
             .unwrap();
         let kids = vim_children(&outline);
         let mode = find_by_role(kids, "mode").unwrap();
-        assert_eq!(mode.name, "insert");
+        assert_eq!(mode.value.as_deref(), Some("insert"));
         let file = find_by_role(kids, "file").unwrap();
         assert_eq!(file.name, "sample.txt");
         assert_eq!(file.value.as_ref().unwrap(), "modified");
@@ -906,15 +910,16 @@ mod tests {
             .unwrap();
         let kids = vim_children(&outline);
         let mode = find_by_role(kids, "mode").unwrap();
-        assert_eq!(mode.name, "command");
-        assert_eq!(mode.value.as_ref().unwrap(), ":write");
-        // cmdline node exists and is focused.
+        assert_eq!(mode.value.as_deref(), Some("command"));
+        // Command-line text lives on the cmdline node, not the mode
+        // node — selectors like `@vim.cmdline[value~=/write/]` target it.
         let cmd = find_by_role(kids, "cmdline").unwrap();
         assert!(
             cmd.focused,
             "cmdline should be focused when command_line is set"
         );
         assert_eq!(cmd.r#ref, "@vim.cmdline");
+        assert_eq!(cmd.value.as_deref(), Some(":write"));
     }
 
     /// Search mode: command-line row starts with `/`.
@@ -926,8 +931,9 @@ mod tests {
             .unwrap();
         let kids = vim_children(&outline);
         let mode = find_by_role(kids, "mode").unwrap();
-        assert_eq!(mode.name, "search");
-        assert_eq!(mode.value.as_ref().unwrap(), "/foo");
+        assert_eq!(mode.value.as_deref(), Some("search"));
+        let cmd = find_by_role(kids, "cmdline").unwrap();
+        assert_eq!(cmd.value.as_deref(), Some("/foo"));
     }
 
     /// Visual modes: command-line row shows `-- VISUAL --` (or its line/block
@@ -945,7 +951,7 @@ mod tests {
             let outline = VimAdapter.outline(&snap(&body)).await.unwrap();
             let kids = vim_children(&outline);
             let mode = find_by_role(kids, "mode").unwrap();
-            assert_eq!(mode.name, expected, "marker {marker:?}");
+            assert_eq!(mode.value.as_deref(), Some(expected), "marker {marker:?}");
         }
     }
 
@@ -976,7 +982,7 @@ mod tests {
             .unwrap();
         let kids = vim_children(&outline);
         let mode = find_by_role(kids, "mode").unwrap();
-        assert_eq!(mode.name, "normal");
+        assert_eq!(mode.value.as_deref(), Some("normal"));
         assert!(find_by_role(kids, "file").is_none());
     }
 

@@ -254,8 +254,10 @@ async fn mcp_drives_vim_through_bwrap_end_to_end() -> Result<()> {
             .find_map(|n| walk(n, role))
     }
     let mode_node = find_role(outline, "mode").expect("mode node");
+    // The mode adapter stores the mode name in `value` (the
+    // semantic payload of the indicator); `name` is empty.
     assert_eq!(
-        mode_node.get("name").and_then(Value::as_str),
+        mode_node.get("value").and_then(Value::as_str),
         Some("normal")
     );
     let file_node = find_role(outline, "file").expect("file node");
@@ -280,7 +282,7 @@ async fn mcp_drives_vim_through_bwrap_end_to_end() -> Result<()> {
     let outline = snap.get("data").and_then(|d| d.get("outline")).unwrap();
     let mode_node = find_role(outline, "mode").expect("mode node");
     assert_eq!(
-        mode_node.get("name").and_then(Value::as_str),
+        mode_node.get("value").and_then(Value::as_str),
         Some("insert"),
         "expected mode=insert after `i`; outline = {outline}"
     );
