@@ -567,13 +567,21 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         }
         Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
         Command::List { all } => handlers::list::run(&state.registry, all).await,
-        Command::Snapshot { pane, mode, .. } => {
+        Command::Snapshot {
+            pane,
+            mode,
+            select,
+            all,
+            ..
+        } => {
             handlers::snapshot::run(
                 &state.registry,
                 &state.generations,
                 &state.hashes,
                 pane,
                 mode,
+                select,
+                all,
             )
             .await
         }

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use agent_tui_engine::MutationEvent;
 use agent_tui_protocol::request::WaitCondition;
-use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response};
+use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Selector};
 use regex::Regex;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
@@ -40,6 +40,18 @@ pub async fn run(
         Ok(c) => c,
         Err(resp) => return resp,
     };
+
+    // Pre-compile selectors so parse errors fail fast with the offending
+    // byte rather than spinning to timeout silently.
+    if let WaitCondition::Ref { selector, .. } = &condition {
+        if let Err(e) = Selector::parse(selector) {
+            return Response::err(ErrorBody::new(
+                ErrorCode::InvalidArgs,
+                format!("selector parse error at byte {}: {}", e.at, e.kind),
+                "see docs/addressing-rfc.md §2.2",
+            ));
+        }
+    }
 
     let deadline = Instant::now() + timeout;
     let sub = pane_arc.engine.subscribe();
@@ -84,7 +96,7 @@ async fn drive(
     deadline: Instant,
 ) -> Outcome {
     // Pre-check: many conditions can be satisfied immediately.
-    if let Some(seq) = immediate_match(pane, &cond) {
+    if let Some(seq) = match_condition(pane, &cond).await {
         return Outcome::Matched { sequence: seq };
     }
 
@@ -116,27 +128,24 @@ async fn drive(
 
         match tokio::time::timeout(select_timeout, sub.recv()).await {
             Ok(Ok(_evt)) => {
-                if let Some(seq) = immediate_match(pane, &cond) {
+                if let Some(seq) = match_condition(pane, &cond).await {
                     return Outcome::Matched { sequence: seq };
                 }
                 quiet_deadline = next_quiet_deadline(&cond);
             }
             Ok(Err(RecvError::Lagged(_))) => {
-                // Missed events under load — re-check.
-                if let Some(seq) = immediate_match(pane, &cond) {
+                if let Some(seq) = match_condition(pane, &cond).await {
                     return Outcome::Matched { sequence: seq };
                 }
             }
             Ok(Err(RecvError::Closed)) => return Outcome::PaneDead,
             Err(_) => {
-                // Tick timeout (quiet period or exit poll). For Exit, poll.
                 if matches!(cond, WaitCondition::Exit)
                     && pane.pty.try_exit_code().ok().flatten().is_some()
                 {
                     let seq = pane.engine.snapshot().sequence;
                     return Outcome::Matched { sequence: seq };
                 }
-                // For quiet-period conditions, the tick is the answer.
                 if quiet_deadline.is_some()
                     && quiet_deadline.is_some_and(|q| q <= Instant::now())
                     && let Some(seq) = quiet_match(pane, &cond)
@@ -146,6 +155,28 @@ async fn drive(
             }
         }
     }
+}
+
+/// Async unification of the immediate-match check — sync conditions
+/// delegate to [`immediate_match`]; the `Ref` condition needs the
+/// adapter outline so it runs async.
+async fn match_condition(pane: &Pane, cond: &WaitCondition) -> Option<u64> {
+    match cond {
+        WaitCondition::Ref { selector, gone } => ref_match(pane, selector, *gone).await,
+        _ => immediate_match(pane, cond),
+    }
+}
+
+async fn ref_match(pane: &Pane, selector: &str, gone: bool) -> Option<u64> {
+    // Parse errors were validated up-front; unwrap here is safe.
+    let sel = Selector::parse(selector).ok()?;
+    let snap = pane.engine.snapshot();
+    let adapter = pane.adapter().await;
+    // outline() may fail; treat failure as "no match this round."
+    let outline = adapter.outline(&snap).await.ok()?;
+    let hit = sel.first(&outline).is_some();
+    let matched = if gone { !hit } else { hit };
+    matched.then_some(snap.sequence)
 }
 
 /// Synchronous check: is the condition already satisfied?
@@ -161,12 +192,14 @@ fn immediate_match(pane: &Pane, cond: &WaitCondition) -> Option<u64> {
         }
         WaitCondition::AltScreen { on } => (snap.modes.alt_screen == *on).then_some(snap.sequence),
         // Hash is resolved to `Since` upstream; Cells/Idle/CursorStable/Exit
-        // are event-driven below.
+        // are event-driven below; Ref runs through [`ref_match`] which is
+        // async and lives outside this sync arm.
         WaitCondition::Hash { .. }
         | WaitCondition::Cells { .. }
         | WaitCondition::CursorStable { .. }
         | WaitCondition::Idle { .. }
-        | WaitCondition::Exit => None,
+        | WaitCondition::Exit
+        | WaitCondition::Ref { .. } => None,
     }
 }
 

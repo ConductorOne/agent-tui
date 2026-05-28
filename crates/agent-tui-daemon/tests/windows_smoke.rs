@@ -91,6 +91,8 @@ async fn windows_spawn_cmd_echoes() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;

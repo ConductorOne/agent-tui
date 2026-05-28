@@ -117,6 +117,8 @@ async fn pty_echo_round_trip() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -210,6 +212,8 @@ async fn press_round_trip_through_pty() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -403,6 +407,8 @@ async fn snapshot_uses_attached_adapter_outline() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -433,6 +439,8 @@ async fn snapshot_response_carries_nonced_delimiter() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -487,6 +495,8 @@ async fn osc133_marker_upgrades_state_to_shell() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -532,6 +542,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -556,6 +568,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -626,6 +640,8 @@ async fn focus_cleared_when_focused_pane_dies() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -661,6 +677,8 @@ async fn snapshot_cells_mode_returns_rle_grid() {
             mode: SnapshotMode::Cells,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -710,6 +728,8 @@ async fn snapshot_hybrid_mode_carries_both() {
             mode: SnapshotMode::Hybrid,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -745,6 +765,8 @@ async fn snapshot_hash_changes_after_output() {
                 mode: SnapshotMode::Outline,
                 png: None,
                 annotate: false,
+            select: None,
+            all: false,
             },
         )
         .await;
@@ -760,6 +782,8 @@ async fn snapshot_hash_changes_after_output() {
                     mode: SnapshotMode::Outline,
                     png: None,
                     annotate: false,
+            select: None,
+            all: false,
                 },
             )
             .await;
