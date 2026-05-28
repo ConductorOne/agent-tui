@@ -9,7 +9,7 @@ harness: claude
 
 # RFC: agent-tui — Release Pipeline
 
-- **Status:** Draft v2
+- **Status:** Draft v3 (ConductorOne-integrated)
 - **Companion to:** `RELEASING.md` (the runbook, written alongside)
 - **Trigger:** Time to actually ship the binary. Today there's no
   release infra; we need a "git tag v0.1.0 → 7 platform binaries on
@@ -17,22 +17,54 @@ harness: claude
 
 ## 0. TL;DR
 
-Adopt **dist** (formerly `cargo-dist`) for the binary build /
-package / publish pipeline, and **release-plz** for the
-version-bump-and-tag step. Layer **Sigstore keyless signing** and
-**SLSA-3 provenance** on top. The whole thing is driven by tags
-matching `v<semver>` on the default branch:
+Adopt **dist** (cargo-dist) as the Rust-native build orchestrator,
+but **integrate with the existing ConductorOne release
+infrastructure** the baton-* connectors use: same S3 bucket
+(`connector-artifact-registry`), same CDN
+(`dist.conductorone.com`), same Homebrew tap
+(`ConductorOne/homebrew-baton`), same Public ECR
+(`public.ecr.aws/conductorone/agent-tui`), same Sigstore
+attestation conventions (`*.provenance.sigstore.json` +
+`*.sbom.sigstore.json`), same Datadog failure notifications. Use
+**release-plz** for version bumps. End-to-end:
 
 ```
 edit code → release-plz PR (bumps version, regenerates changelog)
-         → merge PR
-         → tag v0.2.0 (release-plz can do this too)
-         → dist workflow builds 7 platforms, signs, attests, publishes
-         → GitHub Release + Homebrew tap + npm + curl installer
+         → merge PR → tag v0.2.0 (release-plz creates it)
+         → release.yml builds 6 Rust targets via dist
+         → cosign-sign each artifact (keyless OIDC)
+         → syft-SBOM each artifact + cosign-attest as bundle
+         → cosign-attest SLSA-1 provenance per artifact
+         → upload to S3 (connector-artifact-registry), CDN-served
+            via dist.conductorone.com/releases/ConductorOne/agent-tui/<tag>/
+         → docker buildx → public.ecr.aws/conductorone/agent-tui:<tag>
+         → POST signed manifest.json to dist.conductorone.com/api/v1
+         → push formula to ConductorOne/homebrew-baton
+         → publish GitHub Release with mirrors of the same artifacts
+         → Datadog notify on any failure
 ```
 
-A `v0.1.0-rc.1` tag does the same thing but marks the release as a
-prerelease and skips the "publish to stable channels" steps.
+A `v0.1.0-rc.1` tag does the same but marks the release as a
+prerelease and skips Homebrew formula updates.
+
+**What v3 changed from v2:**
+
+- Dropped the plan to create a new `ConductorOne/homebrew-tap` —
+  reuse the existing `ConductorOne/homebrew-baton` tap.
+- Added `dist.conductorone.com` (S3 + CDN + registry API) as a
+  first-class publication target, mirroring the baton-* flow.
+- Added Public ECR for container images (replaces ghcr.io plan).
+- Added syft for SBOMs + `cosign attest-blob` to wrap them as
+  Sigstore bundles — matches the ConductorOne convention used in
+  `ConductorOne/github-workflows/release.yaml`.
+- Added Datadog failure notification.
+- Added AWS OIDC IAM-role prerequisite — RelEng needs to
+  provision `GHA-Artifacts-ConductorOne-agent-tui` (and an ECR
+  push role) before the workflow can publish.
+- Strict semver tag validation aligned with ConductorOne's regex.
+- Dropped the `npm` distribution channel from v1 scope —
+  not part of the ConductorOne distribution pattern, and `cargo
+  install agent-tui` covers the Rust ecosystem.
 
 ## 1. Goals
 
@@ -46,8 +78,15 @@ prerelease and skips the "publish to stable channels" steps.
 - **No private keys to manage.** Keyless signing via GitHub Actions
   OIDC. No GPG keys, no Apple cert (for v1), no Authenticode cert.
 - **Install via the user's package manager of choice.** curl
-  installer + Homebrew + npm + cargo + container. One source of
-  truth (the GitHub Release), multiple delivery channels.
+  installer + Homebrew (`ConductorOne/homebrew-baton`) + cargo +
+  container (`public.ecr.aws/conductorone/agent-tui`). One source
+  of truth (`dist.conductorone.com` + GitHub Release mirror),
+  multiple delivery channels.
+- **Same release surface as baton-* connectors.** Operators
+  managing the ConductorOne stack should be able to find
+  agent-tui artifacts using the same patterns they already know
+  — same S3 bucket, same CDN, same Homebrew tap, same ECR
+  registry, same signature conventions.
 - **Honest about what's signed and how.** The README and
   `RELEASING.md` document the verification steps so users can
   confirm what they're installing.
@@ -77,6 +116,15 @@ prerelease and skips the "publish to stable channels" steps.
   workspace metadata won't try to disambiguate.
 - **Continuous deployment.** Releases are deliberate, tag-driven.
   Nothing auto-ships on `main`.
+- **npm wrapper.** Dropped from v3 scope — the ConductorOne
+  distribution pattern doesn't use it, and `cargo install
+  agent-tui` covers the Rust ecosystem. Can revisit if there's
+  demand from Node-shop users.
+- **Reusing `ConductorOne/github-workflows/release.yaml`.** That
+  workflow is GoReleaser-specific. Rather than fork or extend it
+  to cover Rust, we run a parallel Rust pipeline that produces the
+  same artifact shapes and pushes to the same downstream
+  infrastructure.
 
 ## 3. Tool stack
 
@@ -183,7 +231,65 @@ slsa-verifier verify-artifact agent-tui-x86_64-linux.tar.gz \
   --source-tag v0.2.0
 ```
 
-### 3.5 Why not GoReleaser
+### 3.5 ConductorOne distribution infrastructure (new in v3)
+
+ConductorOne already runs a release pipeline for ~230 baton-*
+connectors. The Rust pipeline reuses every downstream component;
+only the build orchestrator differs (dist instead of GoReleaser).
+
+Shared infrastructure we plug into:
+
+| Component | URL / location | Role |
+|---|---|---|
+| Release reusable workflow (Go) | `ConductorOne/github-workflows/.github/workflows/release.yaml` | Reference for the manifest format, S3 layout, and registry API conventions. We don't call it (it's GoReleaser-only) — we mirror its outputs. |
+| S3 bucket | `s3://connector-artifact-registry/releases/<org>/<repo>/<tag>/` (us-west-2) | Canonical artifact storage |
+| CDN | `https://dist.conductorone.com/releases/<org>/<repo>/<tag>/` | Public front for the bucket |
+| Registry API | `https://dist.conductorone.com/api/v1` | Records release metadata; takes the signed `manifest.json`; OIDC-authenticated with audience `connector-registry` |
+| Homebrew tap | `ConductorOne/homebrew-baton` (Formula/ dir, one .rb per artifact) | Public tap; PR'd by the bot account on each release |
+| Public ECR | `public.ecr.aws/conductorone/<name>` (us-east-1) | Multi-arch container images, OIDC-pushed |
+| AWS IAM (artifacts) | role `GHA-Artifacts-ConductorOne-<repo>` (account 025044153841) | OIDC-assumed by the workflow for S3 + ECR-public writes |
+| AWS IAM (Lambda) | role `GitHubActionsECRPushRole-<repo>` (account 168442440833) | Not needed for agent-tui — Lambda is connector-specific |
+| Datadog | `us3.datadoghq.com` events API | `notify-release-failure` job posts a structured event on red runs |
+
+The artifact-naming + signing conventions to match exactly:
+
+```
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz                  (linux: tar.gz, darwin: zip)
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz.sig              (cosign signature)
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz.cert             (cosign cert)
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz.sbom.json        (syft SPDX SBOM)
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz.sbom.sigstore.json        (SBOM as cosign attestation bundle)
+<repo>-v<X.Y.Z>-<os>-<arch>.tar.gz.provenance.sigstore.json  (SLSA-1 provenance bundle)
+<repo>_<X.Y.Z>_checksums.txt                        (unified SHA256SUMS — cosign-signed too)
+manifest.json                                       (merged manifest of all artifacts — cosign-signed)
+manifest.json.sig / .cert / .sigstore.json
+```
+
+The `manifest.json` is the keystone — it lists every artifact's
+URL + sha256 + size + signature bundle, and is what the registry
+API ingests. Schema is implicit in `ConductorOne/github-workflows/
+cmd/generate-manifest/`; we'll add a Rust-side equivalent or call
+the same Go tool as a step.
+
+**Prerequisites (RelEng must do these once before Phase 4):**
+
+- Create `GHA-Artifacts-ConductorOne-agent-tui` IAM role with the
+  same trust policy + S3 + ECR-public permissions as the baton-*
+  roles. Naming: see `ConductorOne/github-workflows/scripts/
+  derive-iam-role-name.sh` for the exact convention (truncate + hash
+  for names >64 chars; ours fits).
+- Confirm `homebrew-baton` accepts contributions for non-baton-*
+  formulas (no rename needed — the tap is named after baton
+  historically but doesn't enforce a baton- prefix; see
+  `Formula/baton.rb` for the SDK itself in there).
+- Confirm `public.ecr.aws/conductorone/` accepts pushes for
+  agent-tui (it should, same OIDC role pattern).
+- Confirm `dist.conductorone.com/api/v1` accepts `agent-tui` as a
+  non-connector registry record (or — if the API is connector-
+  specific — agree on either extending it or skipping registry-API
+  recording for agent-tui and treating S3+CDN as the SoT).
+
+### 3.6 Why not GoReleaser
 
 GoReleaser added Rust support in 2024, but as of 2026 its own docs
 flag several caveats for Rust: it doesn't install Cargo/Rustup/Zig/
@@ -197,34 +303,28 @@ specifically, dist wins.
 
 ## 4. Repository changes
 
-What lands when this RFC is implemented:
+What lands when this RFC is fully implemented:
 
 ```
-dist-workspace.toml                    # NEW — dist config
-Cargo.toml                              # MODIFIED — [profile.dist] + repository URL
-.github/workflows/release.yml           # NEW — generated by `dist init`
-.github/workflows/release-plz.yml       # NEW — release-plz action
-.github/workflows/slsa.yml              # NEW — SLSA-3 reusable workflow caller
+dist-workspace.toml                     # NEW — dist config (targets, installers, tap)
+Cargo.toml                              # MODIFIED — [profile.dist]
+.github/workflows/release.yml           # NEW — dist-generated + custom jobs
+.github/workflows/release-plz.yml       # NEW — version bump + Release PR
 .release-plz.toml                       # NEW — release-plz config
+.github/release-extra-jobs/             # NEW — SBOM, cosign, S3, ECR, Datadog steps
+   sbom-and-attest.yml
+   upload-to-s3.yml
+   push-ecr.yml
+   notify-datadog.yml
+docker/Dockerfile                       # NEW — distroless base, copies musl binary
 CHANGELOG.md                            # NEW — managed by release-plz
 RELEASING.md                            # NEW — runbook (separate doc)
 README.md                               # MODIFIED — install + verify section
 docs/release-rfc.md                     # NEW — this doc
 ```
 
-Cargo.toml diff (workspace `[package]` section):
-
-```diff
- [workspace.package]
- version = "0.1.0"
- license = "Apache-2.0"
--repository = "https://github.com/agent-tui/agent-tui"
-+repository = "https://github.com/ConductorOne/agent-tui"
- authors = ["agent-tui contributors"]
-```
-
-(The current `agent-tui/agent-tui` URL is wrong; dist refuses to
-init until this is set to the real path.)
+Cargo.toml repository URL is already correct
+(`https://github.com/ConductorOne/agent-tui`) after the rename PR.
 
 `[profile.dist]` block dist injects into Cargo.toml:
 
@@ -314,14 +414,28 @@ Two pieces above are worth flagging:
 
 ### 6.2 Tag format
 
-- Stable: `v<MAJOR>.<MINOR>.<PATCH>` — `v0.2.0`, `v1.0.0`.
-- Prerelease: `v<MAJOR>.<MINOR>.<PATCH>-<kind>.<n>` —
-  `v0.2.0-rc.1`, `v1.0.0-alpha.3`. dist detects the suffix and marks
-  the GitHub Release as prerelease.
-- The matching glob in `release.yml` is `**[0-9]+.[0-9]+.[0-9]+*`.
-  (dist's default; covers `v0.1.0` and `0.1.0` and `releases/0.1.0`.)
-  We will only use the `v`-prefix form; the others work for
-  compatibility.
+Matches ConductorOne's strict semver regex from
+`ConductorOne/github-workflows/release.yaml`:
+
+```
+^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)
+(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)
+(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?
+(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$
+```
+
+In English:
+
+- **Stable:** `v<MAJOR>.<MINOR>.<PATCH>` — `v0.2.0`, `v1.0.0`.
+- **Prerelease:** `v<MAJOR>.<MINOR>.<PATCH>-<id>[.<n>]` —
+  `v0.2.0-rc.1`, `v1.0.0-alpha.3`. The `dist` workflow detects the
+  suffix and marks the GitHub Release as prerelease; ConductorOne
+  conventions also skip Homebrew formula updates for prereleases.
+- **Build metadata** (`+<build>`) is allowed by the regex but we
+  don't use it in practice.
+
+The validate-inputs step in our `release.yml` mirrors this regex
+so we reject mismatched tags up front instead of failing midway.
 
 ### 6.3 What triggers what
 
@@ -490,24 +604,33 @@ The full version is `RELEASING.md`. Summary here:
 
 ## 9. Open questions
 
-- **Tap repo bootstrapping.** `ConductorOne/homebrew-tap` doesn't exist
-  yet. We need to create it before dist's first run, or the
-  publish-homebrew-formula job will error. Quick fix — initialize an
-  empty repo with a `Formula/` directory.
-- **npm package name.** `@conductorone/agent-tui` requires the
-  `conductorone` npm org (lowercase — npm scopes are lowercase).
-  Alternative: ship as `agent-tui` (unscoped, depends on
-  availability). Need to check; defer until step 4 of the phased
-  rollout.
+- **Registry API agent-tui support.** Does
+  `dist.conductorone.com/api/v1` accept a non-connector record?
+  v3 default is to skip the registry API call until RelEng
+  confirms. The S3 + CDN flow works either way.
+- **Public ECR namespace.** Do non-baton-* projects live under
+  `public.ecr.aws/conductorone/` or a different prefix? RelEng
+  call.
+- **Homebrew formula generation.** Does dist's auto-generated
+  formula format match what the rest of `homebrew-baton` expects
+  (the GoReleaser-generated `# This file was generated by
+  GoReleaser. DO NOT EDIT.` header is conventional but not load-
+  bearing). If dist's diverges in a way that makes the tap look
+  inconsistent, Phase 4b (custom formula generation) is the
+  fallback.
+- **Apple notarization** — defer until v0.3. baton-* uses gon +
+  Apple Developer cert ($99/yr); reuses the same secrets
+  (`APPLE_SIGNING_KEY_P12`, `APPLE_SIGNING_KEY_P12_PASSWORD`,
+  `AC_PASSWORD`, `AC_PROVIDER`). Adding to agent-tui would be a
+  ~half-day workflow change once we decide.
+- **Authenticode for Windows MSI** — defer; ConductorOne uses
+  GoReleaser Pro for MSI builds, separate cert flow. We can ship
+  Windows zips without it; MSI signing waits.
 - **crates.io vs binary-only.** release-plz can publish to crates.io
   per crate. For v0.x, do we publish protocol/adapter as separate
   crates, or only the top-level binary? Lean toward binary-only for
   v0.x — the workspace internals are unstable. Bump to publishing
   individual crates at v1.0.
-- **Container image.** Defer to a separate RFC. Plumbing
-  is non-trivial (multi-arch buildx, sign with cosign). The musl
-  binary inside the container is what we already build in the dist
-  matrix; the Dockerfile is a thin wrapper.
 - **Reproducible builds.** Worth doing. Not blocking v0.1 release.
 
 ## 10. Phased rollout
@@ -567,75 +690,208 @@ published artifacts; the message specifies the expected
 should propose bumping `0.1.0-rc.1` → `0.1.0` (since rc-N → stable
 is what release-plz infers from "no unreleased changes").
 
-### Phase 4: Distribution channels (1-2 days)
+### Phase 4: Homebrew (existing `homebrew-baton` tap) (~half day)
 
-**Bootstrap step (must precede first publish):**
+The tap is `ConductorOne/homebrew-baton`. It already publishes
+~230 baton-* formulas — see `Formula/baton.rb` for the canonical
+shape. Each formula is GoReleaser-generated and points at the
+artifact URL on GitHub Releases.
 
-- Create `ConductorOne/homebrew-tap` repo, empty except for a placeholder
-  `Formula/.gitkeep`.
-- Generate a fine-grained PAT scoped to that tap repo
-  (`contents: write`, `pull-requests: write`). Store as
-  `HOMEBREW_TAP_TOKEN` in the agent-tui repo's secrets. Wire it
-  into release.yml via `github-build-setup`.
-- Decide on npm name: `@conductorone/agent-tui` (scoped, requires
-  the `conductorone` npm org) vs `agent-tui` (unscoped, must be
-  available). Check availability first. If npm org doesn't exist,
-  create it; npm
-  scopes are free.
-- Set `NPM_TOKEN` secret if publishing to npm.
+Two sub-options:
 
-**Wire it up:**
+- **4a (preferred):** Make `dist`'s built-in homebrew publisher
+  target `ConductorOne/homebrew-baton`. Set `tap =
+  "ConductorOne/homebrew-baton"` in `dist-workspace.toml` + a
+  `HOMEBREW_TAP_TOKEN` (fine-grained PAT, contents: write,
+  pull-requests: write, scoped to homebrew-baton only). On first
+  run, dist opens a PR adding `Formula/agent-tui.rb`. Subsequent
+  runs update it.
+- **4b:** Write a small workflow step (post-dist) that generates a
+  Ruby formula from the `manifest.json` we already produce — same
+  shape as the baton formulas — and opens a PR against
+  `homebrew-baton/Formula/agent-tui.rb`. ~50 LOC of bash + jq + an
+  ERB template. Use this if dist's generated formula diverges from
+  the baton convention in ways that bother RelEng.
 
-- Add `publish-jobs = ["homebrew", "npm"]` to dist config.
-- Set `tap = "ConductorOne/homebrew-tap"`.
-- Push `v0.2.0` for the first real distribution-channel release.
+**Prereqs from SRE/RelEng:**
+- Create a fine-grained PAT and save as `HOMEBREW_TAP_TOKEN` secret
+  on the agent-tui repo. PAT must have write access to
+  `ConductorOne/homebrew-baton` only.
 
-**Exit criteria:** `brew install conductorone/tap/agent-tui`,
-`npm install -g @conductorone/agent-tui` (or unscoped equivalent), and
-the curl installer all install the same binary verifiable to the
-same Sigstore cert.
+**Exit criteria:** `brew install ConductorOne/baton/agent-tui`
+installs the binary and `agent-tui --version` matches the tagged
+version.
 
-### Phase 5: SLSA-3 provenance (half a day to one day)
+### Phase 5: dist.conductorone.com S3 + CDN + registry API (~2 days)
 
-- Add the SLSA generator as a downstream job in release.yml via
-  `extra-jobs` (see §7.3 — original `workflow_run` approach is
-  discarded as buggy).
-- Push `v0.2.1`. Verify `*.intoto.jsonl` attestations land on the
-  release.
-- Document `slsa-verifier verify-artifact` usage in `RELEASING.md`.
+This is the meat of the ConductorOne integration. Mirrors the
+artifact shape, signing conventions, and S3 layout that baton-*
+connectors already publish.
 
-**Exit criteria:** `slsa-verifier` succeeds against the published
-artifacts.
+**Prereqs from SRE/RelEng (must precede):**
+- Provision IAM role `GHA-Artifacts-ConductorOne-agent-tui` (account
+  `025044153841`) with S3 write access to
+  `connector-artifact-registry/releases/ConductorOne/agent-tui/*`
+  and OIDC trust for the agent-tui repo's release workflow. Same
+  trust policy as baton-* roles use; naming convention from
+  `ConductorOne/github-workflows/scripts/derive-iam-role-name.sh`.
+- Confirm whether `dist.conductorone.com/api/v1` accepts a
+  non-connector record. If not, agree on either (a) extending the
+  API to accept agent-tui or (b) skipping the registry-API record
+  and treating S3+CDN as SoT. v3 defaults to (b) until RelEng
+  confirms (a).
 
-Total: **5-7 days** spread over 5 PRs. The original "3 days"
-estimate was optimistic — Phase 1 cross-compile debugging is the
-common time sink.
+**Workflow steps to add (as dist `extra-jobs` or post-build hooks):**
+
+1. **SBOM via syft.** For each archive: `syft <archive> -o spdx-json
+   > <archive>.sbom.json`. Match the ConductorOne naming exactly.
+2. **Sign SBOMs as attestations.** `cosign attest-blob --yes
+   --predicate <archive>.sbom.json --type https://spdx.dev/Document
+   --bundle <archive>.sbom.sigstore.json <archive>`. Bundle goes
+   to S3.
+3. **SLSA-1 provenance.** Generate a predicate JSON using the
+   template from
+   `ConductorOne/github-workflows/templates/.slsa-provenance-
+   predicate-template.json.tmpl`, substituting our repo +
+   workflow-ref. Then `cosign attest-blob --type slsaprovenance1
+   --bundle <archive>.provenance.sigstore.json <archive>`.
+4. **Sign individual archives.** `cosign sign-blob --yes
+   --output-signature <archive>.sig --output-certificate
+   <archive>.cert <archive>`.
+5. **Unified checksums.** Merge per-platform SHA256SUMS into
+   `agent-tui_<X.Y.Z>_checksums.txt`, then cosign-sign + attest.
+6. **Generate manifest.json.** Either call the Go tool from
+   `ConductorOne/github-workflows/cmd/generate-manifest/` (cleanest
+   — same output as the baton-* pipeline) or write a Rust port.
+   Then cosign-sign + attest the manifest.
+7. **Upload to S3.** `aws s3 cp dist/* s3://connector-artifact-
+   registry/releases/ConductorOne/agent-tui/<tag>/ --cache-control
+   "public,max-age=31536000,immutable"` for each artifact. AWS
+   credentials via `aws-actions/configure-aws-credentials@v5` using
+   the OIDC role.
+8. **(Conditional) Call registry API.** With audience-scoped OIDC
+   token, POST the signed `manifest.json` to
+   `dist.conductorone.com/api/v1`. Same Go tool from
+   `ConductorOne/github-workflows/cmd/record-release/`.
+
+**Verification step:** mirror
+`ConductorOne/github-workflows/scripts/validate-release-artifacts.sh`
+— `cosign verify-blob` on each archive + checksums + manifest.
+
+**Exit criteria:**
+- Artifacts at `https://dist.conductorone.com/releases/ConductorOne/
+  agent-tui/v0.2.0/<file>` resolve.
+- `cosign verify-blob` succeeds for each archive against
+  `--certificate-identity-regexp '^https://github\.com/ConductorOne/
+  agent-tui/\.github/workflows/release\.yml@refs/tags/v'`.
+- Signed `manifest.json` resolves and verifies.
+- (If 3.5-(a) is chosen) registry API record exists for the tag.
+
+### Phase 6: Container image to Public ECR (~1 day)
+
+Mirrors the `goreleaser-docker` job in
+`ConductorOne/github-workflows/release.yaml`.
+
+**Image:** `public.ecr.aws/conductorone/agent-tui:<tag>` +
+`public.ecr.aws/conductorone/agent-tui:latest`. Multi-arch
+(linux/amd64 + linux/arm64).
+
+**Steps:**
+
+- Multi-stage Dockerfile using the musl-static binary the dist
+  matrix already produces (we get this for free since musl is in
+  our targets list). Final stage:
+  `gcr.io/distroless/static-debian11:nonroot` (same base the
+  baton-* connectors use). Single `ENTRYPOINT ["/agent-tui"]`.
+- `docker buildx build --platform linux/amd64,linux/arm64 --push`
+  using OIDC-assumed `GHA-Artifacts-ConductorOne-agent-tui`.
+- `cosign attest --yes --type https://slsa.dev/provenance/v1
+  --predicate <predicate.json> <image>@<digest>` for SLSA
+  attestation on the image (separate from the blob attestations).
+- Add the image to the merged `manifest.json` so consumers see
+  both the binary and the container locations.
+
+**Open question:** ConductorOne's pattern is to push to the
+artifacts AWS account (025044153841) for ECR-public. Confirm with
+RelEng that agent-tui (non-baton) lives in the same registry
+namespace — `public.ecr.aws/conductorone/agent-tui` — or whether
+it should be under a different prefix.
+
+**Exit criteria:**
+- `docker pull public.ecr.aws/conductorone/agent-tui:v0.2.0` works
+  from a clean host.
+- `cosign verify public.ecr.aws/conductorone/agent-tui:v0.2.0`
+  succeeds against our identity.
+
+### Phase 7: Datadog failure notification (~half day)
+
+Mirror the `notify-release-failure` job from
+`ConductorOne/github-workflows/release.yaml`. Posts a Datadog event
+to `us3.datadoghq.com/api/v1/events` on any red job in the release
+pipeline. Useful for the SRE on-call rotation to see release-flow
+regressions across baton-* and agent-tui in the same dashboard.
+
+**Prereqs:**
+- Add `DATADOG_API_KEY` to the agent-tui repo secrets (same key the
+  baton-* repos already share, scoped through GitHub org secrets).
+
+**Exit criteria:** force a fake failure on a test tag; confirm the
+event lands in Datadog with `github_repository:ConductorOne/agent-
+tui`.
+
+Total across all phases: **7-10 days** of work spread over 7 PRs.
+The bulk is Phase 5 (dist.conductorone.com integration); each
+other phase is small but AWS/IAM prereq coordination with SRE can
+add wall-clock delay independent of engineering time.
 
 ## 11. Test plan
 
 ### Pre-merge tests (small unit-style)
 
 - `dist plan` runs locally without error after Phase 1 lands.
-- `release.yml` is regenerable via `dist init` and the diff is empty.
-- `release-plz` opens a Release PR within ~30s of a push to main
-  (tested by pushing a no-op commit).
+- `release.yml` is regenerable via `dist init` and the diff is
+  small + bounded to the extra-jobs hooks we control.
+- `release-plz` opens a Release PR within ~minutes of a push to
+  main (tested by pushing a no-op commit).
+- The `derive-iam-role-name.sh` script (from
+  `ConductorOne/github-workflows`) returns the expected role names
+  when invoked with our `--suffix ConductorOne-agent-tui`.
 
 ### Tag-driven tests (each phase has at least one)
 
-- `v0.0.0-rc.N` tags for Phases 1-3 validate the pipeline without
-  publishing real artifacts (mark as prerelease, delete after).
-- `v0.1.0-rc.0` is the first "real" prerelease — published, but
-  marked as prerelease so users don't auto-pull it.
-- `v0.1.0` is the first stable release after all phases land.
+- **Phase 1:** `v0.1.0-rc.0` validates the dist matrix builds 6
+  platforms, lands on GitHub Releases. Delete the prerelease + tag
+  after smoke.
+- **Phase 2:** `v0.1.0-rc.1` validates cosign signs each artifact.
+- **Phase 3:** `v0.1.0-rc.2` validates release-plz → tag → release
+  chain (or the first stable `v0.1.0` if Phase 3 lands after
+  release-plz is already wired).
+- **Phase 4:** `v0.1.0` is the first release with a Homebrew
+  formula opened against `ConductorOne/homebrew-baton`.
+- **Phase 5:** `v0.2.0-rc.0` validates S3 upload + manifest + (if
+  applicable) registry API recording.
+- **Phase 6:** same `v0.2.0-rc.0` validates Public ECR push +
+  cosign attest.
+- **Phase 7:** force a failure on a test branch + tag; confirm
+  Datadog gets the event.
+- `v0.2.0` is the first complete release with everything wired.
 
-### Post-publish smoke
+### Post-publish smoke (every release)
 
-- Clean macOS VM: `curl --proto '=https' --tlsv1.2 -LsSf
-  https://github.com/ConductorOne/agent-tui/releases/download/v0.1.0/agent-tui-installer.sh
-  | sh`, then `agent-tui --version`.
-- Same on Linux x86_64 + aarch64 + Windows.
-- `cosign verify-blob` on each artifact.
-- `slsa-verifier verify-artifact` on each artifact.
+- Clean macOS arm64 / amd64 + Linux x86_64 / aarch64 + Windows VM:
+  install via curl installer, `agent-tui --version` matches.
+- `brew install ConductorOne/baton/agent-tui` on macOS — version
+  matches.
+- `docker run --rm public.ecr.aws/conductorone/agent-tui:vX.Y.Z
+  --version` — version matches.
+- `cosign verify-blob` succeeds on every archive with the expected
+  identity regex.
+- `cosign verify` succeeds on the container image.
+- The signed `manifest.json` at
+  `https://dist.conductorone.com/releases/ConductorOne/agent-tui/<tag>/manifest.json`
+  resolves + verifies.
+- (Optional, depends on §10 resolution) `dist.conductorone.com/api/v1`
+  shows a record for the tag.
 
 ## 12. References
 

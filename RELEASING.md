@@ -149,16 +149,13 @@ agent-tui --version
 **Homebrew (macOS/Linux):**
 
 ```bash
-brew install conductorone/tap/agent-tui
+brew tap ConductorOne/baton
+brew install agent-tui
 agent-tui --version
 ```
 
-**npm (any platform):**
-
-```bash
-npm install -g @conductorone/agent-tui
-agent-tui --version
-```
+Tap is the existing `ConductorOne/homebrew-baton` — same one used
+for baton-* connectors.
 
 **Cargo from source:**
 
@@ -166,10 +163,16 @@ agent-tui --version
 cargo install agent-tui --version 0.2.0
 ```
 
-**Container (when v0.3+):**
+**Container (Public ECR):**
 
 ```bash
-docker run --rm ghcr.io/ConductorOne/agent-tui:v0.2.0 --version
+docker run --rm public.ecr.aws/conductorone/agent-tui:v0.2.0 --version
+```
+
+**CDN artifacts (mirror of the GitHub Release):**
+
+```bash
+curl -O https://dist.conductorone.com/releases/ConductorOne/agent-tui/v0.2.0/agent-tui-v0.2.0-linux-amd64.tar.gz
 ```
 
 ### 6. Verify the supply chain
