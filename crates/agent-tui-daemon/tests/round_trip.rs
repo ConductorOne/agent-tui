@@ -124,12 +124,30 @@ async fn pty_echo_round_trip() {
     .await;
     assert!(snap.response.success, "snapshot failed: {snap:?}");
     let data = snap.response.data.expect("data");
-    let outline_name = data["outline"]["nodes"][0]["name"]
-        .as_str()
-        .expect("outline name");
+    // The shell adapter emits a single `@shell` root with children;
+    // the buffer/prompt content lives in those children. Walk them
+    // (and any nested children) collecting names, then assert "hello"
+    // is anywhere in the tree.
+    fn walk(v: &serde_json::Value, out: &mut String) {
+        if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
+            out.push_str(n);
+            out.push('\n');
+        }
+        if let Some(kids) = v.get("children").and_then(|c| c.as_array()) {
+            for k in kids {
+                walk(k, out);
+            }
+        }
+    }
+    let mut all_names = String::new();
+    if let Some(roots) = data["outline"]["nodes"].as_array() {
+        for r in roots {
+            walk(r, &mut all_names);
+        }
+    }
     assert!(
-        outline_name.contains("hello"),
-        "expected outline to contain 'hello', got: {outline_name:?}"
+        all_names.contains("hello"),
+        "expected outline to contain 'hello', got: {all_names:?}"
     );
 
     // Clean up.

@@ -181,41 +181,60 @@ impl Adapter for ShellAdapter {
     }
 
     async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
+        // Refs: `@shell.buffer` carries everything above the prompt;
+        // `@shell.prompt` is the live input line (focused=true when the
+        // shell is waiting for input — agents can `wait --ref
+        // '@shell.prompt[focused]'`).
         let rows = grid_rows(snap);
-        let prompt = last_non_empty(&rows).map(|i| rows[i].clone());
-        let body = rows
+        let prompt_idx = last_non_empty(&rows);
+        let prompt = prompt_idx.map(|i| rows[i].clone());
+        let body_rows: Vec<String> = rows
             .iter()
-            .filter(|r| !r.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
+            .enumerate()
+            .filter(|(i, r)| !r.is_empty() && Some(*i) != prompt_idx)
+            .map(|(_, r)| r.clone())
+            .collect();
+        let body = body_rows.join("\n");
 
-        let mut nodes = vec![OutlineNode {
-            r#ref: "@e1".into(),
-            role: "buffer".into(),
-            name: body,
-            value: None,
-            focused: true,
-            anchor: Some((0, 0)),
-            children: Vec::new(),
+        let mut children = Vec::new();
+        if !body.is_empty() {
+            children.push(OutlineNode {
+                r#ref: "@shell.buffer".into(),
+                role: "buffer".into(),
+                name: body,
+                focused: false,
+                anchor: Some((0, 0)),
+                durable: true,
                 ..OutlineNode::default()
-        }];
+            });
+        }
         if let Some(p) = prompt {
-            nodes.push(OutlineNode {
-                r#ref: "@e2".into(),
+            children.push(OutlineNode {
+                r#ref: "@shell.prompt".into(),
                 role: "prompt".into(),
                 name: p,
-                value: None,
-                focused: false,
-                anchor: None,
-                children: Vec::new(),
+                // Without OSC 133 we can't be perfectly sure the shell
+                // is idle vs running a command; assume idle if the
+                // pane is not in alt-screen mode (a running TUI would
+                // have flipped that bit and lost the shell adapter).
+                focused: !snap.modes.alt_screen,
+                anchor: prompt_idx.map(|i| (i as u16, 0)),
+                durable: true,
                 ..OutlineNode::default()
             });
         }
 
+        let root = OutlineNode {
+            r#ref: "@shell".into(),
+            role: "root".into(),
+            durable: true,
+            children,
+            ..OutlineNode::default()
+        };
+
         Ok(Outline {
             adapter: "shell".into(),
-            nodes,
+            nodes: vec![root],
         })
     }
 
@@ -285,6 +304,9 @@ impl Adapter for VimAdapter {
     }
 
     async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
+        // Refs are scheme-stable: `@vim.buffer` / `@vim.statusline` /
+        // `@vim.cmdline` / `@vim.mode`. Same refs every frame, durable
+        // = true so `[durable]` selectors find them.
         let rows = grid_rows(snap);
         let parsed = parse_vim_state(&rows);
 
@@ -303,65 +325,92 @@ impl Adapter for VimAdapter {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let mut nodes = Vec::new();
-        let mut next_idx = 1u32;
+        // Build child nodes for the @vim root.
+        let mut children = Vec::new();
 
-        nodes.push(OutlineNode {
-            r#ref: format!("@e{next_idx}"),
+        children.push(OutlineNode {
+            r#ref: "@vim.mode".into(),
             role: "mode".into(),
             name: parsed.mode.to_string(),
             value: parsed.command_line.clone(),
             focused: false,
             anchor: parsed.commandline_row.map(|r| (r as u16, 0)),
-            children: Vec::new(),
-                ..OutlineNode::default()
+            durable: true,
+            ..OutlineNode::default()
         });
-        next_idx += 1;
 
         if let Some(file) = parsed.filename {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
+            children.push(OutlineNode {
+                r#ref: "@vim.file".into(),
                 role: "file".into(),
                 name: file,
                 value: parsed.modified.then(|| "modified".to_string()),
                 focused: false,
                 anchor: parsed.statusline_row.map(|r| (r as u16, 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
-            next_idx += 1;
         }
 
         if let Some(row) = parsed.statusline_row {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
-                role: "status".into(),
+            children.push(OutlineNode {
+                r#ref: "@vim.statusline".into(),
+                role: "statusline".into(),
                 name: rows[row].clone(),
-                value: None,
+                value: parsed.command_line.clone(),
                 focused: false,
                 anchor: Some((row as u16, 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
-            next_idx += 1;
+        }
+
+        // The command-line row gets its own node so `wait --ref
+        // '@vim.cmdline[focused]'` can fire on `:` / `/` prompts.
+        if let Some(row) = parsed.commandline_row {
+            let on_cmd = parsed.command_line.is_some();
+            children.push(OutlineNode {
+                r#ref: "@vim.cmdline".into(),
+                role: "cmdline".into(),
+                name: rows.get(row).cloned().unwrap_or_default(),
+                value: parsed.command_line.clone(),
+                focused: on_cmd,
+                anchor: Some((row as u16, 0)),
+                durable: true,
+                ..OutlineNode::default()
+            });
         }
 
         if !body.is_empty() {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
+            children.push(OutlineNode {
+                r#ref: "@vim.buffer".into(),
                 role: "buffer".into(),
                 name: body,
                 value: None,
-                focused: true,
+                // The buffer is focused when no transient prompt has
+                // stolen focus (cmdline). Keeps agents able to write
+                // `[role=buffer][focused]` without per-mode special-cases.
+                focused: parsed.command_line.is_none(),
                 anchor: Some((0, 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
         }
 
+        // One @vim root with children — agents can target the whole
+        // session (`@vim`) or any child (`@vim.statusline`).
+        let root = OutlineNode {
+            r#ref: "@vim".into(),
+            role: "root".into(),
+            name: String::new(),
+            durable: true,
+            children,
+            ..OutlineNode::default()
+        };
+
         Ok(Outline {
             adapter: "vim".into(),
-            nodes,
+            nodes: vec![root],
         })
     }
 
@@ -745,9 +794,20 @@ mod tests {
             .outline(&snap("user@host:~$ ls -la\nfile1 file2\nuser@host:~$ "))
             .await
             .unwrap();
-        // Buffer + prompt nodes.
         assert_eq!(outline.adapter, "shell");
-        assert!(outline.nodes.iter().any(|n| n.role == "prompt"));
+        // New shape: single `@shell` root with `@shell.buffer` +
+        // `@shell.prompt` children.
+        assert_eq!(outline.nodes.len(), 1);
+        let root = &outline.nodes[0];
+        assert_eq!(root.r#ref, "@shell");
+        assert!(root.durable);
+        assert!(
+            root.children.iter().any(|n| n.role == "prompt"),
+            "shell outline must include a prompt child"
+        );
+        let prompt = root.children.iter().find(|n| n.role == "prompt").unwrap();
+        assert_eq!(prompt.r#ref, "@shell.prompt");
+        assert!(prompt.focused, "prompt should be focused when not in alt-screen");
     }
 
     #[tokio::test]
@@ -787,6 +847,22 @@ mod tests {
         }
     }
 
+    /// Walk the @vim root's children. The new adapter shape is one
+    /// root node with the mode/file/statusline/cmdline/buffer as
+    /// children.
+    fn vim_children(outline: &Outline) -> &[OutlineNode] {
+        assert_eq!(outline.adapter, "vim");
+        assert_eq!(outline.nodes.len(), 1, "expected single @vim root");
+        let root = &outline.nodes[0];
+        assert_eq!(root.r#ref, "@vim");
+        assert!(root.durable);
+        &root.children
+    }
+
+    fn find_by_role<'a>(nodes: &'a [OutlineNode], role: &str) -> Option<&'a OutlineNode> {
+        nodes.iter().find(|n| n.role == role)
+    }
+
     /// In normal mode the last row is empty; statusline shows file + [N/M].
     #[tokio::test]
     async fn vim_normal_mode_outline() {
@@ -794,10 +870,11 @@ mod tests {
             .outline(&snap("hello world\nsecond line\nsample.txt [1/2]\n"))
             .await
             .unwrap();
-        assert_eq!(outline.adapter, "vim");
-        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        let kids = vim_children(&outline);
+        let mode = find_by_role(kids, "mode").unwrap();
         assert_eq!(mode.name, "normal");
-        let file = outline.nodes.iter().find(|n| n.role == "file").unwrap();
+        assert!(mode.durable, "@vim.mode should be durable");
+        let file = find_by_role(kids, "file").unwrap();
         assert_eq!(file.name, "sample.txt");
         assert!(file.value.is_none(), "not modified");
     }
@@ -809,10 +886,10 @@ mod tests {
             .outline(&snap("typing here\n\nsample.txt [1/1][+]\n-- INSERT --"))
             .await
             .unwrap();
-        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        let kids = vim_children(&outline);
+        let mode = find_by_role(kids, "mode").unwrap();
         assert_eq!(mode.name, "insert");
-        // [+] in statusline -> modified=true via `value: "modified"`.
-        let file = outline.nodes.iter().find(|n| n.role == "file").unwrap();
+        let file = find_by_role(kids, "file").unwrap();
         assert_eq!(file.name, "sample.txt");
         assert_eq!(file.value.as_ref().unwrap(), "modified");
     }
@@ -824,10 +901,14 @@ mod tests {
             .outline(&snap("buffer\n\nsample.txt [1/1]\n:write"))
             .await
             .unwrap();
-        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        let kids = vim_children(&outline);
+        let mode = find_by_role(kids, "mode").unwrap();
         assert_eq!(mode.name, "command");
-        // command_line lives in the `value` field of the mode node.
         assert_eq!(mode.value.as_ref().unwrap(), ":write");
+        // cmdline node exists and is focused.
+        let cmd = find_by_role(kids, "cmdline").unwrap();
+        assert!(cmd.focused, "cmdline should be focused when command_line is set");
+        assert_eq!(cmd.r#ref, "@vim.cmdline");
     }
 
     /// Search mode: command-line row starts with `/`.
@@ -837,7 +918,8 @@ mod tests {
             .outline(&snap("buffer\n\nsample.txt [1/1]\n/foo"))
             .await
             .unwrap();
-        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        let kids = vim_children(&outline);
+        let mode = find_by_role(kids, "mode").unwrap();
         assert_eq!(mode.name, "search");
         assert_eq!(mode.value.as_ref().unwrap(), "/foo");
     }
@@ -855,7 +937,8 @@ mod tests {
         for (marker, expected) in cases {
             let body = format!("buffer\n\nsample.txt [1/1]\n{marker}");
             let outline = VimAdapter.outline(&snap(&body)).await.unwrap();
-            let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+            let kids = vim_children(&outline);
+            let mode = find_by_role(kids, "mode").unwrap();
             assert_eq!(mode.name, expected, "marker {marker:?}");
         }
     }
@@ -867,7 +950,10 @@ mod tests {
             .outline(&snap("first\nsecond\nsample.txt [2/2]\n-- INSERT --"))
             .await
             .unwrap();
-        let buffer = outline.nodes.iter().find(|n| n.role == "buffer").unwrap();
+        let kids = vim_children(&outline);
+        let buffer = find_by_role(kids, "buffer").unwrap();
+        assert_eq!(buffer.r#ref, "@vim.buffer");
+        assert!(buffer.durable);
         assert_eq!(buffer.name, "first\nsecond");
         assert!(!buffer.name.contains("sample.txt"));
         assert!(!buffer.name.contains("INSERT"));
@@ -882,8 +968,32 @@ mod tests {
             .outline(&snap("just\nbuffer\ncontent"))
             .await
             .unwrap();
-        let mode = outline.nodes.iter().find(|n| n.role == "mode").unwrap();
+        let kids = vim_children(&outline);
+        let mode = find_by_role(kids, "mode").unwrap();
         assert_eq!(mode.name, "normal");
-        assert!(outline.nodes.iter().all(|n| n.role != "file"));
+        assert!(find_by_role(kids, "file").is_none());
+    }
+
+    /// Refs are stable across snapshots — `@vim.buffer` in frame N is
+    /// the same ref string in frame N+1, even when the content changes.
+    #[tokio::test]
+    async fn vim_refs_are_stable_across_frames() {
+        let a = VimAdapter
+            .outline(&snap("alpha\n\nsample.txt [1/1]\n"))
+            .await
+            .unwrap();
+        let b = VimAdapter
+            .outline(&snap("beta\ngamma\nsample.txt [2/2]\n"))
+            .await
+            .unwrap();
+        let refs_of = |o: &Outline| {
+            let mut out: Vec<String> = vim_children(o)
+                .iter()
+                .map(|n| n.r#ref.clone())
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(refs_of(&a), refs_of(&b), "refs must be stable");
     }
 }

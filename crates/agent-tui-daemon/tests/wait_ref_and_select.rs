@@ -105,7 +105,7 @@ async fn snapshot_select_filters_outline_to_matching_nodes() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
-            select: Some("[role=buffer]".into()),
+            select: Some("@shell.prompt".into()),
             all: false,
         },
     )
@@ -114,7 +114,8 @@ async fn snapshot_select_filters_outline_to_matching_nodes() {
     let data = env.response.data.unwrap();
     let nodes = data["outline"]["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "expected exactly one matched node: {nodes:?}");
-    assert_eq!(nodes[0]["role"].as_str().unwrap(), "buffer");
+    assert_eq!(nodes[0]["role"].as_str().unwrap(), "prompt");
+    assert_eq!(nodes[0]["ref"].as_str().unwrap(), "@shell.prompt");
 
     let _ = rt(&cfg, Command::Die { pane: None }).await;
 }
@@ -159,7 +160,7 @@ async fn wait_ref_fires_when_selector_matches_existing_node() {
         Command::Wait {
             pane: None,
             condition: WaitCondition::Ref {
-                selector: "[role=buffer]".into(),
+                selector: "@shell.prompt".into(),
                 gone: false,
             },
             timeout: Duration::from_secs(3),
@@ -209,7 +210,7 @@ async fn press_with_to_identity_routing_writes_keys_to_pty() {
         Command::Press {
             pane: None,
             keys: "x".into(),
-            to: Some("[role=buffer]".into()),
+            to: Some("@shell.prompt".into()),
         },
     )
     .await;
