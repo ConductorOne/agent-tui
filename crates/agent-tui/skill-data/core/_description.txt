@@ -1,1 +1,1 @@
-agent-tui usage — spawn, snapshot, wait, interact with PTY apps via @eN refs
+agent-tui usage — spawn, snapshot, wait, drive PTY apps; addressing model in the `addressing` skill
