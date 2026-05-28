@@ -9,11 +9,32 @@ pages, adapted to terminals.
 
 ## Installation
 
-### Cargo (from crates.io)
+Releases ship pre-built binaries for macOS (aarch64 + x86_64), Linux
+(aarch64 + x86_64, both glibc and musl), and Windows (x86_64). See
+the [latest release](https://github.com/ConductorOne/agent-tui/releases/latest)
+for archives and checksums.
+
+### Shell installer (macOS / Linux)
 
 ```bash
-cargo install agent-tui                # post-publish path
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/ConductorOne/agent-tui/releases/latest/download/agent-tui-installer.sh | sh
 ```
+
+Pin to a specific version by swapping `latest` for the tag — e.g.
+`download/v0.1.0/`.
+
+### PowerShell installer (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/ConductorOne/agent-tui/releases/latest/download/agent-tui-installer.ps1 | iex"
+```
+
+### Direct download
+
+Pick the right archive for your platform from the
+[release page](https://github.com/ConductorOne/agent-tui/releases/latest)
+and verify it against `sha256.sum` before extracting.
 
 ### From source
 
