@@ -108,6 +108,8 @@ Live record of the addressing-model rollout. Spec: `docs/addressing-rfc.md`.
 - [ ] htop adapter (nice to have)
 - [ ] fzf adapter (nice to have)
 - [ ] claude-code `response-streaming` vs `response-final` role split
+      (claude-code adapter now emits `@ai-cli.response` as a single
+      node; splitting requires per-CLI streaming-end detection)
 - [ ] Cell-mode crop for `snapshot --select --mode cells`
 
 ## Decisions log (addressing model)
