@@ -506,7 +506,17 @@ impl BwrapScenario {
         // `--unshare-net` is omitted when the fixture needs network
         // (e.g. an AI CLI talking to a localhost fake-inference server).
         // Otherwise the sandbox gets full network isolation.
-        if !self.fixture.needs_network {
+        //
+        // CI escape hatch: GitHub Actions runners can't satisfy
+        // bwrap's loopback setup inside an unshared netns —
+        // `bwrap: loopback: Failed RTM_NEWADDR: Operation not
+        // permitted`. Setting `AGENT_TUI_BWRAP_SHARE_NET=1` skips
+        // `--unshare-net` so tests share the host's netns. Fine in
+        // CI (fixtures don't make network calls anyway); the local
+        // default keeps full isolation.
+        let share_net = std::env::var_os("AGENT_TUI_BWRAP_SHARE_NET")
+            .is_some_and(|v| !v.is_empty() && v != "0");
+        if !self.fixture.needs_network && !share_net {
             v.push("--unshare-net".into());
         }
         for (k, val) in self.fixture.env {

@@ -111,6 +111,11 @@ jobs:
         # already-built fixtures whose Dockerfile tree is unchanged.
         run: PODMAN="sudo podman" ./scripts/dev/build-rootfs.sh
       - name: Run integration suite (bwrap)
+        # GH Actions runners don't allow `bwrap --unshare-net`'s
+        # loopback setup (RTM_NEWADDR fails). Share the host netns —
+        # safe because no integration fixture makes network calls.
+        env:
+          AGENT_TUI_BWRAP_SHARE_NET: "1"
         run: cargo test -p agent-tui-integration --features bwrap -- --nocapture
       - name: Upload debug artifacts on failure
         if: failure()
