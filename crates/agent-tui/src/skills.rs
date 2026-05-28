@@ -76,8 +76,24 @@ const INTENT: Skill = Skill {
     templates: &[],
 };
 
+const ADDRESSING: Skill = Skill {
+    name: "addressing",
+    description: include_str!("../skill-data/addressing/_description.txt"),
+    body: include_str!("../skill-data/addressing/SKILL.md"),
+    references: &[],
+    templates: &[],
+};
+
 /// Every skill bundled into this binary, in display order.
-pub const ALL_SKILLS: &[&Skill] = &[&CORE, &INTENT, &SHELL, &VIM, &AI_CLI, &TUI_APPS];
+pub const ALL_SKILLS: &[&Skill] = &[
+    &CORE,
+    &INTENT,
+    &ADDRESSING,
+    &SHELL,
+    &VIM,
+    &AI_CLI,
+    &TUI_APPS,
+];
 
 /// Look up a skill by name. Case-sensitive; matches `Skill::name` exactly.
 #[must_use]

@@ -65,9 +65,18 @@ agent-tui press ":q!<cr>"                       # 4. Act
 agent-tui die                                   # 5. Tear down
 ```
 
-Refs (`@e1`, `@e2`, …) are assigned fresh on every snapshot and go
-stale the moment the pane changes. Always re-snapshot before the next
-ref-based interaction.
+Per-app adapters emit **durable refs** keyed by what they identify
+(`@vim.buffer`, `@shell.prompt`, `@tmux.pane[%2]`). These survive
+across snapshots — same ref, same logical node. You do NOT need to
+re-snapshot before each ref-based interaction.
+
+The generic adapter (when no per-app adapter matches) still emits
+positional `@eN` refs that are frame-local — that's the only place
+the old "re-snapshot first" rule applies. Check the node's `durable`
+field if you need to know which kind you got.
+
+See `agent-tui skills get addressing` for the selector grammar and
+the `press --to '<selector>'` routing model.
 
 ## Spawning a process
 <!-- tested-by: bwrap_htop_renders_process_list_and_fkeys -->
@@ -181,11 +190,12 @@ agent-tui wait --idle 150                       # 150ms of no changes
 agent-tui snapshot
 ```
 
-`wait` has four shapes. Pick the most specific one:
+`wait` has five shapes. Pick the most specific one:
 
 | Form | Use it when |
 |---|---|
-| `wait --text "regex"` | A specific marker is the ground truth |
+| `wait --ref '<selector>' [--gone]` | A structured node is the ground truth (preferred — see [addressing](../addressing/SKILL.md)) |
+| `wait --text "regex"` | No adapter outline available; matching rendered cells |
 | `wait --hash <hash>` | Loop continuation — "wait until the screen differs from this hash" |
 | `wait --sequence <n>` | Event-stream sync — "wait until event >= n" |
 | `wait --idle <ms>` | Last-resort settling time (read [references/wait-and-events.md](references/wait-and-events.md) first) |
@@ -305,6 +315,9 @@ zombie-free teardown.
 ## When to load another skill
 <!-- tested-by: navigation -->
 
+- **Selectors, refs, and routing** (DOM-lite addressing model — read
+  this whenever you're using `--ref`, `--select`, or `--to`):
+  `agent-tui skills get addressing`
 - **Shell sessions** (bash/zsh with OSC 133): `agent-tui skills get shell`
 - **vim / nvim editing**: `agent-tui skills get vim`
 - **Driving an AI CLI** (opencode, pi, codex from outside): `agent-tui skills get ai-cli`

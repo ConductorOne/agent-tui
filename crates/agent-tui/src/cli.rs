@@ -148,12 +148,27 @@ pub enum Command {
         /// With `--png`, overlay numbered ref labels.
         #[arg(long)]
         annotate: bool,
+        /// Filter the outline by a CSS-subset selector (see
+        /// `docs/addressing-rfc.md` §2.2). Example:
+        /// `--select '[role=buffer][focused]'`.
+        #[arg(long, value_name = "SELECTOR")]
+        select: Option<String>,
+        /// With `--select`, return every matching node in depth-first
+        /// pre-order. Without `--select` this is ignored.
+        #[arg(long)]
+        all: bool,
     },
     /// Press a key-token sequence (`"i hello<esc>:w<cr>"`).
     Press {
         /// Pane id; defaults to focused.
         #[arg(long)]
         pane: Option<String>,
+        /// Selector identifying the target node within the pane. The
+        /// adapter translates `(target, keys)` into PTY bytes (RFC
+        /// §2.3). When omitted, the keys go straight to the PTY.
+        /// Example: `--to '@tmux.pane[%2]'`.
+        #[arg(long, value_name = "SELECTOR")]
+        to: Option<String>,
         /// Key-token string. See `skills/core/references/keymap.md`.
         keys: String,
     },
@@ -162,6 +177,9 @@ pub enum Command {
         /// Pane id; defaults to focused.
         #[arg(long)]
         pane: Option<String>,
+        /// Selector identifying the target node. See `Press.to`.
+        #[arg(long, value_name = "SELECTOR")]
+        to: Option<String>,
         /// Literal UTF-8 text.
         text: String,
     },
@@ -411,6 +429,16 @@ pub struct WaitArgs {
     /// Pane's child exits.
     #[arg(long, group = "wait_mode")]
     pub exit: bool,
+    /// Block until a selector matches a node in the outline. With
+    /// `--gone`, block until no node matches.
+    /// Example: `--ref '[role=cmdline][focused]'`.
+    /// See `docs/addressing-rfc.md` §2.2 for the selector grammar.
+    #[arg(long = "ref", group = "wait_mode", value_name = "SELECTOR")]
+    pub ref_selector: Option<String>,
+    /// Inverts `--ref`: wait until the selector matches NOTHING.
+    /// Useful for "wait for the confirm to dismiss".
+    #[arg(long, requires = "ref_selector")]
+    pub gone: bool,
     /// Mandatory total timeout in ms (default 25000).
     #[arg(long, default_value_t = 25_000)]
     pub max: u64,

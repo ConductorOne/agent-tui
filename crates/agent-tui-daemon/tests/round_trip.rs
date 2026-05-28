@@ -85,6 +85,21 @@ async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
     serde_json::from_str(&line).expect("decode")
 }
 
+/// Recursively concatenate every node's `name` (plus its children's
+/// names) into `out`. Used by outline assertions that don't care
+/// where in the tree a token appears.
+fn collect_names(node: &serde_json::Value, out: &mut String) {
+    if let Some(n) = node.get("name").and_then(|n| n.as_str()) {
+        out.push_str(n);
+        out.push('\n');
+    }
+    if let Some(kids) = node.get("children").and_then(|c| c.as_array()) {
+        for k in kids {
+            collect_names(k, out);
+        }
+    }
+}
+
 #[tokio::test]
 async fn pty_echo_round_trip() {
     let (cfg, _h) = boot_daemon().await;
@@ -117,17 +132,24 @@ async fn pty_echo_round_trip() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
     assert!(snap.response.success, "snapshot failed: {snap:?}");
     let data = snap.response.data.expect("data");
-    let outline_name = data["outline"]["nodes"][0]["name"]
-        .as_str()
-        .expect("outline name");
+    // The shell adapter emits a single `@shell` root with children;
+    // walk the tree collecting names and assert "hello" appears.
+    let mut all_names = String::new();
+    if let Some(roots) = data["outline"]["nodes"].as_array() {
+        for r in roots {
+            collect_names(r, &mut all_names);
+        }
+    }
     assert!(
-        outline_name.contains("hello"),
-        "expected outline to contain 'hello', got: {outline_name:?}"
+        all_names.contains("hello"),
+        "expected outline to contain 'hello', got: {all_names:?}"
     );
 
     // Clean up.
@@ -198,6 +220,7 @@ async fn press_round_trip_through_pty() {
         Command::Press {
             pane: None,
             keys: "hello<cr>".into(),
+            to: None,
         },
     )
     .await;
@@ -210,6 +233,8 @@ async fn press_round_trip_through_pty() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -246,6 +271,7 @@ async fn quiesce_barrier_advances_sequence() {
         Command::Press {
             pane: None,
             keys: "x".into(),
+            to: None,
         },
     )
     .await;
@@ -403,6 +429,8 @@ async fn snapshot_uses_attached_adapter_outline() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -433,6 +461,8 @@ async fn snapshot_response_carries_nonced_delimiter() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -487,6 +517,8 @@ async fn osc133_marker_upgrades_state_to_shell() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -532,6 +564,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -556,6 +590,8 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -626,6 +662,8 @@ async fn focus_cleared_when_focused_pane_dies() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -661,6 +699,8 @@ async fn snapshot_cells_mode_returns_rle_grid() {
             mode: SnapshotMode::Cells,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -710,6 +750,8 @@ async fn snapshot_hybrid_mode_carries_both() {
             mode: SnapshotMode::Hybrid,
             png: None,
             annotate: false,
+            select: None,
+            all: false,
         },
     )
     .await;
@@ -745,6 +787,8 @@ async fn snapshot_hash_changes_after_output() {
                 mode: SnapshotMode::Outline,
                 png: None,
                 annotate: false,
+                select: None,
+                all: false,
             },
         )
         .await;
@@ -760,6 +804,8 @@ async fn snapshot_hash_changes_after_output() {
                     mode: SnapshotMode::Outline,
                     png: None,
                     annotate: false,
+                    select: None,
+                    all: false,
                 },
             )
             .await;

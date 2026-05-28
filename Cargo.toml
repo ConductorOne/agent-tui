@@ -92,6 +92,10 @@ nix = { version = "0.30", features = ["fs", "user", "signal", "term"] }
 # Embedded skill-data files.
 include_dir = "0.7"
 
+# Regex — used by the classifier, the adapter manifests, and the
+# selector parser. Hoisted so every crate sees the same engine.
+regex = "1.11"
+
 # Property-based testing. Dev-dep only; pinned at the workspace level so
 # every crate uses the same version under `cargo test`.
 proptest = "1.5"

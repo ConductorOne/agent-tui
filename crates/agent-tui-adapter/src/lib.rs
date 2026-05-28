@@ -76,6 +76,69 @@ pub enum Notification {
     },
 }
 
+/// One step in a routed write produced by [`Adapter::route`].
+///
+/// Adapters return a sequence of these so the daemon can interleave
+/// writes with observable state-changes (e.g. "send tmux prefix, wait
+/// for the pane-picker overlay, then send the key"). Fixed-delay
+/// `Delay` is an escape hatch for adapters that don't yet have a
+/// real observable to wait on; prefer `WaitFor` whenever possible.
+///
+/// See `docs/addressing-rfc.md` §2.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RoutedStep {
+    /// Write bytes to the PTY.
+    Write {
+        /// Raw bytes to send.
+        bytes: Vec<u8>,
+    },
+    /// Block until a selector matches before sending the next step.
+    WaitFor {
+        /// Selector expression (compiled by the daemon).
+        selector: String,
+        /// Upper bound in milliseconds; aborts the routing on timeout.
+        max_wait_ms: u32,
+    },
+    /// Coarse-grained sleep. Use only when no observable signal exists.
+    Delay {
+        /// Milliseconds.
+        ms: u32,
+    },
+}
+
+impl RoutedStep {
+    /// Convenience: a single Write step. The identity routing.
+    #[must_use]
+    pub fn identity(bytes: Vec<u8>) -> Vec<Self> {
+        vec![Self::Write { bytes }]
+    }
+}
+
+/// Why routing failed (in addition to [`AdapterError`] variants).
+#[derive(Debug, thiserror::Error)]
+pub enum RoutingError {
+    /// The adapter doesn't recognize the target ref's scheme.
+    #[error("routing unsupported: target {target} not understood by adapter {adapter}")]
+    Unsupported {
+        /// Offending target ref.
+        target: String,
+        /// Adapter that refused it.
+        adapter: String,
+    },
+    /// A `WaitFor` step did not fire within `max_wait_ms`.
+    #[error("routing gate timeout: selector {selector} did not match within {max_wait_ms}ms")]
+    GateTimeout {
+        /// Selector that failed to match.
+        selector: String,
+        /// The configured deadline.
+        max_wait_ms: u32,
+    },
+    /// Generic adapter-side failure during routing.
+    #[error("routing: {0}")]
+    Adapter(#[from] AdapterError),
+}
+
 /// The per-program adapter trait.
 ///
 /// Built-in adapters implement this directly. The plug-in IPC wrapper
@@ -99,6 +162,27 @@ pub trait Adapter: Send + Sync {
     ///
     /// MUST be re-entrant and side-effect-free.
     async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError>;
+
+    /// Translate `(target, keys)` into PTY-bound bytes + optional
+    /// inter-chunk gates. See [`RoutedStep`] for the step types and
+    /// `docs/addressing-rfc.md` §2.3 for the design.
+    ///
+    /// Default impl is the **identity routing**: returns one `Write`
+    /// step containing `keys` regardless of `target`. Adapters that
+    /// understand sub-ref targets (tmux, multiplexers) override this.
+    ///
+    /// `target` is the resolved ref-path (e.g. `@tmux.pane[%2]`). When
+    /// the caller didn't supply a `--to` selector, the daemon passes
+    /// the pane's root ref; the default identity routing covers that
+    /// case correctly.
+    async fn route(
+        &self,
+        _snap: &EngineSnapshot,
+        _target: &str,
+        keys: &[u8],
+    ) -> Result<Vec<RoutedStep>, AdapterError> {
+        Ok(RoutedStep::identity(keys.to_vec()))
+    }
 
     /// Execute an `eval` expression. Only required when
     /// [`Capabilities::supports_eval`] is true.

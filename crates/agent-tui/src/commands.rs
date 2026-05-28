@@ -836,19 +836,25 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             mode,
             png,
             annotate,
+            select,
+            all,
         } => Ok(Command::Snapshot {
             pane: pane.map(agent_tui_protocol::PaneId),
             mode: mode.into(),
             png: png.map(|p| p.to_string_lossy().into_owned()),
             annotate,
+            select,
+            all,
         }),
-        CliCmd::Press { pane, keys } => Ok(Command::Press {
+        CliCmd::Press { pane, keys, to } => Ok(Command::Press {
             pane: pane.map(agent_tui_protocol::PaneId),
             keys,
+            to,
         }),
-        CliCmd::Type { pane, text } => Ok(Command::Type {
+        CliCmd::Type { pane, text, to } => Ok(Command::Type {
             pane: pane.map(agent_tui_protocol::PaneId),
             text,
+            to,
         }),
         CliCmd::SendAnsi { pane, bytes_hex } => Ok(Command::SendAnsi {
             pane: pane.map(agent_tui_protocol::PaneId),
@@ -950,6 +956,12 @@ fn wait_condition_from_args(
     }
     if a.exit {
         return Ok(WaitCondition::Exit);
+    }
+    if let Some(sel) = a.ref_selector.clone() {
+        return Ok(WaitCondition::Ref {
+            selector: sel,
+            gone: a.gone,
+        });
     }
     Err(anyhow!("wait requires exactly one mode flag"))
 }

@@ -177,6 +177,39 @@ impl Scenario {
         .await
     }
 
+    /// `agent-tui wait --ref <selector>`. Blocks until the selector
+    /// matches a node in the outline (or, when `gone` is true, until
+    /// it matches none). See `docs/addressing-rfc.md` §2.2.
+    pub async fn wait_ref(&mut self, selector: &str) -> Result<Value> {
+        self.run_cli(
+            "wait_ref",
+            &[
+                "wait".into(),
+                "--ref".into(),
+                selector.into(),
+                "--max".into(),
+                "10000".into(),
+            ],
+        )
+        .await
+    }
+
+    /// `agent-tui wait --ref <selector> --gone`.
+    pub async fn wait_ref_gone(&mut self, selector: &str) -> Result<Value> {
+        self.run_cli(
+            "wait_ref_gone",
+            &[
+                "wait".into(),
+                "--ref".into(),
+                selector.into(),
+                "--gone".into(),
+                "--max".into(),
+                "10000".into(),
+            ],
+        )
+        .await
+    }
+
     /// `agent-tui snapshot --mode outline`. Each call is appended to the
     /// scenario's snapshot history so the artifact dump can show state
     /// evolution, not just the most recent frame.

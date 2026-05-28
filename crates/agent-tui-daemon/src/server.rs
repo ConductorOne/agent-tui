@@ -567,13 +567,21 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         }
         Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
         Command::List { all } => handlers::list::run(&state.registry, all).await,
-        Command::Snapshot { pane, mode, .. } => {
+        Command::Snapshot {
+            pane,
+            mode,
+            select,
+            all,
+            ..
+        } => {
             handlers::snapshot::run(
                 &state.registry,
                 &state.generations,
                 &state.hashes,
                 pane,
                 mode,
+                select,
+                all,
             )
             .await
         }
@@ -582,11 +590,11 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             condition,
             timeout,
         } => handlers::wait::run(&state.registry, &state.hashes, pane, condition, timeout).await,
-        Command::Press { pane, keys } => {
-            handlers::input::press(&state.registry, &state.governance, pane, keys).await
+        Command::Press { pane, keys, to } => {
+            handlers::input::press(&state.registry, &state.governance, pane, keys, to).await
         }
-        Command::Type { pane, text } => {
-            handlers::input::type_text(&state.registry, &state.governance, pane, text).await
+        Command::Type { pane, text, to } => {
+            handlers::input::type_text(&state.registry, &state.governance, pane, text, to).await
         }
         Command::SendAnsi { pane, bytes_hex } => {
             handlers::raw::send_ansi(&state.registry, pane, bytes_hex).await

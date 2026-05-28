@@ -59,6 +59,17 @@ pub enum WaitCondition {
     },
     /// Block until the pane's PTY child exits.
     Exit,
+    /// Block until a selector matches a node in the outline (or, with
+    /// `gone: true`, until no node matches). See
+    /// `docs/addressing-rfc.md` §2.2.
+    Ref {
+        /// Selector expression (CSS-subset; parsed by the daemon).
+        selector: String,
+        /// If true, fire when the selector matches NOTHING (useful for
+        /// "wait for the confirm to dismiss").
+        #[serde(default)]
+        gone: bool,
+    },
 }
 
 /// Where the child's stdin file descriptor comes from. Spawn-time choice.
@@ -154,6 +165,16 @@ pub enum Command {
         /// If true (with `png`), overlay numbered ref labels.
         #[serde(default)]
         annotate: bool,
+        /// Optional selector to filter the outline (RFC §2.2). When
+        /// present, the response's `outline.nodes` is restricted to
+        /// matching nodes; non-matching parents are pruned. Forces
+        /// `mode` to include an outline.
+        #[serde(default)]
+        select: Option<String>,
+        /// With `select`, return every match in depth-first pre-order.
+        /// Without `select`, ignored. Default false → first match only.
+        #[serde(default)]
+        all: bool,
     },
     /// Press the given key-token sequence at the focused pane.
     Press {
@@ -162,6 +183,12 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Key tokens as a single string (e.g. `"i hello<esc>:w<cr>"`).
         keys: String,
+        /// Optional selector identifying the **target** node within the
+        /// pane. The pane's attached adapter translates `(target, keys)`
+        /// into PTY bytes via `Adapter::route` (RFC §2.3). When unset,
+        /// the keys go straight to the PTY (identity routing).
+        #[serde(default)]
+        to: Option<String>,
     },
     /// Type literal text at the focused pane (no key interpretation).
     Type {
@@ -170,6 +197,9 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Literal UTF-8 text.
         text: String,
+        /// Optional selector identifying the target node. See `Press.to`.
+        #[serde(default)]
+        to: Option<String>,
     },
     /// Send raw bytes (ANSI escape sequences, mouse events, OSC, DCS).
     SendAnsi {

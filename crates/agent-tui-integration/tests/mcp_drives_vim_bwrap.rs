@@ -235,40 +235,54 @@ async fn mcp_drives_vim_through_bwrap_end_to_end() -> Result<()> {
         Some("vim"),
         "MCP didn't surface vim adapter; outline = {outline}"
     );
-    let nodes = outline.get("nodes").and_then(Value::as_array).unwrap();
-    let mode_node = nodes
-        .iter()
-        .find(|n| n.get("role").and_then(Value::as_str) == Some("mode"))
-        .expect("mode node");
+    // Under the addressing model the vim adapter emits a single `@vim`
+    // root with the mode/file/buffer nodes as children. Walk
+    // recursively to find role-tagged nodes wherever they live.
+    fn find_role<'a>(outline: &'a Value, role: &str) -> Option<&'a Value> {
+        fn walk<'a>(n: &'a Value, want: &str) -> Option<&'a Value> {
+            if n.get("role").and_then(Value::as_str) == Some(want) {
+                return Some(n);
+            }
+            n.get("children")
+                .and_then(Value::as_array)
+                .and_then(|kids| kids.iter().find_map(|k| walk(k, want)))
+        }
+        outline
+            .get("nodes")
+            .and_then(Value::as_array)?
+            .iter()
+            .find_map(|n| walk(n, role))
+    }
+    let mode_node = find_role(outline, "mode").expect("mode node");
+    // The mode adapter stores the mode name in `value` (the
+    // semantic payload of the indicator); `name` is empty.
     assert_eq!(
-        mode_node.get("name").and_then(Value::as_str),
+        mode_node.get("value").and_then(Value::as_str),
         Some("normal")
     );
-    let file_node = nodes
-        .iter()
-        .find(|n| n.get("role").and_then(Value::as_str) == Some("file"))
-        .expect("file node");
+    let file_node = find_role(outline, "file").expect("file node");
     assert_eq!(
         file_node.get("name").and_then(Value::as_str),
         Some("/fixtures/sample.txt")
     );
 
-    // Step 4: Claude presses `i` to enter insert mode.
+    // Step 4: Claude presses `i` to enter insert mode. Use the new
+    // ref-based wait — selectors don't false-fire the way
+    // `wait text=INSERT` might (the marker shows up briefly while
+    // vim repaints the modeline).
     c.call("press", json!({ "keys": "i" })).await?;
-    c.call("wait", json!({ "text": "INSERT", "max": 5000 }))
-        .await?;
-    c.call("wait", json!({ "idle": 150, "max": 5000 })).await?;
+    c.call(
+        "wait",
+        json!({ "ref": "@vim.mode[value=insert]", "max": 5000 }),
+    )
+    .await?;
 
     // Step 5: Snapshot again — Claude sees mode=insert in the outline.
     let snap = c.call("snapshot", json!({ "mode": "outline" })).await?;
     let outline = snap.get("data").and_then(|d| d.get("outline")).unwrap();
-    let nodes = outline.get("nodes").and_then(Value::as_array).unwrap();
-    let mode_node = nodes
-        .iter()
-        .find(|n| n.get("role").and_then(Value::as_str) == Some("mode"))
-        .expect("mode node");
+    let mode_node = find_role(outline, "mode").expect("mode node");
     assert_eq!(
-        mode_node.get("name").and_then(Value::as_str),
+        mode_node.get("value").and_then(Value::as_str),
         Some("insert"),
         "expected mode=insert after `i`; outline = {outline}"
     );

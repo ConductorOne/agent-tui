@@ -208,11 +208,18 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .get("annotate")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let select = obj
+                .get("select")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let all = obj.get("all").and_then(Value::as_bool).unwrap_or(false);
             Ok(Command::Snapshot {
                 pane: pane_id,
                 mode,
                 png,
                 annotate,
+                select,
+                all,
             })
         }
         "press" => {
@@ -221,9 +228,11 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "press requires `keys` string".to_string())?
                 .to_string();
+            let to = obj.get("to").and_then(Value::as_str).map(str::to_string);
             Ok(Command::Press {
                 pane: pane_id,
                 keys,
+                to,
             })
         }
         "type" => {
@@ -232,9 +241,11 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "type requires `text` string".to_string())?
                 .to_string();
+            let to = obj.get("to").and_then(Value::as_str).map(str::to_string);
             Ok(Command::Type {
                 pane: pane_id,
                 text,
+                to,
             })
         }
         "wait" => {
@@ -257,9 +268,14 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 WaitCondition::AltScreen { on }
             } else if obj.get("exit").and_then(Value::as_bool).unwrap_or(false) {
                 WaitCondition::Exit
+            } else if let Some(sel) = obj.get("ref").and_then(Value::as_str) {
+                WaitCondition::Ref {
+                    selector: sel.to_string(),
+                    gone: obj.get("gone").and_then(Value::as_bool).unwrap_or(false),
+                }
             } else {
                 return Err(
-                    "wait requires one of: since/hash/idle/text/cursor_stable/alt_screen/exit"
+                    "wait requires one of: since/hash/idle/text/cursor_stable/alt_screen/exit/ref"
                         .to_string(),
                 );
             };
@@ -329,7 +345,7 @@ fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "snapshot",
-            "description": "Capture the focused pane (or a named one). `mode` selects the payload shape: 'outline' (structured per-adapter view, default), 'cells' (raw RLE-packed grid), 'adapter' (just the adapter outline), 'hybrid' (cells + outline).",
+            "description": "Capture the focused pane (or a named one). `mode` selects the payload shape: 'outline' (structured per-adapter view, default), 'cells' (raw RLE-packed grid), 'adapter' (just the adapter outline), 'hybrid' (cells + outline). Optional `select` is a CSS-subset selector that filters the outline to matching nodes only (e.g. `[role=buffer][focused]`, `@vim.statusline`); `all` returns every match in depth-first pre-order. With `select`, an outline is always included even if `mode` would otherwise omit it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -339,37 +355,41 @@ fn tool_schemas() -> Vec<Value> {
                         "enum": ["outline", "cells", "adapter", "hybrid"]
                     },
                     "png": { "type": "string", "description": "Path to write a PNG render alongside the response." },
-                    "annotate": { "type": "boolean" }
+                    "annotate": { "type": "boolean" },
+                    "select": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
+                    "all": { "type": "boolean", "description": "With `select`, return every match instead of just the first." }
                 }
             }
         }),
         json!({
             "name": "press",
-            "description": "Send a key-token sequence to the focused pane (or a named pane). Bash-style angle-bracket syntax: 'i hello<esc>:w<cr>'. Supports <cr>, <esc>, <c-X>, <a-X>, <f1>..<f12>, <up>/<down>/<left>/<right>, <home>, <end>, <pageup>, <pagedown>, <del>, <ins>, <tab>, <bs>, <space>, <lf>. Escape a literal `<` as <\\\\<>.",
+            "description": "Send a key-token sequence to the focused pane (or a named pane). Bash-style angle-bracket syntax: 'i hello<esc>:w<cr>'. Supports <cr>, <esc>, <c-X>, <a-X>, <f1>..<f12>, <up>/<down>/<left>/<right>, <home>, <end>, <pageup>, <pagedown>, <del>, <ins>, <tab>, <bs>, <space>, <lf>. Escape a literal `<` as <\\\\<>. Optional `to` is a selector identifying a sub-node target (e.g. `@tmux.pane[%2]`); the pane's adapter translates `(target, keys)` into bytes (RFC §2.3). Without `to`, the keys go straight to the PTY.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string" },
-                    "keys": { "type": "string" }
+                    "keys": { "type": "string" },
+                    "to": { "type": "string", "description": "Selector identifying the target node. See docs/addressing-rfc.md §2.3." }
                 },
                 "required": ["keys"]
             }
         }),
         json!({
             "name": "type",
-            "description": "Type literal UTF-8 text to the focused pane. Use `press` for control keys; `type` does no key-token interpretation.",
+            "description": "Type literal UTF-8 text to the focused pane. Use `press` for control keys; `type` does no key-token interpretation. Optional `to` is a selector identifying a sub-node target; the adapter translates the routing (RFC §2.3).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string" },
-                    "text": { "type": "string" }
+                    "text": { "type": "string" },
+                    "to": { "type": "string" }
                 },
                 "required": ["text"]
             }
         }),
         json!({
             "name": "wait",
-            "description": "Block until a pane state change. Exactly one of: `since` (sequence past), `hash` (grid hash equals), `idle` (no output for ms), `text` (regex appears), `cursor_stable` (cursor unchanged for ms), `alt_screen` (alt-screen on/off), `exit` (child process exits). `max` caps the wall-clock timeout (default 10000ms).",
+            "description": "Block until a pane state change. Exactly one of: `since` (sequence past), `hash` (grid hash equals), `idle` (no output for ms), `text` (regex appears), `cursor_stable` (cursor unchanged for ms), `alt_screen` (alt-screen on/off), `exit` (child process exits), `ref` (a selector matches a node in the outline; combine with `gone:true` to wait for it to stop matching — useful for 'wait for the confirm to dismiss'). `max` caps the wall-clock timeout (default 10000ms). Prefer `ref` over `text` when the adapter exposes structured nodes — selectors don't false-fire on typed-but-not-yet-executed text.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -381,6 +401,8 @@ fn tool_schemas() -> Vec<Value> {
                     "cursor_stable": { "type": "integer" },
                     "alt_screen": { "type": "boolean" },
                     "exit": { "type": "boolean" },
+                    "ref": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
+                    "gone": { "type": "boolean", "description": "With `ref`, fires when no node matches." },
                     "max": { "type": "integer" }
                 }
             }

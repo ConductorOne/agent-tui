@@ -1,14 +1,7 @@
-//! bwrap-backend port of the vim scenarios.
+//! bwrap-backend port of the addressing-model vim scenarios.
 //!
-//! Same assertions as `vim_basic.rs`, different runtime: instead of
-//! `testcontainers` orchestrating a Docker container, the agent-tui
-//! daemon runs on the host and spawns `bwrap ... -- vim ...` as the
-//! PTY child. Hermeticity comes from the same OCI rootfs the Docker
-//! backend uses (extracted from the same Dockerfile via
-//! `just rootfs vim`).
-//!
-//! Gated on the `bwrap` feature so `cargo test --workspace` still
-//! skips these. Locally: `just rootfs vim && just test-bwrap`.
+//! Same assertions as `vim_basic.rs`, different runtime. Gated on
+//! the `bwrap` feature so `cargo test --workspace` still skips these.
 
 #![cfg(feature = "bwrap")]
 
@@ -19,7 +12,7 @@ use anyhow::Result;
 async fn bwrap_vim_opens_file_and_shows_content() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_vim_opens_file", fixtures::VIM).await?;
     s.spawn(["vim", "/fixtures/sample.txt"]).await?;
-    s.wait_text(r"sample\.txt").await?;
+    s.wait_ref("@vim.buffer").await?;
     s.wait_idle(120).await?;
 
     let snap = s.snapshot().await?;
@@ -28,8 +21,14 @@ async fn bwrap_vim_opens_file_and_shows_content() -> Result<()> {
         state, "alt_screen_tui",
         "vim should classify as alt-screen TUI; got {state:?}"
     );
-
-    snap.assert_outline_contains("first line")?;
+    let buf = snap
+        .find("@vim.buffer")
+        .expect("@vim.buffer should exist after wait_ref");
+    let body = buf.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    assert!(
+        body.contains("first line"),
+        "buffer should contain seeded content; got {body:?}"
+    );
 
     s.press(":q!<cr>").await?;
     s.die().await?;
@@ -39,20 +38,18 @@ async fn bwrap_vim_opens_file_and_shows_content() -> Result<()> {
 #[tokio::test]
 async fn bwrap_vim_edit_save_round_trip() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_vim_edit_save", fixtures::VIM).await?;
-    // Edit through /work so the writable mount gets exercised, not the
-    // read-only rootfs.
     let src = "/fixtures/sample.txt";
     let dst = "/work/sample.txt";
     s.spawn(["bash", "-c", &format!("cp {src} {dst}; vim {dst}")])
         .await?;
-    s.wait_text(r"sample\.txt").await?;
+    s.wait_ref("@vim.buffer").await?;
     s.wait_idle(120).await?;
 
     s.press("i hello-from-bwrap<esc>").await?;
-    s.wait_text(r"\[\+\]").await?;
+    s.wait_ref(r"@vim.file[value=modified]").await?;
 
     s.press(":w<cr>").await?;
-    s.wait_text(r"written").await?;
+    s.wait_ref(r"@vim.statusline[name~=/written/]").await?;
 
     let snap = s.snapshot().await?;
     snap.assert_outline_contains("hello-from-bwrap")?;
@@ -66,10 +63,14 @@ async fn bwrap_vim_edit_save_round_trip() -> Result<()> {
 async fn bwrap_vim_search_finds_target() -> Result<()> {
     let mut s = BwrapScenario::new("bwrap_vim_search", fixtures::VIM).await?;
     s.spawn(["vim", "/fixtures/search-target.txt"]).await?;
-    s.wait_text(r"search-target\.txt").await?;
+    s.wait_ref("@vim.buffer").await?;
     s.wait_idle(120).await?;
 
-    s.press("/foo two<cr>").await?;
+    s.press("/").await?;
+    s.wait_ref("@vim.cmdline[focused]").await?;
+    s.type_text("foo two").await?;
+    s.press("<cr>").await?;
+    s.wait_ref_gone("@vim.cmdline[focused]").await?;
     s.wait_idle(120).await?;
 
     let snap = s.snapshot().await?;

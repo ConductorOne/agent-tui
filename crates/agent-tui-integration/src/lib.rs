@@ -56,19 +56,55 @@ impl Snapshot {
     }
 
     fn outline_text(&self) -> String {
-        let nodes = self.envelope.get("outline").and_then(|o| o.get("nodes"));
-        let mut out = String::new();
-        if let Some(arr) = nodes.and_then(serde_json::Value::as_array) {
-            for n in arr {
-                if let Some(name) = n.get("name").and_then(serde_json::Value::as_str) {
+        // Walk the full outline tree (nodes + nested children) — the
+        // addressing-model adapters emit a single root with content
+        // under `children`, so a top-level-only walk would miss
+        // everything. Concatenate every node's `name` with newlines.
+        fn walk(node: &serde_json::Value, out: &mut String) {
+            if let Some(name) = node.get("name").and_then(serde_json::Value::as_str) {
+                if !name.is_empty() {
                     if !out.is_empty() {
                         out.push('\n');
                     }
                     out.push_str(name);
                 }
             }
+            if let Some(kids) = node.get("children").and_then(serde_json::Value::as_array) {
+                for k in kids {
+                    walk(k, out);
+                }
+            }
+        }
+        let nodes = self.envelope.get("outline").and_then(|o| o.get("nodes"));
+        let mut out = String::new();
+        if let Some(arr) = nodes.and_then(serde_json::Value::as_array) {
+            for n in arr {
+                walk(n, &mut out);
+            }
         }
         out
+    }
+
+    /// Return the first node whose ref equals `target_ref`, walking
+    /// the outline tree recursively. Cheap and addressable from tests
+    /// (`snap.find("@vim.statusline").unwrap().get("name")`).
+    #[must_use]
+    pub fn find(&self, target_ref: &str) -> Option<&serde_json::Value> {
+        fn walk<'a>(node: &'a serde_json::Value, want: &str) -> Option<&'a serde_json::Value> {
+            if node.get("ref").and_then(serde_json::Value::as_str) == Some(want) {
+                return Some(node);
+            }
+            if let Some(kids) = node.get("children").and_then(serde_json::Value::as_array) {
+                for k in kids {
+                    if let Some(found) = walk(k, want) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        let nodes = self.envelope.get("outline")?.get("nodes")?.as_array()?;
+        nodes.iter().find_map(|n| walk(n, target_ref))
     }
 
     /// Assert that the rendered outline text contains `needle`. Errors

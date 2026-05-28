@@ -32,7 +32,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 portable-pty = "0.9"
-regex = "1.11"
+regex = { workspace = true }
 base64 = "0.22"
 dirs = "5.0"
 async-trait = "0.1"

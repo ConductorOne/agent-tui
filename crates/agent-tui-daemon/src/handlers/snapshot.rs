@@ -12,7 +12,8 @@ use agent_tui_engine::{Cell, EngineSnapshot};
 use agent_tui_protocol::request::SnapshotMode;
 use agent_tui_protocol::snapshot::CellGridRle;
 use agent_tui_protocol::{
-    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, Ref, RefBinding, Response, Snapshot,
+    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, Ref, RefBinding, Response, Selector,
+    Snapshot,
 };
 use base64::Engine as _;
 
@@ -56,10 +57,37 @@ pub async fn run(
     hashes: &Arc<HashWindow>,
     pane: Option<PaneId>,
     mode: SnapshotMode,
+    select: Option<String>,
+    all: bool,
 ) -> Response {
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
+    };
+
+    // Compile the selector up-front so a bad expression returns an
+    // InvalidArgs error rather than silently producing an empty outline.
+    let compiled = match select.as_deref().map(Selector::parse).transpose() {
+        Ok(s) => s,
+        Err(e) => {
+            return Response::err(ErrorBody::new(
+                ErrorCode::InvalidArgs,
+                format!("selector parse error at byte {}: {}", e.at, e.kind),
+                "see docs/addressing-rfc.md §2.2",
+            ));
+        }
+    };
+
+    // §4 of the RFC: `--select` forces an outline. Promote Text/Cells →
+    // Hybrid so callers get both the matched outline and the cells/text
+    // they asked for.
+    let effective_mode = if compiled.is_some() {
+        match mode {
+            SnapshotMode::Text | SnapshotMode::Cells => SnapshotMode::Hybrid,
+            other => other,
+        }
+    } else {
+        mode
     };
 
     let engine_snap = pane_arc.engine.snapshot();
@@ -68,7 +96,17 @@ pub async fn run(
         .await;
     let adapter = pane_arc.adapter().await;
 
-    let snapshot = build_snapshot(&pane_arc, &adapter, &engine_snap, generation, mode).await;
+    let mut snapshot = build_snapshot(
+        &pane_arc,
+        &adapter,
+        &engine_snap,
+        generation,
+        effective_mode,
+    )
+    .await;
+    if let Some(sel) = compiled.as_ref() {
+        snapshot.outline = snapshot.outline.map(|o| filter_outline(o, sel, all));
+    }
     // Record (seq, hash) so `wait --hash` can resolve subsequent calls.
     hashes
         .record(&pane_arc.id, snapshot.sequence, snapshot.hash.clone())
@@ -80,6 +118,23 @@ pub async fn run(
             format!("snapshot serialization failed: {e}"),
             "report a bug",
         )),
+    }
+}
+
+/// Reduce `outline.nodes` to nodes matching `sel`. Without `all`, keep
+/// only the first match (depth-first pre-order). Matched nodes appear at
+/// the top level of the filtered outline; their original children are
+/// preserved so callers see the matched subtree.
+fn filter_outline(outline: Outline, sel: &Selector, all: bool) -> Outline {
+    let matches = sel.matches(&outline);
+    let nodes: Vec<OutlineNode> = if all {
+        matches.into_iter().cloned().collect()
+    } else {
+        matches.into_iter().next().into_iter().cloned().collect()
+    };
+    Outline {
+        adapter: outline.adapter,
+        nodes,
     }
 }
 
@@ -263,6 +318,7 @@ fn generic_outline(snap: &EngineSnapshot) -> Outline {
             focused: true,
             anchor: Some((0, 0)),
             children: Vec::new(),
+            ..OutlineNode::default()
         }],
     }
 }

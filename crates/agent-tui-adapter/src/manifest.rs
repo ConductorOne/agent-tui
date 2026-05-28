@@ -214,6 +214,7 @@ impl Adapter for ManifestAdapter {
                     u16::try_from(c0).unwrap_or(0),
                 )),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
             next_idx += 1;
         }

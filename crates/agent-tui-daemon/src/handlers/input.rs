@@ -12,10 +12,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Warning, keymap};
+use agent_tui_adapter::RoutedStep;
+use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Selector, Warning, keymap};
 
 use crate::governance::{Governance, build};
-use crate::pane::{Registry, resolve_focused};
+use crate::pane::{Pane, Registry, resolve_focused};
 
 const BARRIER_TIMEOUT_MS: u64 = 200;
 
@@ -25,6 +26,7 @@ pub async fn press(
     governance: &Governance,
     pane: Option<PaneId>,
     keys: String,
+    to: Option<String>,
 ) -> Response {
     let tokens = match keymap::parse(&keys) {
         Ok(t) => t,
@@ -38,7 +40,7 @@ pub async fn press(
     };
     let bytes = keymap::serialize(&tokens);
     let key_tokens = Some(tokens.iter().map(|t| format!("{t:?}")).collect());
-    deliver(registry, governance, pane, &bytes, key_tokens).await
+    deliver(registry, governance, pane, &bytes, key_tokens, to).await
 }
 
 /// `type` — write literal UTF-8 text to the pane (no key interpretation).
@@ -47,8 +49,9 @@ pub async fn type_text(
     governance: &Governance,
     pane: Option<PaneId>,
     text: String,
+    to: Option<String>,
 ) -> Response {
-    deliver(registry, governance, pane, text.as_bytes(), None).await
+    deliver(registry, governance, pane, text.as_bytes(), None, to).await
 }
 
 async fn deliver(
@@ -57,6 +60,7 @@ async fn deliver(
     pane: Option<PaneId>,
     bytes: &[u8],
     key_tokens: Option<Vec<String>>,
+    to: Option<String>,
 ) -> Response {
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
@@ -70,20 +74,95 @@ async fn deliver(
         return resp;
     }
 
-    // Step 1: subscribe BEFORE writing so we can't miss the mutation.
-    let mut sub = pane_arc.engine.subscribe();
-    let pre_seq = pane_arc.engine.snapshot().sequence;
+    // No `--to`: direct PTY write, classic barrier semantics.
+    let Some(target_sel) = to else {
+        return write_with_barrier(&pane_arc, bytes).await;
+    };
 
-    // Step 2: write.
-    if let Err(e) = pane_arc.pty.write_input(bytes) {
-        return Response::err(ErrorBody::new(
-            ErrorCode::Internal,
-            format!("pty write failed: {e}"),
-            "child may have exited; call list",
-        ));
+    // Routed delivery: resolve selector → ref, ask adapter to translate
+    // into a step list, execute it.
+    let target_ref = match resolve_target_ref(&pane_arc, &target_sel).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let adapter = pane_arc.adapter().await;
+    let snap = pane_arc.engine.snapshot();
+    let steps = match adapter.route(&snap, &target_ref, bytes).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Response::err(ErrorBody::new(
+                ErrorCode::AdapterFailed,
+                format!("adapter route failed: {e}"),
+                "adapter does not support this routing",
+            ));
+        }
+    };
+
+    execute_routed_steps(&pane_arc, &steps, bytes.len()).await
+}
+
+/// Resolve a `--to <selector>` to a concrete ref-path string. The first
+/// match in depth-first pre-order wins.
+async fn resolve_target_ref(pane: &Pane, selector: &str) -> Result<String, Response> {
+    let sel = Selector::parse(selector).map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            format!("--to selector parse error at byte {}: {}", e.at, e.kind),
+            "see docs/addressing-rfc.md §2.2",
+        ))
+    })?;
+    let adapter = pane.adapter().await;
+    let snap = pane.engine.snapshot();
+    let outline = adapter.outline(&snap).await.map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::AdapterFailed,
+            format!("adapter outline failed: {e}"),
+            "adapter could not provide an outline for routing",
+        ))
+    })?;
+    match sel.first(&outline) {
+        Some(node) => Ok(node.r#ref.clone()),
+        None => Err(Response::err(ErrorBody::new(
+            ErrorCode::RoutingUnsupported,
+            format!("--to selector {selector:?} matched no node"),
+            "snapshot to inspect the outline; relax the selector",
+        ))),
+    }
+}
+
+async fn execute_routed_steps(pane: &Pane, steps: &[RoutedStep], hint_len: usize) -> Response {
+    let mut sub = pane.engine.subscribe();
+    let pre_seq = pane.engine.snapshot().sequence;
+    let mut total_written = 0usize;
+
+    for step in steps {
+        match step {
+            RoutedStep::Write { bytes } => {
+                if let Err(e) = pane.pty.write_input(bytes) {
+                    return Response::err(ErrorBody::new(
+                        ErrorCode::Internal,
+                        format!("pty write failed mid-route: {e}"),
+                        "child may have exited; call list",
+                    ));
+                }
+                total_written += bytes.len();
+            }
+            RoutedStep::Delay { ms } => {
+                tokio::time::sleep(Duration::from_millis(u64::from(*ms))).await;
+            }
+            RoutedStep::WaitFor {
+                selector,
+                max_wait_ms,
+            } => {
+                if let Err(resp) = wait_for_selector(pane, selector, *max_wait_ms).await {
+                    return resp;
+                }
+            }
+        }
     }
 
-    // Step 3: wait for next mutation past `pre_seq`, bounded by timeout.
+    // Single barrier at the end of the route, mirroring the unrouted
+    // path's "PTY changed something" guarantee.
     let timeout = Duration::from_millis(BARRIER_TIMEOUT_MS);
     let mut observed = None;
     let deadline = tokio::time::Instant::now() + timeout;
@@ -97,20 +176,102 @@ async fn deliver(
                 observed = Some(evt);
                 break;
             }
-            Ok(Ok(_)) => {}               // stale event — wait for the next
-            Ok(Err(_)) | Err(_) => break, // channel closed or timeout
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => break,
         }
     }
 
-    let post_seq = pane_arc.engine.snapshot().sequence;
+    let post_seq = pane.engine.snapshot().sequence;
     let mut resp = Response::ok(serde_json::json!({
-        "pane": pane_arc.id,
+        "pane": pane.id,
+        "bytes_written": total_written,
+        "bytes_requested": hint_len,
+        "pre_sequence": pre_seq,
+        "post_sequence": post_seq,
+        "barrier_observed": observed.is_some(),
+        "routed": true,
+    }));
+    if observed.is_none() && post_seq == pre_seq {
+        resp = resp.with_warning(Warning {
+            code: "no_echo_within_barrier".into(),
+            message: format!("no engine mutation within {BARRIER_TIMEOUT_MS}ms after routed write"),
+        });
+    }
+    resp
+}
+
+async fn wait_for_selector(pane: &Pane, selector: &str, max_wait_ms: u32) -> Result<(), Response> {
+    let sel = Selector::parse(selector).map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::AdapterFailed,
+            format!(
+                "adapter emitted a WaitFor with an unparseable selector at byte {}: {}",
+                e.at, e.kind
+            ),
+            "adapter bug; report it",
+        ))
+    })?;
+    let adapter = pane.adapter().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(max_wait_ms));
+    let mut sub = pane.engine.subscribe();
+    loop {
+        let snap = pane.engine.snapshot();
+        if let Ok(outline) = adapter.outline(&snap).await {
+            if sel.first(&outline).is_some() {
+                return Ok(());
+            }
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(Response::err(ErrorBody::new(
+                ErrorCode::RoutingGateTimeout,
+                format!("WaitFor selector {selector:?} did not match within {max_wait_ms}ms"),
+                "adapter's routing gate timed out",
+            )));
+        }
+        if tokio::time::timeout(remaining, sub.recv()).await.is_err() {
+            // hit the timeout — re-check once more then bail next iter
+        }
+    }
+}
+
+/// Direct-write path used when `--to` is unset. Same press-then-quiesce
+/// barrier as before.
+async fn write_with_barrier(pane: &Pane, bytes: &[u8]) -> Response {
+    let mut sub = pane.engine.subscribe();
+    let pre_seq = pane.engine.snapshot().sequence;
+    if let Err(e) = pane.pty.write_input(bytes) {
+        return Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            format!("pty write failed: {e}"),
+            "child may have exited; call list",
+        ));
+    }
+    let timeout = Duration::from_millis(BARRIER_TIMEOUT_MS);
+    let mut observed = None;
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, sub.recv()).await {
+            Ok(Ok(evt)) if evt.sequence > pre_seq => {
+                observed = Some(evt);
+                break;
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    let post_seq = pane.engine.snapshot().sequence;
+    let mut resp = Response::ok(serde_json::json!({
+        "pane": pane.id,
         "bytes_written": bytes.len(),
         "pre_sequence": pre_seq,
         "post_sequence": post_seq,
         "barrier_observed": observed.is_some(),
     }));
-
     if observed.is_none() && post_seq == pre_seq {
         resp = resp.with_warning(Warning {
             code: "no_echo_within_barrier".to_string(),

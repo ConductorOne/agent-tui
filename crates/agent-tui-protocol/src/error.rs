@@ -28,6 +28,12 @@ pub enum ErrorCode {
     AdapterFailed,
     /// Adapter was attached but the program identity has since changed.
     AdapterUnattached,
+    /// `press --to` named a target the attached adapter does not
+    /// recognize. See `docs/addressing-rfc.md` §2.3.
+    RoutingUnsupported,
+    /// A `WaitFor` step in a routed write did not fire within its
+    /// `max_wait_ms` budget. See `docs/addressing-rfc.md` §2.3.
+    RoutingGateTimeout,
     /// `wait` did not satisfy its condition within `--timeout`.
     WaitTimeout,
     /// `wait --hash h` was given a hash not present in the seq→hash window.
@@ -76,6 +82,8 @@ impl ErrorCode {
             Self::AdapterMissing => 2001,
             Self::AdapterFailed => 2002,
             Self::AdapterUnattached => 2003,
+            Self::RoutingUnsupported => 2004,
+            Self::RoutingGateTimeout => 2005,
             Self::WaitTimeout => 3001,
             Self::WaitHashUnknown => 3002,
             Self::PolicyDenied => 4001,

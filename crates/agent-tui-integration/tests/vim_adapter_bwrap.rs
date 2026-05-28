@@ -17,13 +17,28 @@ fn outline(snap_env: &Value) -> &Value {
     snap_env.get("outline").expect("snapshot has outline")
 }
 
-/// Find a node with the given `role` in the outline.
+/// Find a node with the given `role` in the outline. Walks children
+/// recursively — the addressing-model adapters emit a single `@vim`
+/// root with the role-tagged content under `children`.
 fn find_node<'a>(outline_obj: &'a Value, role: &str) -> Option<&'a Value> {
+    fn walk<'a>(node: &'a Value, want: &str) -> Option<&'a Value> {
+        if node.get("role").and_then(Value::as_str) == Some(want) {
+            return Some(node);
+        }
+        if let Some(kids) = node.get("children").and_then(Value::as_array) {
+            for k in kids {
+                if let Some(hit) = walk(k, want) {
+                    return Some(hit);
+                }
+            }
+        }
+        None
+    }
     outline_obj
         .get("nodes")?
         .as_array()?
         .iter()
-        .find(|n| n.get("role").and_then(Value::as_str) == Some(role))
+        .find_map(|n| walk(n, role))
 }
 
 #[tokio::test]
@@ -62,8 +77,10 @@ async fn vim_insert_mode_shows_in_outline() -> Result<()> {
 
     let snap = s.snapshot().await?;
     let mode = find_node(outline(snap.envelope()), "mode").expect("mode node");
+    // Mode string is on `value` (the semantic payload of the
+    // mode indicator); `name` is empty.
     assert_eq!(
-        mode.get("name").and_then(Value::as_str),
+        mode.get("value").and_then(Value::as_str),
         Some("insert"),
         "mode node = {mode:#?}"
     );
@@ -88,14 +105,17 @@ async fn vim_command_mode_carries_command_line() -> Result<()> {
 
     let snap = s.snapshot().await?;
     let mode = find_node(outline(snap.envelope()), "mode").expect("mode node");
-    assert_eq!(mode.get("name").and_then(Value::as_str), Some("command"));
-    let cmdline = mode
+    assert_eq!(mode.get("value").and_then(Value::as_str), Some("command"));
+    // Command-line text lives on @vim.cmdline.value, not on the
+    // mode node — selectors like `@vim.cmdline[value~=/set/]` target it.
+    let cmdline = find_node(outline(snap.envelope()), "cmdline").expect("cmdline node");
+    let cmdline_value = cmdline
         .get("value")
         .and_then(Value::as_str)
-        .expect("command-line text in value");
+        .expect("command-line text in cmdline.value");
     assert!(
-        cmdline.starts_with(":set"),
-        "expected command-line to start with :set, got {cmdline:?}"
+        cmdline_value.starts_with(":set"),
+        "expected command-line to start with :set, got {cmdline_value:?}"
     );
 
     s.press("<esc>:q!<cr>").await?;
