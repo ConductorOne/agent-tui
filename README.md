@@ -18,7 +18,7 @@ cargo install agent-tui                # post-publish path
 ### From source
 
 ```bash
-git clone https://github.com/ductone/agent-tui
+git clone https://github.com/ConductorOne/agent-tui
 cd agent-tui
 cargo build --release
 ./target/release/agent-tui --help

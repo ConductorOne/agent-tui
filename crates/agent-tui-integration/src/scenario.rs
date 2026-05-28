@@ -61,7 +61,7 @@ pub mod fixtures {
 
 impl Scenario {
     /// Construct and start a new scenario backed by `image` (e.g.
-    /// `alpine:3.20`, `ghcr.io/ductone/agent-tui-fixtures/vim:latest`).
+    /// `alpine:3.20`, `ghcr.io/conductorone/agent-tui-fixtures/vim:latest`).
     ///
     /// Mounts the locally-built `agent-tui` binary at
     /// `/usr/local/bin/agent-tui` inside the container. The binary must
