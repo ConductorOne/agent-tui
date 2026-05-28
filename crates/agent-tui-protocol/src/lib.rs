@@ -15,12 +15,14 @@ pub mod error;
 pub mod keymap;
 pub mod request;
 pub mod response;
+pub mod selector;
 pub mod snapshot;
 
 pub use action::{ActionDetail, ActionKind, AuditEvent, Decision, Verdict};
 pub use error::{ErrorCode, ProtocolError};
 pub use request::{Command, Request};
 pub use response::{ErrorBody, Response, ResponseEnvelope, ToolOutputDelim, Warning};
+pub use selector::{ParseError as SelectorParseError, Selector};
 pub use snapshot::{
     Cell, CellGrid, ModeFlags, Outline, OutlineNode, PaneState, Ref, RefBinding, Snapshot,
 };

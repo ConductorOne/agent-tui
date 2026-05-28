@@ -76,3 +76,49 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 | 3b2239f | P0b | keymap, press/type quiesce barrier, send_ansi, resize, signal |
 | 2140ae9 | P0a | real engine + PTY + registry + spawn/die/list/snapshot |
 | 04a664a | scaffolding | workspace + RFC + skeleton |
+
+---
+
+# Addressing-Model Implementation Tracker (`feat/addressing-model`)
+
+Live record of the addressing-model rollout. Spec: `docs/addressing-rfc.md`.
+
+## Phase plan
+
+| # | Phase                                    | Status      | Notes |
+|---|------------------------------------------|-------------|-------|
+| 1 | Selector grammar + parser (pure lib)     | in-progress | foundation, pure logic |
+| 2 | Protocol types (state, RoutedStep)       | todo        | wire-format additions |
+| 3 | Daemon: `snapshot --select`, `wait --ref`| todo        |  |
+| 4 | Adapter trait: `route()`                 | todo        | default impl = identity |
+| 5 | CLI: `press --to`, `wait --gone`         | todo        |  |
+| 6 | Built-in adapters emit durable refs      | todo        | vim, shell, claude-code |
+| 7 | Migrate existing tests to new idioms     | todo        | no compat constraint |
+| 8 | Update skills (`core`, `vim`, `addressing` new) | todo  |  |
+| 9 | New integration scenarios                | todo        |  |
+| 10| Pre-push lint + CI green                 | todo        |  |
+
+## Deferred (for follow-up loops)
+
+- [ ] tmux adapter (v1 limitation, separate phase)
+- [ ] Adapter composition (v2, separate RFC)
+- [ ] Manifest-driven `[routing]` blocks (v2)
+- [ ] Selector caching API
+- [ ] `wait --ref` stable_ms variant
+- [ ] htop adapter (nice to have)
+- [ ] fzf adapter (nice to have)
+- [ ] claude-code `response-streaming` vs `response-final` role split
+- [ ] Cell-mode crop for `snapshot --select --mode cells`
+
+## Decisions log (addressing model)
+
+- Selector parser lives in `agent-tui-protocol` — pure logic over
+  outline types; no new crate, no new deps.
+- `RoutedStep` lives in `agent-tui-adapter`.
+- Bool predicates not in v1 grammar. Use role variants
+  (`role=response-streaming`) instead.
+- No backward compat constraint per user. Rewrite tests freely.
+
+## Open questions (addressing model)
+
+(populated as we go)

@@ -17,6 +17,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+# Selector parser: regex-typed predicates and the `name~=/…/` operator.
+regex = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
