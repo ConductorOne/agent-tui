@@ -263,6 +263,7 @@ fn generic_outline(snap: &EngineSnapshot) -> Outline {
             focused: true,
             anchor: Some((0, 0)),
             children: Vec::new(),
+            ..OutlineNode::default()
         }],
     }
 }

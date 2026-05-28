@@ -21,7 +21,7 @@
 //! joined by a descendant combinator. See §2.2 of the RFC for the
 //! exact disambiguation table.
 
-use crate::snapshot::{Outline, OutlineNode, RefBinding};
+use crate::snapshot::{Outline, OutlineNode};
 use regex::Regex;
 use std::fmt;
 
@@ -797,10 +797,7 @@ fn ref_path_matches(rp: &RefPath, node_ref: &str) -> bool {
 fn predicate_matches(pred: &Predicate, node: &OutlineNode) -> bool {
     match pred {
         Predicate::Focused(want) => node.focused == *want,
-        Predicate::Durable => matches!(
-            node_binding(node),
-            Some(RefBinding::Durable { .. })
-        ),
+        Predicate::Durable => node.durable,
         Predicate::Eq { attr, value } => attr_eq(attr, node, value),
         Predicate::Regex { attr, regex } => {
             let s = attr_value(attr, node);
@@ -823,24 +820,6 @@ fn attr_eq(attr: &Attr, node: &OutlineNode, want: &str) -> bool {
     attr_value(attr, node) == want
 }
 
-/// Outline nodes don't carry their binding inline yet — the binding
-/// lives in the snapshot's `refs` map. For predicate-only inspection
-/// the matcher only sees the node, so `[durable]` is a best-effort
-/// filter: if the node's ref starts with `@<scheme>.…[%…]` we treat
-/// it as durable. Once a future change inlines binding kind on the
-/// node, swap this out.
-fn node_binding(node: &OutlineNode) -> Option<RefBinding> {
-    // Heuristic: any ref containing `[%…]` in its path is durable.
-    if node.r#ref.contains("[%") {
-        Some(RefBinding::Durable {
-            scheme: String::new(),
-            id: serde_json::Value::Null,
-        })
-    } else {
-        None
-    }
-}
-
 // -------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------
@@ -858,8 +837,16 @@ mod tests {
             value: None,
             focused: false,
             anchor: None,
+            state: None,
+            durable: false,
             children: Vec::new(),
         }
+    }
+
+    fn durable_node(r#ref: &str, role: &str, name: &str) -> OutlineNode {
+        let mut n = node(r#ref, role, name);
+        n.durable = true;
+        n
     }
 
     fn with_children(mut n: OutlineNode, kids: Vec<OutlineNode>) -> OutlineNode {
@@ -975,10 +962,10 @@ mod tests {
     }
 
     #[test]
-    fn matches_durable_via_stable_id_heuristic() {
+    fn matches_durable_from_inline_flag() {
         let tree = outline(vec![
-            node("@vim.buffer[%1]", "buffer", ""),
-            node("@vim.buffer[2]", "buffer", ""),
+            durable_node("@vim.buffer[%1]", "buffer", "a"),
+            node("@vim.buffer[2]", "buffer", "b"),
         ]);
         let s = Selector::parse("[role=buffer][durable]").unwrap();
         let m = s.matches(&tree);

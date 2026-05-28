@@ -115,7 +115,7 @@ pub struct CellGridRle {
 ///     @e3.3 "kube-proxy-xyz    Running    1/1   7d"
 ///     @e3.4 "metrics-server-1  CrashLoop  0/1   3h"   <-- focused, red
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutlineNode {
     /// Ref handle, e.g. `@e3` or `@e3.4`.
     pub r#ref: String,
@@ -133,6 +133,18 @@ pub struct OutlineNode {
     /// Row/column where this node anchors (display columns, width-aware).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<(u16, u16)>,
+    /// Per-node pane state, when meaningful (e.g. a focused sub-pane
+    /// inside a multiplexer). When unset, consult the snapshot-level
+    /// `state` field instead. See `docs/addressing-rfc.md` §2.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<PaneState>,
+    /// `true` if the ref is bound by an adapter-durable identifier
+    /// (i.e. survives re-renders). Mirrors the binding kind in the
+    /// snapshot's `refs` map; inlined here so selectors can filter
+    /// without joining against `refs`. See `docs/addressing-rfc.md`
+    /// §2.1 "Stability rule".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub durable: bool,
     /// Nested children (for lists, forms, tables).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<OutlineNode>,

@@ -52,6 +52,7 @@ impl Adapter for GenericAdapter {
                 focused: false,
                 anchor: Some((row_idx as u16, 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
             next_idx += 1;
         }
@@ -64,6 +65,7 @@ impl Adapter for GenericAdapter {
                 focused: true,
                 anchor: Some((header.map_or(0, |r| (r + 1) as u16), 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
             next_idx += 1;
         }
@@ -78,6 +80,7 @@ impl Adapter for GenericAdapter {
                 focused: false,
                 anchor: Some((row_idx as u16, 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
         }
 
@@ -195,6 +198,7 @@ impl Adapter for ShellAdapter {
             focused: true,
             anchor: Some((0, 0)),
             children: Vec::new(),
+                ..OutlineNode::default()
         }];
         if let Some(p) = prompt {
             nodes.push(OutlineNode {
@@ -205,6 +209,7 @@ impl Adapter for ShellAdapter {
                 focused: false,
                 anchor: None,
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
         }
 
@@ -309,6 +314,7 @@ impl Adapter for VimAdapter {
             focused: false,
             anchor: parsed.commandline_row.map(|r| (r as u16, 0)),
             children: Vec::new(),
+                ..OutlineNode::default()
         });
         next_idx += 1;
 
@@ -321,6 +327,7 @@ impl Adapter for VimAdapter {
                 focused: false,
                 anchor: parsed.statusline_row.map(|r| (r as u16, 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
             next_idx += 1;
         }
@@ -334,6 +341,7 @@ impl Adapter for VimAdapter {
                 focused: false,
                 anchor: Some((row as u16, 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
             next_idx += 1;
         }
@@ -347,6 +355,7 @@ impl Adapter for VimAdapter {
                 focused: true,
                 anchor: Some((0, 0)),
                 children: Vec::new(),
+                ..OutlineNode::default()
             });
         }
 
