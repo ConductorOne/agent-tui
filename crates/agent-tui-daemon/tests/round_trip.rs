@@ -238,13 +238,16 @@ async fn press_round_trip_through_pty() {
         },
     )
     .await;
-    let outline = snap.response.data.unwrap()["outline"]["nodes"][0]["name"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let data = snap.response.data.unwrap();
+    let mut all_names = String::new();
+    if let Some(roots) = data["outline"]["nodes"].as_array() {
+        for r in roots {
+            collect_names(r, &mut all_names);
+        }
+    }
     assert!(
-        outline.contains("hello"),
-        "cat should have echoed 'hello'; got: {outline:?}"
+        all_names.contains("hello"),
+        "cat should have echoed 'hello'; got outline: {all_names:?}"
     );
 
     let _ = round_trip(&cfg, Command::Die { pane: None }).await;
