@@ -80,7 +80,10 @@ impl Selector {
 
     /// Convenience: parse and match in one call. Returns parse errors
     /// rather than panicking so call sites can surface them.
-    pub fn select<'a>(input: &str, outline: &'a Outline) -> Result<Vec<&'a OutlineNode>, ParseError> {
+    pub fn select<'a>(
+        input: &str,
+        outline: &'a Outline,
+    ) -> Result<Vec<&'a OutlineNode>, ParseError> {
         Ok(Self::parse(input)?.matches(outline))
     }
 }
@@ -324,7 +327,7 @@ impl<'a> Parser<'a> {
                 // Unexpected character at top level.
                 return Err(self.err(format!(
                     "unexpected character {:?} (expected combinator or end of input)",
-                    self.peek().map(|b| b as char).unwrap_or(' ')
+                    self.peek().map_or(' ', |b| b as char)
                 )));
             };
             let pattern = self.parse_pattern()?;
@@ -374,7 +377,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_segment(&mut self) -> Result<Segment, ParseError> {
-        let name = self.parse_ident()?;
+        let name = self.parse_ident();
         if name.is_empty() {
             return Err(self.err("segment name cannot be empty"));
         }
@@ -383,7 +386,8 @@ impl<'a> Parser<'a> {
             // is a segment + predicate. Peek past `[` for `%` or digit.
             let save = self.pos;
             self.bump();
-            let looks_like_key = matches!(self.peek(), Some(b'%')) || matches!(self.peek(), Some(b) if b.is_ascii_digit());
+            let looks_like_key = matches!(self.peek(), Some(b'%'))
+                || matches!(self.peek(), Some(b) if b.is_ascii_digit());
             if looks_like_key {
                 let k = self.parse_key()?;
                 if self.peek() != Some(b']') {
@@ -403,7 +407,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_ref_path(&mut self) -> Result<RefPath, ParseError> {
-        let head = self.parse_ident()?;
+        let head = self.parse_ident();
         if head.is_empty() {
             return Err(self.err("ref-path needs a head identifier after '@'"));
         }
@@ -419,13 +423,13 @@ impl<'a> Parser<'a> {
         // `%N`, `N` (integer), or `name` (ident).
         if self.peek() == Some(b'%') {
             self.bump();
-            let s = self.parse_ident_or_int()?;
+            let s = self.parse_ident_or_int();
             if s.is_empty() {
                 return Err(self.err("stable-id key cannot be empty after '%'"));
             }
             return Ok(Key::Stable(s));
         }
-        let s = self.parse_ident_or_int()?;
+        let s = self.parse_ident_or_int();
         if s.is_empty() {
             return Err(self.err("key cannot be empty"));
         }
@@ -444,7 +448,7 @@ impl<'a> Parser<'a> {
         //   role=value | role~=/regex/ | role^=prefix | role$=suffix
         //   name=… | name~=… | name^=… | name$=…
         //   value=… | value~=… | value^=… | value$=…
-        let ident = self.parse_ident()?;
+        let ident = self.parse_ident();
         if ident.is_empty() {
             return Err(self.err("expected attribute name in predicate"));
         }
@@ -452,14 +456,14 @@ impl<'a> Parser<'a> {
             "focused" => {
                 if self.peek() == Some(b'=') {
                     self.bump();
-                    let v = self.parse_value_word()?;
+                    let v = self.parse_value_word();
                     let b = match v.as_str() {
                         "true" | "1" => true,
                         "false" | "0" => false,
                         other => {
-                            return Err(self.err(format!(
-                                "focused expects true|false|1|0, got {other:?}"
-                            )));
+                            return Err(
+                                self.err(format!("focused expects true|false|1|0, got {other:?}"))
+                            );
                         }
                     };
                     return Ok(Predicate::Focused(b));
@@ -566,11 +570,11 @@ impl<'a> Parser<'a> {
             let _ = start;
             Ok(out)
         } else {
-            Ok(self.parse_value_word()?)
+            Ok(self.parse_value_word())
         }
     }
 
-    fn parse_value_word(&mut self) -> Result<String, ParseError> {
+    fn parse_value_word(&mut self) -> String {
         // bareword: everything up to `]` or end-of-input that's printable.
         // Only `~=` reserves `/` (regex bodies); for `=`, `^=`, `$=`
         // the slash is just a value character.
@@ -584,7 +588,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(self.src[start..self.pos].to_string())
+        self.src[start..self.pos].to_string()
     }
 
     fn parse_regex(&mut self) -> Result<Regex, ParseError> {
@@ -618,7 +622,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_ident(&mut self) -> Result<String, ParseError> {
+    fn parse_ident(&mut self) -> String {
         let start = self.pos;
         while let Some(b) = self.peek() {
             let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
@@ -627,10 +631,10 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(self.src[start..self.pos].to_string())
+        self.src[start..self.pos].to_string()
     }
 
-    fn parse_ident_or_int(&mut self) -> Result<String, ParseError> {
+    fn parse_ident_or_int(&mut self) -> String {
         // Like parse_ident but also accepts a leading `-` for negative
         // positional keys (we don't really expect those, but the
         // grammar permits ints).
@@ -645,7 +649,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(self.src[start..self.pos].to_string())
+        self.src[start..self.pos].to_string()
     }
 }
 
@@ -675,12 +679,8 @@ fn walk<'a>(
 /// satisfy the last step) and walked backward through ancestors. The
 /// first step always matches as a Descendant (i.e. it can be any
 /// ancestor or the node itself).
-fn matches_path(
-    node: &OutlineNode,
-    ancestors: &[&OutlineNode],
-    steps: &[Step],
-) -> bool {
-    let mut path: Vec<&OutlineNode> = ancestors.iter().copied().collect();
+fn matches_path(node: &OutlineNode, ancestors: &[&OutlineNode], steps: &[Step]) -> bool {
+    let mut path: Vec<&OutlineNode> = ancestors.to_vec();
     path.push(node);
     let n = path.len();
     let mut s = steps.len();
@@ -798,17 +798,17 @@ fn predicate_matches(pred: &Predicate, node: &OutlineNode) -> bool {
     match pred {
         Predicate::Focused(want) => node.focused == *want,
         Predicate::Durable => node.durable,
-        Predicate::Eq { attr, value } => attr_eq(attr, node, value),
+        Predicate::Eq { attr, value } => attr_eq(*attr, node, value),
         Predicate::Regex { attr, regex } => {
-            let s = attr_value(attr, node);
+            let s = attr_value(*attr, node);
             regex.is_match(&s)
         }
-        Predicate::Prefix { attr, value } => attr_value(attr, node).starts_with(value.as_str()),
-        Predicate::Suffix { attr, value } => attr_value(attr, node).ends_with(value.as_str()),
+        Predicate::Prefix { attr, value } => attr_value(*attr, node).starts_with(value.as_str()),
+        Predicate::Suffix { attr, value } => attr_value(*attr, node).ends_with(value.as_str()),
     }
 }
 
-fn attr_value(attr: &Attr, node: &OutlineNode) -> String {
+fn attr_value(attr: Attr, node: &OutlineNode) -> String {
     match attr {
         Attr::Role => node.role.clone(),
         Attr::Name => node.name.clone(),
@@ -816,7 +816,7 @@ fn attr_value(attr: &Attr, node: &OutlineNode) -> String {
     }
 }
 
-fn attr_eq(attr: &Attr, node: &OutlineNode, want: &str) -> bool {
+fn attr_eq(attr: Attr, node: &OutlineNode, want: &str) -> bool {
     attr_value(attr, node) == want
 }
 
@@ -1048,7 +1048,10 @@ mod tests {
             node("@e2", "file", "/tmp/bar.txt"),
         ]);
         assert_eq!(
-            Selector::parse("[name^=/work]").unwrap().matches(&tree).len(),
+            Selector::parse("[name^=/work]")
+                .unwrap()
+                .matches(&tree)
+                .len(),
             1
         );
         assert_eq!(

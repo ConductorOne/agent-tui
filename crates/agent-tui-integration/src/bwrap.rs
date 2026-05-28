@@ -405,6 +405,37 @@ impl BwrapScenario {
         .await
     }
 
+    /// `agent-tui wait --ref <selector> --max 10000`.
+    pub async fn wait_ref(&mut self, selector: &str) -> Result<Value> {
+        self.run_cli(
+            "wait_ref",
+            &[
+                "wait".into(),
+                "--ref".into(),
+                selector.into(),
+                "--max".into(),
+                "10000".into(),
+            ],
+        )
+        .await
+    }
+
+    /// `agent-tui wait --ref <selector> --gone --max 10000`.
+    pub async fn wait_ref_gone(&mut self, selector: &str) -> Result<Value> {
+        self.run_cli(
+            "wait_ref_gone",
+            &[
+                "wait".into(),
+                "--ref".into(),
+                selector.into(),
+                "--gone".into(),
+                "--max".into(),
+                "10000".into(),
+            ],
+        )
+        .await
+    }
+
     /// `agent-tui wait --idle <ms> --max 10000`.
     pub async fn wait_idle(&mut self, ms: u64) -> Result<Value> {
         self.run_cli(
@@ -525,6 +556,15 @@ impl BwrapScenario {
             v.push((*val).to_string());
         }
         v
+    }
+
+    /// Escape hatch for tests that need to pass arbitrary argv to the
+    /// agent-tui binary — e.g. exercising flags the typed helpers don't
+    /// (yet) wrap, like `snapshot --select ...` or `press --to ...`.
+    /// `args` are the CLI args **after** `--socket-dir <dir>`.
+    pub async fn run_cli_raw(&mut self, args: &[String]) -> Result<Value> {
+        let op = args.first().cloned().unwrap_or_else(|| "raw".to_string());
+        self.run_cli(&op, args).await
     }
 
     async fn run_cli(&mut self, op: &str, args: &[String]) -> Result<Value> {

@@ -85,6 +85,21 @@ async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
     serde_json::from_str(&line).expect("decode")
 }
 
+/// Recursively concatenate every node's `name` (plus its children's
+/// names) into `out`. Used by outline assertions that don't care
+/// where in the tree a token appears.
+fn collect_names(node: &serde_json::Value, out: &mut String) {
+    if let Some(n) = node.get("name").and_then(|n| n.as_str()) {
+        out.push_str(n);
+        out.push('\n');
+    }
+    if let Some(kids) = node.get("children").and_then(|c| c.as_array()) {
+        for k in kids {
+            collect_names(k, out);
+        }
+    }
+}
+
 #[tokio::test]
 async fn pty_echo_round_trip() {
     let (cfg, _h) = boot_daemon().await;
@@ -125,24 +140,11 @@ async fn pty_echo_round_trip() {
     assert!(snap.response.success, "snapshot failed: {snap:?}");
     let data = snap.response.data.expect("data");
     // The shell adapter emits a single `@shell` root with children;
-    // the buffer/prompt content lives in those children. Walk them
-    // (and any nested children) collecting names, then assert "hello"
-    // is anywhere in the tree.
-    fn walk(v: &serde_json::Value, out: &mut String) {
-        if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
-            out.push_str(n);
-            out.push('\n');
-        }
-        if let Some(kids) = v.get("children").and_then(|c| c.as_array()) {
-            for k in kids {
-                walk(k, out);
-            }
-        }
-    }
+    // walk the tree collecting names and assert "hello" appears.
     let mut all_names = String::new();
     if let Some(roots) = data["outline"]["nodes"].as_array() {
         for r in roots {
-            walk(r, &mut all_names);
+            collect_names(r, &mut all_names);
         }
     }
     assert!(
@@ -785,8 +787,8 @@ async fn snapshot_hash_changes_after_output() {
                 mode: SnapshotMode::Outline,
                 png: None,
                 annotate: false,
-            select: None,
-            all: false,
+                select: None,
+                all: false,
             },
         )
         .await;
@@ -802,8 +804,8 @@ async fn snapshot_hash_changes_after_output() {
                     mode: SnapshotMode::Outline,
                     png: None,
                     annotate: false,
-            select: None,
-            all: false,
+                    select: None,
+                    all: false,
                 },
             )
             .await;

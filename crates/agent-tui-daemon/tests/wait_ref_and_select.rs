@@ -113,7 +113,11 @@ async fn snapshot_select_filters_outline_to_matching_nodes() {
     assert!(env.response.success, "snapshot --select failed: {env:?}");
     let data = env.response.data.unwrap();
     let nodes = data["outline"]["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 1, "expected exactly one matched node: {nodes:?}");
+    assert_eq!(
+        nodes.len(),
+        1,
+        "expected exactly one matched node: {nodes:?}"
+    );
     assert_eq!(nodes[0]["role"].as_str().unwrap(), "prompt");
     assert_eq!(nodes[0]["ref"].as_str().unwrap(), "@shell.prompt");
 
@@ -216,7 +220,7 @@ async fn press_with_to_identity_routing_writes_keys_to_pty() {
     .await;
     assert!(env.response.success, "press --to failed: {env:?}");
     let data = env.response.data.unwrap();
-    assert_eq!(data["routed"].as_bool().unwrap_or(false), true);
+    assert!(data["routed"].as_bool().unwrap_or(false));
     assert!(data["bytes_written"].as_u64().unwrap() >= 1);
 
     let _ = rt(&cfg, Command::Die { pane: None }).await;

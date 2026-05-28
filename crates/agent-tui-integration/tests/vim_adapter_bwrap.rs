@@ -17,13 +17,28 @@ fn outline(snap_env: &Value) -> &Value {
     snap_env.get("outline").expect("snapshot has outline")
 }
 
-/// Find a node with the given `role` in the outline.
+/// Find a node with the given `role` in the outline. Walks children
+/// recursively — the addressing-model adapters emit a single `@vim`
+/// root with the role-tagged content under `children`.
 fn find_node<'a>(outline_obj: &'a Value, role: &str) -> Option<&'a Value> {
+    fn walk<'a>(node: &'a Value, want: &str) -> Option<&'a Value> {
+        if node.get("role").and_then(Value::as_str) == Some(want) {
+            return Some(node);
+        }
+        if let Some(kids) = node.get("children").and_then(Value::as_array) {
+            for k in kids {
+                if let Some(hit) = walk(k, want) {
+                    return Some(hit);
+                }
+            }
+        }
+        None
+    }
     outline_obj
         .get("nodes")?
         .as_array()?
         .iter()
-        .find(|n| n.get("role").and_then(Value::as_str) == Some(role))
+        .find_map(|n| walk(n, role))
 }
 
 #[tokio::test]

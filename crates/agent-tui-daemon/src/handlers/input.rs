@@ -194,9 +194,7 @@ async fn execute_routed_steps(pane: &Pane, steps: &[RoutedStep], hint_len: usize
     if observed.is_none() && post_seq == pre_seq {
         resp = resp.with_warning(Warning {
             code: "no_echo_within_barrier".into(),
-            message: format!(
-                "no engine mutation within {BARRIER_TIMEOUT_MS}ms after routed write"
-            ),
+            message: format!("no engine mutation within {BARRIER_TIMEOUT_MS}ms after routed write"),
         });
     }
     resp

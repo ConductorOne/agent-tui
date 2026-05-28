@@ -807,7 +807,10 @@ mod tests {
         );
         let prompt = root.children.iter().find(|n| n.role == "prompt").unwrap();
         assert_eq!(prompt.r#ref, "@shell.prompt");
-        assert!(prompt.focused, "prompt should be focused when not in alt-screen");
+        assert!(
+            prompt.focused,
+            "prompt should be focused when not in alt-screen"
+        );
     }
 
     #[tokio::test]
@@ -907,7 +910,10 @@ mod tests {
         assert_eq!(mode.value.as_ref().unwrap(), ":write");
         // cmdline node exists and is focused.
         let cmd = find_by_role(kids, "cmdline").unwrap();
-        assert!(cmd.focused, "cmdline should be focused when command_line is set");
+        assert!(
+            cmd.focused,
+            "cmdline should be focused when command_line is set"
+        );
         assert_eq!(cmd.r#ref, "@vim.cmdline");
     }
 
@@ -987,10 +993,7 @@ mod tests {
             .await
             .unwrap();
         let refs_of = |o: &Outline| {
-            let mut out: Vec<String> = vim_children(o)
-                .iter()
-                .map(|n| n.r#ref.clone())
-                .collect();
+            let mut out: Vec<String> = vim_children(o).iter().map(|n| n.r#ref.clone()).collect();
             out.sort();
             out
         };
