@@ -77,8 +77,10 @@ async fn vim_insert_mode_shows_in_outline() -> Result<()> {
 
     let snap = s.snapshot().await?;
     let mode = find_node(outline(snap.envelope()), "mode").expect("mode node");
+    // Mode string is on `value` (the semantic payload of the
+    // mode indicator); `name` is empty.
     assert_eq!(
-        mode.get("name").and_then(Value::as_str),
+        mode.get("value").and_then(Value::as_str),
         Some("insert"),
         "mode node = {mode:#?}"
     );
@@ -103,14 +105,17 @@ async fn vim_command_mode_carries_command_line() -> Result<()> {
 
     let snap = s.snapshot().await?;
     let mode = find_node(outline(snap.envelope()), "mode").expect("mode node");
-    assert_eq!(mode.get("name").and_then(Value::as_str), Some("command"));
-    let cmdline = mode
+    assert_eq!(mode.get("value").and_then(Value::as_str), Some("command"));
+    // Command-line text lives on @vim.cmdline.value, not on the
+    // mode node — selectors like `@vim.cmdline[value~=/set/]` target it.
+    let cmdline = find_node(outline(snap.envelope()), "cmdline").expect("cmdline node");
+    let cmdline_value = cmdline
         .get("value")
         .and_then(Value::as_str)
-        .expect("command-line text in value");
+        .expect("command-line text in cmdline.value");
     assert!(
-        cmdline.starts_with(":set"),
-        "expected command-line to start with :set, got {cmdline:?}"
+        cmdline_value.starts_with(":set"),
+        "expected command-line to start with :set, got {cmdline_value:?}"
     );
 
     s.press("<esc>:q!<cr>").await?;
