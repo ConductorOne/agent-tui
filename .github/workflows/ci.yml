@@ -62,8 +62,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build agent-tui binary
-        run: cargo build --bin agent-tui
+      - name: Add musl target + install musl tooling
+        # ubuntu-latest's cargo build links against the runner's glibc
+        # (currently 2.39), which is newer than what debian:bookworm-
+        # slim and most fixture base images ship (2.36). The musl
+        # target produces a fully-static binary that runs on any libc.
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build agent-tui binary (musl-static)
+        run: cargo build --bin agent-tui --target x86_64-unknown-linux-musl
       - name: Build fixture images
         run: |
           set -euxo pipefail
@@ -72,6 +81,8 @@ jobs:
             docker build -t "agent-tui-fixture-${name}:dev" "$d"
           done
       - name: Run integration suite
+        env:
+          AGENT_TUI_BINARY: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/debug/agent-tui
         run: cargo test -p agent-tui-integration --features docker -- --nocapture
       - name: Upload debug artifacts on failure
         if: failure()
@@ -104,6 +115,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap podman
+      - name: Enable unprivileged user namespaces
+        # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
+        # namespaces via AppArmor — bwrap then fails with
+        # `setting up uid map: Permission denied`. Disable the
+        # restriction so bwrap can `--unshare-user`. Runner-local
+        # change; doesn't affect downstream consumers.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
       - name: Build agent-tui binary
         run: cargo build --bin agent-tui
       - name: Build fixture rootfs tarballs

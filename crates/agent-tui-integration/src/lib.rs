@@ -308,6 +308,21 @@ pub fn workspace_root() -> Result<PathBuf> {
 /// Returns an error if neither exists; CI must `cargo build --bin agent-tui`
 /// (or `cargo build --release ...`) before running integration tests.
 pub fn agent_tui_binary() -> Result<PathBuf> {
+    // `AGENT_TUI_BINARY` overrides path discovery — used by CI to
+    // point at a musl-static binary built under
+    // `target/x86_64-unknown-linux-musl/debug/`, which is glibc-
+    // version-independent and runs cleanly inside a debian-slim
+    // container.
+    if let Some(p) = std::env::var_os("AGENT_TUI_BINARY") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Ok(p);
+        }
+        anyhow::bail!(
+            "AGENT_TUI_BINARY points at {} but the file doesn't exist",
+            p.display()
+        );
+    }
     let root = workspace_root()?;
     let exe = if cfg!(windows) {
         "agent-tui.exe"
