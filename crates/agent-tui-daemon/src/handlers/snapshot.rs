@@ -13,7 +13,7 @@ use agent_tui_protocol::request::SnapshotMode;
 use agent_tui_protocol::snapshot::CellGridRle;
 use agent_tui_protocol::{
     ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, Ref, RefBinding, Response, Selector,
-    Snapshot,
+    Snapshot, Warning, format_selector_parse_error, outline_all_refs,
 };
 use base64::Engine as _;
 
@@ -70,10 +70,11 @@ pub async fn run(
     let compiled = match select.as_deref().map(Selector::parse).transpose() {
         Ok(s) => s,
         Err(e) => {
+            let raw = select.as_deref().unwrap_or("");
             return Response::err(ErrorBody::new(
                 ErrorCode::InvalidArgs,
-                format!("selector parse error at byte {}: {}", e.at, e.kind),
-                "see docs/addressing-rfc.md §2.2",
+                format_selector_parse_error(raw, &e),
+                "see docs/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
             ));
         }
     };
@@ -104,15 +105,40 @@ pub async fn run(
         effective_mode,
     )
     .await;
+    // Carry forward `select` so we can attach a "no-match" warning
+    // with the available refs below.
+    let mut select_miss_refs: Option<Vec<String>> = None;
     if let Some(sel) = compiled.as_ref() {
-        snapshot.outline = snapshot.outline.map(|o| filter_outline(o, sel, all));
+        if let Some(orig) = snapshot.outline.clone() {
+            let matches = sel.matches(&orig);
+            if matches.is_empty() {
+                select_miss_refs = Some(outline_all_refs(&orig, 20));
+            }
+            snapshot.outline = Some(filter_outline(orig, sel, all));
+        }
     }
     // Record (seq, hash) so `wait --hash` can resolve subsequent calls.
     hashes
         .record(&pane_arc.id, snapshot.sequence, snapshot.hash.clone())
         .await;
     match serde_json::to_value(&snapshot) {
-        Ok(v) => Response::ok(v),
+        Ok(v) => {
+            let mut resp = Response::ok(v);
+            if let Some(refs) = select_miss_refs {
+                resp = resp.with_warning(Warning {
+                    code: "selector_no_match".into(),
+                    message: if refs.is_empty() {
+                        "selector matched no node; outline is empty".into()
+                    } else {
+                        format!(
+                            "selector matched no node. available refs: {}",
+                            refs.join(", ")
+                        )
+                    },
+                });
+            }
+            resp
+        }
         Err(e) => Response::err(ErrorBody::new(
             ErrorCode::Internal,
             format!("snapshot serialization failed: {e}"),

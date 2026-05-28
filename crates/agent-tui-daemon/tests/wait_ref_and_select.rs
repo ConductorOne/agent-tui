@@ -148,6 +148,72 @@ async fn snapshot_select_invalid_returns_invalid_args() {
         agent_tui_protocol::ErrorCode::InvalidArgs,
         "unexpected error code: {err:?}"
     );
+    // The error message should include a caret line pointing at the
+    // bad byte position so agents can self-correct.
+    assert!(
+        err.message.contains('^'),
+        "expected caret in error message; got: {}",
+        err.message
+    );
+
+    let _ = rt(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn snapshot_select_no_match_attaches_available_refs_warning() {
+    let (cfg, _h) = boot().await;
+    spawn_shell_printing(&cfg, "x").await;
+
+    let env = rt(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: None,
+            annotate: false,
+            // Valid grammar but matches nothing in the @shell outline.
+            select: Some("@nonexistent.adapter".into()),
+            all: false,
+        },
+    )
+    .await;
+    assert!(
+        env.response.success,
+        "snapshot itself should succeed: {env:?}"
+    );
+    let warning = env.response.warning.expect("expected a no-match warning");
+    assert_eq!(warning.code, "selector_no_match");
+    assert!(
+        warning.message.contains("@shell"),
+        "warning should list available refs; got: {}",
+        warning.message
+    );
+
+    let _ = rt(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn press_to_no_match_lists_available_refs_in_hint() {
+    let (cfg, _h) = boot().await;
+    spawn_shell_printing(&cfg, "ready").await;
+
+    let env = rt(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "x".into(),
+            to: Some("@nonexistent.adapter".into()),
+        },
+    )
+    .await;
+    assert!(!env.response.success);
+    let err = env.response.error.unwrap();
+    assert_eq!(err.code, agent_tui_protocol::ErrorCode::RoutingUnsupported);
+    assert!(
+        err.hint.contains("@shell"),
+        "hint should list available refs; got: {}",
+        err.hint
+    );
 
     let _ = rt(&cfg, Command::Die { pane: None }).await;
 }

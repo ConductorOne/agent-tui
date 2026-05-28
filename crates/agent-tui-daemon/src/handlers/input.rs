@@ -13,7 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_tui_adapter::RoutedStep;
-use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Selector, Warning, keymap};
+use agent_tui_protocol::{
+    ErrorBody, ErrorCode, PaneId, Response, Selector, Warning, format_selector_parse_error, keymap,
+    outline_all_refs,
+};
 
 use crate::governance::{Governance, build};
 use crate::pane::{Pane, Registry, resolve_focused};
@@ -105,10 +108,11 @@ async fn deliver(
 /// match in depth-first pre-order wins.
 async fn resolve_target_ref(pane: &Pane, selector: &str) -> Result<String, Response> {
     let sel = Selector::parse(selector).map_err(|e| {
+        let formatted = format_selector_parse_error(selector, &e);
         Response::err(ErrorBody::new(
             ErrorCode::InvalidArgs,
-            format!("--to selector parse error at byte {}: {}", e.at, e.kind),
-            "see docs/addressing-rfc.md §2.2",
+            formatted,
+            "see docs/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
         ))
     })?;
     let adapter = pane.adapter().await;
@@ -120,14 +124,20 @@ async fn resolve_target_ref(pane: &Pane, selector: &str) -> Result<String, Respo
             "adapter could not provide an outline for routing",
         ))
     })?;
-    match sel.first(&outline) {
-        Some(node) => Ok(node.r#ref.clone()),
-        None => Err(Response::err(ErrorBody::new(
-            ErrorCode::RoutingUnsupported,
-            format!("--to selector {selector:?} matched no node"),
-            "snapshot to inspect the outline; relax the selector",
-        ))),
+    if let Some(node) = sel.first(&outline) {
+        return Ok(node.r#ref.clone());
     }
+    let refs = outline_all_refs(&outline, 20);
+    let hint = if refs.is_empty() {
+        "snapshot to inspect the outline; relax the selector".to_string()
+    } else {
+        format!("available refs: {}", refs.join(", "))
+    };
+    Err(Response::err(ErrorBody::new(
+        ErrorCode::RoutingUnsupported,
+        format!("--to selector {selector:?} matched no node"),
+        hint,
+    )))
 }
 
 async fn execute_routed_steps(pane: &Pane, steps: &[RoutedStep], hint_len: usize) -> Response {

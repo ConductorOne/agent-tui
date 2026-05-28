@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use agent_tui_engine::MutationEvent;
 use agent_tui_protocol::request::WaitCondition;
-use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response, Selector};
+use agent_tui_protocol::{
+    ErrorBody, ErrorCode, PaneId, Response, Selector, format_selector_parse_error,
+};
 use regex::Regex;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
@@ -47,8 +49,8 @@ pub async fn run(
         if let Err(e) = Selector::parse(selector) {
             return Response::err(ErrorBody::new(
                 ErrorCode::InvalidArgs,
-                format!("selector parse error at byte {}: {}", e.at, e.kind),
-                "see docs/addressing-rfc.md §2.2",
+                format_selector_parse_error(selector, &e),
+                "see docs/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
             ));
         }
     }
