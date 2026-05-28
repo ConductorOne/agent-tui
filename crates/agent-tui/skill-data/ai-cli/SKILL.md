@@ -16,6 +16,33 @@ CLI, wait for its prompt, snapshot, interact. What changes is what
 you're waiting *for* — AI CLIs have characteristic UI shapes that
 make detection robust.
 
+## Outline shape
+
+The Claude/Codex/Aider/opencode family shares a common interactive
+layout: a streaming response area on top of a fenced input box. The
+`claude-code` adapter exposes that as durable refs:
+
+```
+@ai-cli                  role=root
+├── @ai-cli.response     role=response   (everything above the input)
+└── @ai-cli.input        role=input      focused=true while waiting for you
+```
+
+Read `agent-tui skills get addressing` for selector syntax. Common
+patterns:
+
+| Goal | Selector |
+|---|---|
+| Wait for the CLI to be ready for input | `@ai-cli.input[focused]` |
+| Snapshot just the assistant's reply | `@ai-cli.response` |
+| Wait for the CLI to start generating (input loses focus) | `@ai-cli.input[focused]` + `--gone` |
+| Get the input prompt's current line | `@ai-cli.input` (read `.name`) |
+
+The v1 adapter doesn't yet distinguish *streaming* from *final* —
+both land in `@ai-cli.response`. The
+`[role=response-streaming]` / `[role=response-final]` split is a
+follow-up; track in `tracker.md`.
+
 ## Read [core](../core/SKILL.md) first
 <!-- tested-by: navigation -->
 

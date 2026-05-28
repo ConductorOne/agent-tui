@@ -167,6 +167,8 @@ listing well-known schemes:
 | `vim.buffer.bufnr`  | integer  | vim `bufnr`.                         |
 | `vim.window.winnr`  | integer  | vim `winnr`.                         |
 | `nvim.buffer.bufnr` | integer  | nvim equivalent.                     |
+| `ai-cli.input`      | (none)   | bottom-line input prompt for the Claude/Codex/Aider/opencode family. |
+| `ai-cli.response`   | (none)   | scrollback above the input line.     |
 | `generic.path`      | string   | adapter-defined; not portable.       |
 
 Adapters MAY invent new schemes; they SHOULD prefix with the adapter
