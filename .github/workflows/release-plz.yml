@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # release-plz hits /repos/{owner}/{repo}/commits/{sha}/pulls to
+      # look up PR metadata for the changelog. Without this perm the
+      # action 403s. See https://release-plz.dev/docs/github/token.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
