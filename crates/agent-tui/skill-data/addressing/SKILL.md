@@ -143,6 +143,27 @@ positional and may shuffle if the adapter rearranges things.
 | Write into a specific pane | `press --to '<sel>' '<keys>'` |
 | Wait for a transient prompt to close | `wait --ref '<sel>' --gone` |
 
+## Error responses
+
+The daemon's error responses are designed to help you self-correct:
+
+- **Parse error** (bad grammar): the error message includes a
+  `^`-pointer at the offending byte:
+  ```text
+  selector parse error at byte 6: unknown attribute "bogus"
+    [bogus=x]
+          ^
+  ```
+- **No-match on `--to <selector>`**: `error.hint` lists up to 20
+  available refs from the current outline — copy one and retry.
+- **No-match on `snapshot --select`**: the response succeeds with
+  empty `outline.nodes`, plus a `warning` with code
+  `selector_no_match` whose message lists available refs.
+
+Common loop: snapshot first with no `--select` to discover refs,
+then refine. Or — when in doubt — run `snapshot --select '*'` to
+see every node.
+
 ## Common mistakes
 
 1. **Re-snapshotting before each ref use.** Old guidance said

@@ -22,7 +22,10 @@ pub use action::{ActionDetail, ActionKind, AuditEvent, Decision, Verdict};
 pub use error::{ErrorCode, ProtocolError};
 pub use request::{Command, Request};
 pub use response::{ErrorBody, Response, ResponseEnvelope, ToolOutputDelim, Warning};
-pub use selector::{ParseError as SelectorParseError, Selector};
+pub use selector::{
+    ParseError as SelectorParseError, Selector, all_refs as outline_all_refs,
+    format_parse_error as format_selector_parse_error,
+};
 pub use snapshot::{
     Cell, CellGrid, ModeFlags, Outline, OutlineNode, PaneState, Ref, RefBinding, Snapshot,
 };

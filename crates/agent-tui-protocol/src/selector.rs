@@ -47,6 +47,55 @@ pub struct ParseError {
     pub kind: String,
 }
 
+/// Collect every ref in the outline (depth-first pre-order), capped at
+/// `limit` for response-size safety. Useful for surfacing "here's what
+/// IS in the tree" hints when a selector misses.
+#[must_use]
+pub fn all_refs(outline: &Outline, limit: usize) -> Vec<String> {
+    fn walk(node: &OutlineNode, out: &mut Vec<String>, limit: usize) {
+        if out.len() >= limit {
+            return;
+        }
+        if !node.r#ref.is_empty() {
+            out.push(node.r#ref.clone());
+        }
+        for child in &node.children {
+            walk(child, out, limit);
+        }
+    }
+    let mut out = Vec::with_capacity(limit.min(16));
+    for root in &outline.nodes {
+        walk(root, &mut out, limit);
+    }
+    out
+}
+
+/// Render a [`ParseError`] with a `^`-pointer at the offending byte.
+/// Used by the CLI/daemon to give agents a visual cue:
+///
+/// ```text
+/// selector parse error at byte 14: expected ']' to close predicate
+///   [role=buffer
+///                ^
+/// ```
+#[must_use]
+pub fn format_parse_error(input: &str, err: &ParseError) -> String {
+    // Clamp byte offset to input length.
+    let at = err.at.min(input.len());
+    // Build a leading-space indent of width `at` using the actual
+    // characters in the input (handles wide glyphs only approximately
+    // — selectors are ASCII in practice).
+    let mut caret_line = String::with_capacity(at + 1);
+    for _ in 0..at {
+        caret_line.push(' ');
+    }
+    caret_line.push('^');
+    format!(
+        "selector parse error at byte {}: {}\n  {}\n  {}",
+        err.at, err.kind, input, caret_line
+    )
+}
+
 impl Selector {
     /// Parse a selector string into a compiled selector.
     pub fn parse(input: &str) -> Result<Self, ParseError> {
@@ -1080,6 +1129,44 @@ mod tests {
         let tree = outline(vec![]);
         assert!(s.matches(&tree).is_empty());
         assert!(s.first(&tree).is_none());
+    }
+
+    #[test]
+    fn all_refs_walks_tree_depth_first() {
+        let tree = outline(vec![with_children(
+            node("@vim", "root", ""),
+            vec![
+                node("@vim.mode", "mode", ""),
+                node("@vim.buffer", "buffer", ""),
+            ],
+        )]);
+        let refs = super::all_refs(&tree, 100);
+        assert_eq!(refs, vec!["@vim", "@vim.mode", "@vim.buffer"]);
+    }
+
+    #[test]
+    fn all_refs_respects_limit() {
+        let kids: Vec<_> = (0..50)
+            .map(|i| node(&format!("@root.k{i}"), "x", ""))
+            .collect();
+        let tree = outline(vec![with_children(node("@root", "root", ""), kids)]);
+        let refs = super::all_refs(&tree, 5);
+        assert_eq!(refs.len(), 5);
+        assert_eq!(refs[0], "@root");
+    }
+
+    #[test]
+    fn format_parse_error_draws_caret() {
+        let err = Selector::parse("[role buffer").unwrap_err();
+        let out = super::format_parse_error("[role buffer", &err);
+        assert!(out.contains("[role buffer"));
+        // The caret line should have ^ at column `err.at`.
+        let caret_line = out.lines().last().unwrap();
+        let prefix = caret_line.trim_start_matches(' ');
+        assert!(prefix.starts_with('^'));
+        // The caret indents by 2 (response prefix) + err.at spaces.
+        let lead_spaces = caret_line.len() - prefix.len();
+        assert_eq!(lead_spaces, 2 + err.at);
     }
 
     #[test]
