@@ -1,0 +1,53 @@
+# release-plz: watches main, opens a Release PR that bumps the
+# workspace version and regenerates CHANGELOG.md when commits land
+# since the last release. Merging that PR creates the tag `v<X.Y.Z>`,
+# which then triggers .github/workflows/release.yml (cargo-dist) to
+# build the platform binaries.
+#
+# Reference: https://release-plz.dev/docs/github
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+# Both jobs need the same git history, so dedupe via concurrency.
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
