@@ -36,57 +36,75 @@ impl Adapter for GenericAdapter {
     }
 
     async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
+        // Refs are scheme-stable across frames: `@generic.header`,
+        // `@generic.buffer`, `@generic.footer` always identify the
+        // same logical regions (top/middle/bottom of the grid) — the
+        // contents change but the ref identity doesn't, so agents can
+        // address them with selectors that don't go stale.
+        //
+        // We mark these durable=true because the *ref* is stable
+        // (i.e. `@generic.buffer` is always the body), even though
+        // there's no adapter-side identifier behind it. This is the
+        // "positional but stable name" case the RFC §2.1 calls out.
         let rows = grid_rows(snap);
         let header = first_non_empty(&rows);
         let footer = last_non_empty(&rows);
         let body = body_lines(&rows, header, footer);
 
-        let mut nodes = Vec::new();
-        let mut next_idx = 1u32;
+        let mut children = Vec::new();
         if let Some(row_idx) = header {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
+            children.push(OutlineNode {
+                r#ref: "@generic.header".into(),
                 role: "header".into(),
                 name: rows[row_idx].clone(),
                 value: None,
                 focused: false,
                 anchor: Some((row_idx as u16, 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
-            next_idx += 1;
         }
         if !body.is_empty() {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
+            children.push(OutlineNode {
+                r#ref: "@generic.buffer".into(),
                 role: "buffer".into(),
                 name: body,
                 value: None,
                 focused: true,
                 anchor: Some((header.map_or(0, |r| (r + 1) as u16), 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
-            next_idx += 1;
         }
         if let Some(row_idx) = footer
             && Some(row_idx) != header
         {
-            nodes.push(OutlineNode {
-                r#ref: format!("@e{next_idx}"),
+            children.push(OutlineNode {
+                r#ref: "@generic.footer".into(),
                 role: "footer".into(),
                 name: rows[row_idx].clone(),
                 value: None,
                 focused: false,
                 anchor: Some((row_idx as u16, 0)),
-                children: Vec::new(),
+                durable: true,
                 ..OutlineNode::default()
             });
         }
 
+        // Mirror the per-app adapters: one durable root with children.
+        // Empty grids still yield an `@generic` root so selectors
+        // always have something to anchor to.
+        let root = OutlineNode {
+            r#ref: "@generic".into(),
+            role: "root".into(),
+            durable: true,
+            children,
+            ..OutlineNode::default()
+        };
+
         Ok(Outline {
             adapter: "generic".into(),
-            nodes,
+            nodes: vec![root],
         })
     }
 
@@ -833,13 +851,55 @@ mod tests {
             .outline(&snap("title\nrow A\nrow B\nstatus"))
             .await
             .unwrap();
-        assert_eq!(outline.nodes.len(), 3);
-        assert_eq!(outline.nodes[0].role, "header");
-        assert_eq!(outline.nodes[0].name, "title");
-        assert_eq!(outline.nodes[1].role, "buffer");
-        assert_eq!(outline.nodes[1].name, "row A\nrow B");
-        assert_eq!(outline.nodes[2].role, "footer");
-        assert_eq!(outline.nodes[2].name, "status");
+        // Single @generic root with three durable children.
+        assert_eq!(outline.nodes.len(), 1);
+        let root = &outline.nodes[0];
+        assert_eq!(root.r#ref, "@generic");
+        assert!(root.durable);
+        let kids = &root.children;
+        assert_eq!(kids.len(), 3);
+        assert_eq!(kids[0].r#ref, "@generic.header");
+        assert_eq!(kids[0].name, "title");
+        assert!(kids[0].durable);
+        assert_eq!(kids[1].r#ref, "@generic.buffer");
+        assert_eq!(kids[1].name, "row A\nrow B");
+        assert!(kids[1].durable);
+        assert_eq!(kids[2].r#ref, "@generic.footer");
+        assert_eq!(kids[2].name, "status");
+        assert!(kids[2].durable);
+    }
+
+    /// Empty grid still emits an `@generic` root (with no children) so
+    /// selectors always have something to anchor to.
+    #[tokio::test]
+    async fn generic_outline_empty_grid_yields_root_with_no_children() {
+        let outline = GenericAdapter.outline(&snap("\n\n")).await.unwrap();
+        assert_eq!(outline.nodes.len(), 1);
+        assert_eq!(outline.nodes[0].r#ref, "@generic");
+        assert!(outline.nodes[0].children.is_empty());
+    }
+
+    /// Refs are stable across frames even as content changes.
+    #[tokio::test]
+    async fn generic_refs_are_stable_across_frames() {
+        let a = GenericAdapter
+            .outline(&snap("h1\nbody1\nf1"))
+            .await
+            .unwrap();
+        let b = GenericAdapter
+            .outline(&snap("h2\nbody2\nbody2b\nf2"))
+            .await
+            .unwrap();
+        let refs_of = |o: &Outline| -> Vec<String> {
+            let mut out: Vec<String> = o.nodes[0]
+                .children
+                .iter()
+                .map(|n| n.r#ref.clone())
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(refs_of(&a), refs_of(&b));
     }
 
     #[tokio::test]
@@ -941,12 +1001,6 @@ mod tests {
             prompt.focused,
             "prompt should be focused when not in alt-screen"
         );
-    }
-
-    #[tokio::test]
-    async fn generic_empty_grid_returns_empty_nodes() {
-        let outline = GenericAdapter.outline(&snap("\n\n")).await.unwrap();
-        assert!(outline.nodes.is_empty());
     }
 
     // ----------------------------------------------------------------
