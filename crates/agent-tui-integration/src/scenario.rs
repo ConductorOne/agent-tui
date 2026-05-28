@@ -225,9 +225,21 @@ impl Scenario {
         tokio::io::AsyncReadExt::read_to_end(&mut exec.stdout(), &mut stdout)
             .await
             .context("read exec stdout")?;
+        // Also drain stderr — agent-tui's tracing output goes there.
+        // Without this, a panic / missing binary / wrong arch crashes
+        // silently and the only error the test gets is "no stdout".
+        let mut stderr = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut exec.stderr(), &mut stderr)
+            .await
+            .ok();
         let body = String::from_utf8_lossy(&stdout).trim().to_string();
         if body.is_empty() {
-            return Err(anyhow!("agent-tui {op} returned no stdout"));
+            let err_body = String::from_utf8_lossy(&stderr);
+            return Err(anyhow!(
+                "agent-tui {op} returned no stdout. argv={:?}, stderr={:?}",
+                full,
+                err_body.trim()
+            ));
         }
         // The CLI returns one JSON-line response.
         let envelope: Value = serde_json::from_str(&body)

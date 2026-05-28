@@ -174,12 +174,21 @@ impl PtyChild {
         // consult TIOCGWINSZ instead of LINES weren't affected, which
         // made the bug look TUI-specific. Forcing the env to match the
         // PTY removes the discrepancy.
-        // Final env list: LINES/COLUMNS first (so a user `env` of
-        // `LINES=foo` can deliberately override our default), then the
+        // Final env list: defaults first (so a user `env` of `LINES=foo`
+        // or `TERM=screen` can deliberately override them), then the
         // caller's per-spawn overrides. portable-pty's CommandBuilder
         // applies each `cmd.env(k, v)` in iteration order, so later
         // entries win.
+        //
+        // `TERM` matters: vim/tmux/less consult terminfo to decide
+        // whether to switch to the alt-screen (ESC[?1049h). With no
+        // TERM, vim falls back to a primary-screen render path and the
+        // pane never reports `alt_screen=true`. portable-pty inherits
+        // env from the daemon process, so this only bites when the
+        // daemon itself was launched in a stripped-env context (e.g.
+        // inside a freshly-exec'd Docker container).
         let mut env_overrides: Vec<(String, String)> = vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
             ("LINES".to_string(), rows.to_string()),
             ("COLUMNS".to_string(), cols.to_string()),
         ];

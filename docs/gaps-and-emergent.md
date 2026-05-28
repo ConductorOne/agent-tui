@@ -450,3 +450,33 @@ Documented here so we don't re-litigate during planning:
    started by reading it. Invest in its richness (env, command-log
    embedding, structured event types) before investing in new
    debugging tools.
+6. **Run `cargo xtask cross-check` BEFORE push, not after CI yells.**
+   PR #2 broke macOS + Windows; PR #3 fixed macOS then broke macOS
+   AGAIN because rustix's `pipe_with(CLOEXEC)` is Apple-excluded
+   despite reading as cross-platform. Each round cost a CI cycle.
+   The mechanism (cross-check xtask) was there before PR #3; I
+   didn't run it. The lesson is "use the tool you built."
+7. **Pre-existing CI failures aren't the new PR's bug, but they
+   accumulate technical debt.** PR #1's merge left two integration
+   jobs red; PR #2 inherited that; PR #3 inherited it. The cost
+   compounds — every PR's CI signal gets noisier and reviewers
+   start ignoring CI entirely. Fix red main as a standalone PR.
+8. **Test harnesses must drain stderr.** The `Scenario::run_cli`
+   docker harness only read stdout. When the agent-tui binary
+   silently failed to exec on Alpine (glibc/musl mismatch), the
+   only diagnostic the test surfaced was `agent-tui spawn returned
+   no stdout`. Adding stderr to the error message immediately
+   surfaced the real cause. Any subprocess-driving harness needs
+   this from day 1.
+9. **Match base-image libc to the build target.** `cargo build`
+   on ubuntu-latest produces a glibc binary. Alpine is musl.
+   Mounting a glibc binary into an Alpine container = silent
+   exec failure (the ELF interpreter doesn't exist). For mounted-
+   binary fixtures, use `debian:bookworm-slim` or build with
+   `--target x86_64-unknown-linux-musl`. The first is simpler.
+10. **Sandbox features that work locally may fail in CI.** bwrap's
+    `--unshare-net` brings up loopback inside the new netns —
+    needs CAP_NET_ADMIN-shaped privileges that GH Actions runners
+    don't grant unprivileged users. Locally we have them; in CI
+    we don't. Every sandbox feature needs a CI-friendly escape
+    hatch from the start.
