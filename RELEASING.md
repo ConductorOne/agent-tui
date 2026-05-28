@@ -141,7 +141,7 @@ also serve as the install instructions in README.md.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/ductone/agent-tui/releases/download/v0.2.0/agent-tui-installer.sh | sh
+  https://github.com/ConductorOne/agent-tui/releases/download/v0.2.0/agent-tui-installer.sh | sh
 agent-tui --version
 # expected: agent-tui 0.2.0
 ```
@@ -149,14 +149,14 @@ agent-tui --version
 **Homebrew (macOS/Linux):**
 
 ```bash
-brew install ductone/tap/agent-tui
+brew install conductorone/tap/agent-tui
 agent-tui --version
 ```
 
 **npm (any platform):**
 
 ```bash
-npm install -g @ductone/agent-tui
+npm install -g @conductorone/agent-tui
 agent-tui --version
 ```
 
@@ -169,7 +169,7 @@ cargo install agent-tui --version 0.2.0
 **Container (when v0.3+):**
 
 ```bash
-docker run --rm ghcr.io/ductone/agent-tui:v0.2.0 --version
+docker run --rm ghcr.io/ConductorOne/agent-tui:v0.2.0 --version
 ```
 
 ### 6. Verify the supply chain
@@ -182,7 +182,7 @@ Before trusting a downloaded binary on a sensitive system, run:
 cosign verify-blob \
   --signature   agent-tui-x86_64-unknown-linux-gnu.tar.gz.sig \
   --certificate agent-tui-x86_64-unknown-linux-gnu.tar.gz.pem \
-  --certificate-identity-regexp '^https://github\.com/ductone/agent-tui/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github\.com/ConductorOne/agent-tui/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   agent-tui-x86_64-unknown-linux-gnu.tar.gz
 ```
@@ -194,7 +194,7 @@ Expected: `Verified OK`.
 ```bash
 slsa-verifier verify-artifact \
   --provenance-path agent-tui-x86_64-unknown-linux-gnu.intoto.jsonl \
-  --source-uri      github.com/ductone/agent-tui \
+  --source-uri      github.com/ConductorOne/agent-tui \
   --source-tag      v0.2.0 \
   agent-tui-x86_64-unknown-linux-gnu.tar.gz
 ```
@@ -300,13 +300,13 @@ Cause: either the certificate-identity-regexp doesn't match, or
 the certificate was issued for a different repo / workflow.
 
 Fix: double-check the expected identity matches
-`^https://github\.com/ductone/agent-tui/\.github/workflows/release\.yml@refs/tags/v`.
+`^https://github\.com/ConductorOne/agent-tui/\.github/workflows/release\.yml@refs/tags/v`.
 
 ### "slsa-verifier: source-uri mismatch"
 
 Cause: artifact built from a different repo than expected.
 
-Fix: confirm `--source-uri github.com/ductone/agent-tui` matches
+Fix: confirm `--source-uri github.com/ConductorOne/agent-tui` matches
 the repo the tag was pushed to. If you're verifying a fork, that
 fork must run its own release workflow.
 

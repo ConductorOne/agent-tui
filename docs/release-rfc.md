@@ -157,7 +157,7 @@ User verification:
 cosign verify-blob agent-tui-x86_64-linux.tar.gz \
   --signature agent-tui-x86_64-linux.tar.gz.sig \
   --certificate agent-tui-x86_64-linux.tar.gz.pem \
-  --certificate-identity-regexp '^https://github\.com/ductone/agent-tui/' \
+  --certificate-identity-regexp '^https://github\.com/ConductorOne/agent-tui/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -179,7 +179,7 @@ User verification:
 ```bash
 slsa-verifier verify-artifact agent-tui-x86_64-linux.tar.gz \
   --provenance-path agent-tui-x86_64-linux.intoto.jsonl \
-  --source-uri github.com/ductone/agent-tui \
+  --source-uri github.com/ConductorOne/agent-tui \
   --source-tag v0.2.0
 ```
 
@@ -219,7 +219,7 @@ Cargo.toml diff (workspace `[package]` section):
  version = "0.1.0"
  license = "Apache-2.0"
 -repository = "https://github.com/agent-tui/agent-tui"
-+repository = "https://github.com/ductone/agent-tui"
++repository = "https://github.com/ConductorOne/agent-tui"
  authors = ["agent-tui contributors"]
 ```
 
@@ -270,7 +270,7 @@ targets = [
 publish-jobs = ["homebrew", "npm"]
 
 # Where the homebrew tap lives. Must be a separate repo we control.
-tap = "ductone/homebrew-tap"
+tap = "ConductorOne/homebrew-tap"
 
 # When dist runs as part of a pull_request, run in `plan` mode only —
 # don't try to publish anything from a draft.
@@ -490,13 +490,15 @@ The full version is `RELEASING.md`. Summary here:
 
 ## 9. Open questions
 
-- **Tap repo bootstrapping.** `ductone/homebrew-tap` doesn't exist
+- **Tap repo bootstrapping.** `ConductorOne/homebrew-tap` doesn't exist
   yet. We need to create it before dist's first run, or the
   publish-homebrew-formula job will error. Quick fix — initialize an
   empty repo with a `Formula/` directory.
-- **npm package name.** `@ductone/agent-tui` requires the `ductone`
-  npm org. Alternative: ship as `agent-tui` (unscoped, hope it's
-  free). Need to check; defer until step 4 of the phased rollout.
+- **npm package name.** `@conductorone/agent-tui` requires the
+  `conductorone` npm org (lowercase — npm scopes are lowercase).
+  Alternative: ship as `agent-tui` (unscoped, depends on
+  availability). Need to check; defer until step 4 of the phased
+  rollout.
 - **crates.io vs binary-only.** release-plz can publish to crates.io
   per crate. For v0.x, do we publish protocol/adapter as separate
   crates, or only the top-level binary? Lean toward binary-only for
@@ -514,7 +516,7 @@ Five PRs, in order. Each is independently mergeable.
 
 ### Phase 1: Basic dist (1-2 days)
 
-- Fix `repository = "https://github.com/ductone/agent-tui"` in
+- Fix `repository = "https://github.com/ConductorOne/agent-tui"` in
   `[workspace.package]`.
 - Bump workspace version to `0.1.0-rc.0` (or whatever prerelease
   suffix we want). dist refuses to tag at a version that doesn't
@@ -569,26 +571,27 @@ is what release-plz infers from "no unreleased changes").
 
 **Bootstrap step (must precede first publish):**
 
-- Create `ductone/homebrew-tap` repo, empty except for a placeholder
+- Create `ConductorOne/homebrew-tap` repo, empty except for a placeholder
   `Formula/.gitkeep`.
 - Generate a fine-grained PAT scoped to that tap repo
   (`contents: write`, `pull-requests: write`). Store as
   `HOMEBREW_TAP_TOKEN` in the agent-tui repo's secrets. Wire it
   into release.yml via `github-build-setup`.
-- Decide on npm name: `@ductone/agent-tui` (scoped, requires `ductone`
-  npm org) vs `agent-tui` (unscoped, must be available). Check
-  availability first. If npm org doesn't exist, create it; npm
+- Decide on npm name: `@conductorone/agent-tui` (scoped, requires
+  the `conductorone` npm org) vs `agent-tui` (unscoped, must be
+  available). Check availability first. If npm org doesn't exist,
+  create it; npm
   scopes are free.
 - Set `NPM_TOKEN` secret if publishing to npm.
 
 **Wire it up:**
 
 - Add `publish-jobs = ["homebrew", "npm"]` to dist config.
-- Set `tap = "ductone/homebrew-tap"`.
+- Set `tap = "ConductorOne/homebrew-tap"`.
 - Push `v0.2.0` for the first real distribution-channel release.
 
-**Exit criteria:** `brew install ductone/tap/agent-tui`,
-`npm install -g @ductone/agent-tui` (or unscoped equivalent), and
+**Exit criteria:** `brew install conductorone/tap/agent-tui`,
+`npm install -g @conductorone/agent-tui` (or unscoped equivalent), and
 the curl installer all install the same binary verifiable to the
 same Sigstore cert.
 
@@ -628,7 +631,7 @@ common time sink.
 ### Post-publish smoke
 
 - Clean macOS VM: `curl --proto '=https' --tlsv1.2 -LsSf
-  https://github.com/ductone/agent-tui/releases/download/v0.1.0/agent-tui-installer.sh
+  https://github.com/ConductorOne/agent-tui/releases/download/v0.1.0/agent-tui-installer.sh
   | sh`, then `agent-tui --version`.
 - Same on Linux x86_64 + aarch64 + Windows.
 - `cosign verify-blob` on each artifact.
