@@ -33,6 +33,27 @@ enum Cmd {
     /// least one skill page (or on `.undocumented-allowlist.txt`).
     /// Walks `agent-tui help` recursively to enumerate the surface.
     CliCoverage(CliCoverageArgs),
+    /// Run `cargo check` for each target we ship to (macOS, Windows)
+    /// to catch platform-specific compile breakage before push.
+    ///
+    /// `cargo check --target <triple>` doesn't need a full
+    /// cross-toolchain — just the target's std (`rustup target add
+    /// <triple>`) and a linker. We use clippy-equivalent settings to
+    /// match CI behavior.
+    CrossCheck(CrossCheckArgs),
+}
+
+#[derive(clap::Args)]
+struct CrossCheckArgs {
+    /// Targets to check. Defaults to macOS + Windows (the two we've
+    /// regressed on historically). Linux-host check is redundant
+    /// with normal `cargo check`.
+    #[arg(long, value_name = "TRIPLE")]
+    target: Vec<String>,
+    /// Don't auto-install missing target stdlibs via `rustup`.
+    /// Useful in CI where target install is managed externally.
+    #[arg(long)]
+    no_rustup_install: bool,
 }
 
 #[derive(clap::Args)]
@@ -62,7 +83,58 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::DocsCoverage(args) => docs_coverage(&args),
         Cmd::CliCoverage(args) => cli_coverage(&args),
+        Cmd::CrossCheck(args) => cross_check(&args),
     }
+}
+
+/// Default cross-check targets — macOS and Windows. These are the
+/// platforms our daemon has Unix vs Windows code paths for; PR #2
+/// landed Linux-only syscalls and CI surfaced the bugs only after
+/// merge. This command catches that locally before push.
+const DEFAULT_TARGETS: &[&str] = &[
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+];
+
+fn cross_check(args: &CrossCheckArgs) -> Result<()> {
+    let targets: Vec<&str> = if args.target.is_empty() {
+        DEFAULT_TARGETS.to_vec()
+    } else {
+        args.target.iter().map(String::as_str).collect()
+    };
+
+    let mut had_failures = false;
+    for target in &targets {
+        println!("=== cargo check --target {target} ===");
+        if !args.no_rustup_install {
+            // Best-effort install — if the user doesn't have rustup
+            // (CI typically doesn't), let it fail silently and surface
+            // the real error from cargo check.
+            let _ = Command::new("rustup")
+                .args(["target", "add", target])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let status = Command::new("cargo")
+            .args(["check", "--workspace", "--all-targets", "--target", target])
+            .stdin(Stdio::null())
+            .status()
+            .with_context(|| format!("spawn cargo check --target {target}"))?;
+        if status.success() {
+            println!("  OK: target {target}");
+        } else {
+            had_failures = true;
+            eprintln!("  FAIL: target {target} exit {:?}", status.code());
+        }
+    }
+    if had_failures {
+        std::process::exit(1);
+    }
+    println!("\ncross-check: PASS ({} target(s))", targets.len());
+    Ok(())
 }
 
 fn docs_coverage(args: &DocsCoverageArgs) -> Result<()> {

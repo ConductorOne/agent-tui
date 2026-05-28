@@ -211,7 +211,30 @@ impl PtyChild {
                     // already-allocated PTY pair. Pass the master because the
                     // slave fd isn't exposed by portable-pty's trait — we
                     // re-derive it via ptsname().
-                    spawn_with_custom_stdin(argv, cwd, &env_overrides, &*pair.master, stdin_mode)?
+                    //
+                    // Windows: the custom-stdin path is Unix-only because it
+                    // uses ptsname + dup + setsid. On Windows the spawn
+                    // returns an error pointing at the limitation; the
+                    // Windows port will land separately (see
+                    // `docs/windows-strategy.md`).
+                    #[cfg(unix)]
+                    {
+                        spawn_with_custom_stdin(
+                            argv,
+                            cwd,
+                            &env_overrides,
+                            &*pair.master,
+                            stdin_mode,
+                        )?
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
+                        return Err(anyhow!(
+                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/windows-strategy.md",
+                            stdin_mode
+                        ));
+                    }
                 }
             };
         let killer = child.clone_killer();
@@ -466,18 +489,20 @@ fn spawn_with_custom_stdin(
     let slave_out = dup_owned(&slave_owned)?;
     let slave_err = dup_owned(&slave_owned)?;
 
-    // For Pipe mode: pipe2(O_CLOEXEC). Both ends are close-on-exec
-    // so they DON'T leak into the child via inherited fds — a critical
+    // For Pipe mode: a pipe whose ends are close-on-exec, so they
+    // DON'T leak into the child via inherited fds — a critical
     // detail, because if the child inherits the write end, closing
-    // our daemon's write fd doesn't EOF the read end (the child holds
-    // it open against itself). The stdin Stdio's fd is exempted from
-    // CLOEXEC by std::process during dup2 → child fd 0, which is the
-    // right behavior.
+    // our daemon's write fd doesn't EOF the read end (the child
+    // holds it open against itself). The stdin Stdio's fd is
+    // exempted from CLOEXEC by std::process during dup2 → child
+    // fd 0, which is the right behavior.
+    //
+    // `pipe2(O_CLOEXEC)` is the one-syscall path on Linux but isn't
+    // available on macOS. `cloexec_pipe()` below picks the right
+    // implementation per target.
     let (stdin_pipe_writer, stdin_stdio): (Option<std::fs::File>, Stdio) = match stdin_mode {
         StdinMode::Pipe => {
-            use nix::fcntl::OFlag;
-            let (read_end, write_end) =
-                nix::unistd::pipe2(OFlag::O_CLOEXEC).context("pipe2(O_CLOEXEC)")?;
+            let (read_end, write_end) = cloexec_pipe()?;
             (
                 Some(std::fs::File::from(write_end)),
                 Stdio::from(std::fs::File::from(read_end)),
@@ -549,17 +574,36 @@ fn spawn_with_custom_stdin(
     Ok((boxed, stdin_pipe_writer))
 }
 
-/// Read the slave PTY's device path from a master fd via `ptsname_r`.
+/// Allocate a pipe with both ends marked close-on-exec.
+///
+/// `pipe2(O_CLOEXEC)` would be the single-syscall path but rustix
+/// (and libc) decline to provide it on Apple — macOS doesn't have a
+/// `pipe2` syscall. The portable path uses `pipe()` + `fcntl_setfd(
+/// CLOEXEC)` on each end. Non-atomic, but the daemon is
+/// single-threaded at spawn time, so a concurrent fork can't leak
+/// the fds in the window between calls.
+#[cfg(unix)]
+fn cloexec_pipe() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    let (r, w) = rustix::pipe::pipe().context("pipe()")?;
+    rustix::io::fcntl_setfd(&r, rustix::io::FdFlags::CLOEXEC)
+        .context("fcntl_setfd(CLOEXEC) on read end")?;
+    rustix::io::fcntl_setfd(&w, rustix::io::FdFlags::CLOEXEC)
+        .context("fcntl_setfd(CLOEXEC) on write end")?;
+    Ok((r, w))
+}
+
+/// Read the slave PTY's device path from a master fd.
+/// Resolve the slave PTY device path from the master fd.
+///
+/// `rustix::pty::ptsname` is cross-platform: it picks `ptsname_r` on
+/// Linux and a safe wrapper around the global-buffer `ptsname` on
+/// macOS, returning a fresh `CString` either way. We hand it a
+/// `BorrowedFd` made from the master raw fd.
 #[cfg(unix)]
 fn ptsname_owned(master_fd: i32) -> Result<std::ffi::CString> {
-    let mut buf = [0u8; 256];
     #[allow(unsafe_code)]
-    let rc = unsafe { libc::ptsname_r(master_fd, buf.as_mut_ptr().cast(), buf.len()) };
-    if rc != 0 {
-        return Err(std::io::Error::from_raw_os_error(rc)).context("ptsname_r");
-    }
-    let nul = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    std::ffi::CString::new(&buf[..nul]).context("slave path has interior NUL")
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(master_fd) };
+    rustix::pty::ptsname(borrowed, Vec::new()).context("ptsname")
 }
 
 #[cfg(unix)]

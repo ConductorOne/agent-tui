@@ -97,6 +97,31 @@ snapshot history, asciicast, annotated PNG) to
 `target/integration-artifacts/<test>/`. CI uploads them as
 `integration-artifacts-docker` / `integration-artifacts-bwrap`.
 
+## Pre-push checklist
+
+CI runs the full matrix on every PR. To catch the common failures
+**before** push, run these three commands locally:
+
+```bash
+cargo fmt --all --check                # CI's `fmt` job
+cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask cross-check                # macOS + Windows compile
+```
+
+The `cross-check` step is the one that catches platform-specific
+breakage. It runs `cargo check --target <triple>` for macOS and
+Windows from your Linux host (no full cross-toolchain needed — just
+the target's stdlib via `rustup target add`). Skip via `--target
+<custom>` to limit to a specific platform.
+
+CI also runs `cargo xtask docs-coverage` + `cargo xtask
+cli-coverage`. Both are fast — useful to include in the local loop:
+
+```bash
+cargo xtask docs-coverage              # every skill heading has a tested-by:
+cargo xtask cli-coverage               # every CLI flag is documented
+```
+
 ## Coding conventions
 
 - `#![forbid(unsafe_code)]` in every crate root. If you need `unsafe`, justify it inline and downgrade to `#![deny(unsafe_code)]` for the file only.
