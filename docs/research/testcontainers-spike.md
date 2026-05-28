@@ -138,7 +138,7 @@ scenarios we'll end up with.
 ## Fixture images
 
 One image per program family. Bake them in CI and publish to
-`ghcr.io/ductone/agent-tui-fixtures/<name>:<tag>` so test runs pull
+`ghcr.io/conductorone/agent-tui-fixtures/<name>:<tag>` so test runs pull
 deterministic versions. Initial set:
 
 | Image | Contents | Scenarios |

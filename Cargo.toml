@@ -18,8 +18,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/agent-tui/agent-tui"
-authors = ["agent-tui contributors"]
+repository = "https://github.com/ConductorOne/agent-tui"
+authors = ["ConductorOne, Inc."]
 
 [workspace.lints.rust]
 missing_docs = "warn"
