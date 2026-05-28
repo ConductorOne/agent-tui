@@ -200,6 +200,7 @@ async fn press_round_trip_through_pty() {
         Command::Press {
             pane: None,
             keys: "hello<cr>".into(),
+            to: None,
         },
     )
     .await;
@@ -250,6 +251,7 @@ async fn quiesce_barrier_advances_sequence() {
         Command::Press {
             pane: None,
             keys: "x".into(),
+            to: None,
         },
     )
     .await;

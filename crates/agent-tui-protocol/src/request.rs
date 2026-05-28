@@ -183,6 +183,12 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Key tokens as a single string (e.g. `"i hello<esc>:w<cr>"`).
         keys: String,
+        /// Optional selector identifying the **target** node within the
+        /// pane. The pane's attached adapter translates `(target, keys)`
+        /// into PTY bytes via `Adapter::route` (RFC §2.3). When unset,
+        /// the keys go straight to the PTY (identity routing).
+        #[serde(default)]
+        to: Option<String>,
     },
     /// Type literal text at the focused pane (no key interpretation).
     Type {
@@ -191,6 +197,9 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Literal UTF-8 text.
         text: String,
+        /// Optional selector identifying the target node. See `Press.to`.
+        #[serde(default)]
+        to: Option<String>,
     },
     /// Send raw bytes (ANSI escape sequences, mouse events, OSC, DCS).
     SendAnsi {

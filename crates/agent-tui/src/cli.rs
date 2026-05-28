@@ -163,6 +163,12 @@ pub enum Command {
         /// Pane id; defaults to focused.
         #[arg(long)]
         pane: Option<String>,
+        /// Selector identifying the target node within the pane. The
+        /// adapter translates `(target, keys)` into PTY bytes (RFC
+        /// §2.3). When omitted, the keys go straight to the PTY.
+        /// Example: `--to '@tmux.pane[%2]'`.
+        #[arg(long, value_name = "SELECTOR")]
+        to: Option<String>,
         /// Key-token string. See `skills/core/references/keymap.md`.
         keys: String,
     },
@@ -171,6 +177,9 @@ pub enum Command {
         /// Pane id; defaults to focused.
         #[arg(long)]
         pane: Option<String>,
+        /// Selector identifying the target node. See `Press.to`.
+        #[arg(long, value_name = "SELECTOR")]
+        to: Option<String>,
         /// Literal UTF-8 text.
         text: String,
     },

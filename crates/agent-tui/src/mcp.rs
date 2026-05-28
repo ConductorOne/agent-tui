@@ -225,9 +225,11 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "press requires `keys` string".to_string())?
                 .to_string();
+            let to = obj.get("to").and_then(Value::as_str).map(str::to_string);
             Ok(Command::Press {
                 pane: pane_id,
                 keys,
+                to,
             })
         }
         "type" => {
@@ -236,9 +238,11 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "type requires `text` string".to_string())?
                 .to_string();
+            let to = obj.get("to").and_then(Value::as_str).map(str::to_string);
             Ok(Command::Type {
                 pane: pane_id,
                 text,
+                to,
             })
         }
         "wait" => {
@@ -356,24 +360,26 @@ fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "press",
-            "description": "Send a key-token sequence to the focused pane (or a named pane). Bash-style angle-bracket syntax: 'i hello<esc>:w<cr>'. Supports <cr>, <esc>, <c-X>, <a-X>, <f1>..<f12>, <up>/<down>/<left>/<right>, <home>, <end>, <pageup>, <pagedown>, <del>, <ins>, <tab>, <bs>, <space>, <lf>. Escape a literal `<` as <\\\\<>.",
+            "description": "Send a key-token sequence to the focused pane (or a named pane). Bash-style angle-bracket syntax: 'i hello<esc>:w<cr>'. Supports <cr>, <esc>, <c-X>, <a-X>, <f1>..<f12>, <up>/<down>/<left>/<right>, <home>, <end>, <pageup>, <pagedown>, <del>, <ins>, <tab>, <bs>, <space>, <lf>. Escape a literal `<` as <\\\\<>. Optional `to` is a selector identifying a sub-node target (e.g. `@tmux.pane[%2]`); the pane's adapter translates `(target, keys)` into bytes (RFC §2.3). Without `to`, the keys go straight to the PTY.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string" },
-                    "keys": { "type": "string" }
+                    "keys": { "type": "string" },
+                    "to": { "type": "string", "description": "Selector identifying the target node. See docs/addressing-rfc.md §2.3." }
                 },
                 "required": ["keys"]
             }
         }),
         json!({
             "name": "type",
-            "description": "Type literal UTF-8 text to the focused pane. Use `press` for control keys; `type` does no key-token interpretation.",
+            "description": "Type literal UTF-8 text to the focused pane. Use `press` for control keys; `type` does no key-token interpretation. Optional `to` is a selector identifying a sub-node target; the adapter translates the routing (RFC §2.3).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string" },
-                    "text": { "type": "string" }
+                    "text": { "type": "string" },
+                    "to": { "type": "string" }
                 },
                 "required": ["text"]
             }

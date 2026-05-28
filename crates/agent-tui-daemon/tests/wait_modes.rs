@@ -126,6 +126,7 @@ async fn wait_since_returns_on_next_mutation() {
         Command::Press {
             pane: None,
             keys: "x".into(),
+            to: None,
         },
     )
     .await;

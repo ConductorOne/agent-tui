@@ -195,6 +195,75 @@ async fn wait_ref_gone_fires_when_no_node_matches() {
 }
 
 #[tokio::test]
+async fn press_with_to_identity_routing_writes_keys_to_pty() {
+    // The generic adapter's default route() is the identity routing —
+    // bytes flow straight to the PTY regardless of target. Print
+    // something first so the generic outline has a `buffer` node to
+    // address; then press --to that selector and confirm the routed
+    // flag came back true.
+    let (cfg, _h) = boot().await;
+    spawn_shell_printing(&cfg, "ready").await;
+
+    let env = rt(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "x".into(),
+            to: Some("[role=buffer]".into()),
+        },
+    )
+    .await;
+    assert!(env.response.success, "press --to failed: {env:?}");
+    let data = env.response.data.unwrap();
+    assert_eq!(data["routed"].as_bool().unwrap_or(false), true);
+    assert!(data["bytes_written"].as_u64().unwrap() >= 1);
+
+    let _ = rt(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn press_with_to_unmatched_selector_returns_routing_unsupported() {
+    let (cfg, _h) = boot().await;
+    spawn_shell_printing(&cfg, "x").await;
+
+    let env = rt(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "x".into(),
+            to: Some("@nonexistent.adapter[%999]".into()),
+        },
+    )
+    .await;
+    assert!(!env.response.success, "expected failure: {env:?}");
+    let err = env.response.error.unwrap();
+    assert_eq!(err.code, agent_tui_protocol::ErrorCode::RoutingUnsupported);
+
+    let _ = rt(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
+async fn press_with_to_bad_selector_returns_invalid_args() {
+    let (cfg, _h) = boot().await;
+    spawn_shell_printing(&cfg, "x").await;
+
+    let env = rt(
+        &cfg,
+        Command::Press {
+            pane: None,
+            keys: "x".into(),
+            to: Some("[unclosed".into()),
+        },
+    )
+    .await;
+    assert!(!env.response.success);
+    let err = env.response.error.unwrap();
+    assert_eq!(err.code, agent_tui_protocol::ErrorCode::InvalidArgs);
+
+    let _ = rt(&cfg, Command::Die { pane: None }).await;
+}
+
+#[tokio::test]
 async fn wait_ref_with_bad_selector_returns_invalid_args() {
     let (cfg, _h) = boot().await;
     spawn_shell_printing(&cfg, "x").await;
