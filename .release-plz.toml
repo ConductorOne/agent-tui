@@ -1,0 +1,68 @@
+# release-plz config.
+#
+# Reference: https://release-plz.dev/docs/config
+#
+# Behavior we want for v0.x:
+#   - Watch main; open a "Release PR" that bumps the workspace version
+#     when there are unreleased changes.
+#   - DO NOT publish to crates.io. Workspace internals are unstable
+#     until v1.0; we ship binaries via GitHub Releases (cargo-dist).
+#   - Only release the top-level `agent-tui` binary crate. Inner
+#     crates (protocol, daemon, adapter, …) are workspace internals
+#     and don't get their own tags.
+#   - Tag format `v<X>.<Y>.<Z>[-<prerelease>]`, which matches what
+#     cargo-dist's release.yml expects.
+
+[workspace]
+# Don't run `cargo publish` on inner crates. Top-level publishing is
+# also disabled below for v0.x.
+publish = false
+
+# Single tag per workspace release (vs one tag per crate). Matches
+# the "one binary, one version" reality of agent-tui.
+git_release_enable = true
+git_tag_name = "v{{ version }}"
+
+# Conventional commits drive the changelog.
+changelog_update = true
+
+# Per-package overrides.
+[[package]]
+name = "agent-tui"
+# This is the only crate that ends up in a release. (publish=false
+# above means we still don't push to crates.io for v0.x — flip when
+# we want crates.io distribution.)
+release = true
+
+# Inner workspace crates — don't cut individual releases for them.
+[[package]]
+name = "agent-tui-protocol"
+release = false
+
+[[package]]
+name = "agent-tui-daemon"
+release = false
+
+[[package]]
+name = "agent-tui-adapter"
+release = false
+
+[[package]]
+name = "agent-tui-engine"
+release = false
+
+[[package]]
+name = "agent-tui-engine-alacritty"
+release = false
+
+[[package]]
+name = "agent-tui-engine-wezterm"
+release = false
+
+[[package]]
+name = "agent-tui-recorder"
+release = false
+
+[[package]]
+name = "xtask"
+release = false
