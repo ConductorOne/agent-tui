@@ -213,6 +213,10 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let all = obj.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let keep_color = obj
+                .get("keep_color")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             Ok(Command::Snapshot {
                 pane: pane_id,
                 mode,
@@ -220,6 +224,7 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 annotate,
                 select,
                 all,
+                keep_color,
             })
         }
         "press" => {

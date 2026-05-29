@@ -107,6 +107,7 @@ async fn snapshot_select_filters_outline_to_matching_nodes() {
             annotate: false,
             select: Some("@shell.prompt".into()),
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -138,6 +139,7 @@ async fn snapshot_select_invalid_returns_invalid_args() {
             annotate: false,
             select: Some("[no_such_attr=oops]".into()),
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -174,6 +176,7 @@ async fn snapshot_select_no_match_attaches_available_refs_warning() {
             // Valid grammar but matches nothing in the @shell outline.
             select: Some("@nonexistent.adapter".into()),
             all: false,
+            keep_color: false,
         },
     )
     .await;

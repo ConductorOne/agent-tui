@@ -93,6 +93,7 @@ async fn windows_spawn_cmd_echoes() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;

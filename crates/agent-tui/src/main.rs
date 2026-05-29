@@ -13,6 +13,7 @@
 mod cli;
 mod client;
 mod commands;
+mod gc;
 mod mcp;
 mod recipes;
 mod skills;

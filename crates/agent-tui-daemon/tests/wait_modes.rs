@@ -95,6 +95,7 @@ async fn snap_sequence(cfg: &DaemonConfig) -> u64 {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;

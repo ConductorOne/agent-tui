@@ -113,6 +113,18 @@ impl SocketLayout {
     }
 }
 
+/// Base XDG state directory — the root under which per-session cast files
+/// live at `<state_root>/agent-tui/<session>/`. Mirrors the recorder's
+/// resolution: `XDG_STATE_HOME` first, then the platform default. `None`
+/// when no state dir can be determined (rare; e.g. no `$HOME`).
+#[must_use]
+pub fn state_root() -> Option<PathBuf> {
+    if let Ok(s) = env::var("XDG_STATE_HOME") {
+        return Some(PathBuf::from(s));
+    }
+    dirs::state_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
