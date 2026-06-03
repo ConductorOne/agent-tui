@@ -679,8 +679,8 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         Command::Focus { pane } => handlers::focus::run(&state.registry, pane).await,
         Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,
-            "eval not yet wired (lands with adapters in P2)",
-            "see docs/RFC.md §17 for the roadmap",
+            "`eval` is not implemented in this build",
+            "to read structured screen state use `snapshot --select <selector>` (e.g. `--select '@vim.statusline'`); see docs/RFC.md §17 for the eval roadmap",
         )),
     }
 }
