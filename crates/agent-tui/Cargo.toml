@@ -37,3 +37,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 interprocess = { workspace = true }
+
+[dev-dependencies]
+# Integration tests under `tests/` drive the built `agent-tui` binary as a
+# subprocess and parse its `--json` envelopes / decode `--raw` payloads.
+serde_json = { workspace = true }
+base64 = "0.22"
