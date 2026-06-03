@@ -49,6 +49,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  coverage:
+    # Non-blocking workspace line-coverage report (cargo-llvm-cov).
+    # Tracks the coverage from the test-hardening effort so it doesn't
+    # silently regress, and uploads `lcov.info` as an artifact. There is
+    # deliberately NO hard %-gate: a threshold would flake the build more
+    # than it would protect. Consumers who want gating can wire the
+    # artifact into Codecov/Coveralls later.
+    #
+    # Denominator excludes (per the coverage gap report):
+    #   - crates/xtask         — dev tooling, never shipped
+    #   - agent-tui-engine-wezterm — a documented non-public placeholder
+    #     engine (not on crates.io yet); counting it as "uncovered" is
+    #     noise.
+    # Intentional code stubs stay cold BY DESIGN and are annotated at
+    # their source: `eval` ("lands with adapters in P2", server.rs) and
+    # `doctor --fix` / `--diagnostic-bundle` ("land in P1", commands.rs).
+    #
+    # Default features only: the bwrap/docker integration suites run in
+    # their own jobs (a sandbox + a separate llvm-cov target dir make
+    # instrumenting them here fragile); folding their coverage in is a
+    # worthwhile but separate follow-up.
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Workspace coverage (lcov + summary)
+        run: |
+          set -euxo pipefail
+          IGNORE='crates/(xtask|agent-tui-engine-wezterm)/'
+          cargo llvm-cov --workspace \
+            --ignore-filename-regex "$IGNORE" \
+            --lcov --output-path lcov.info
+          {
+            echo '### Workspace coverage (xtask + wezterm placeholder excluded)';
+            echo '```';
+            cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
+
   integration-docker:
     # Runs the containerized real-world TUI suite (see
     # docs/research/testcontainers-spike.md). Linux-only — Docker is
