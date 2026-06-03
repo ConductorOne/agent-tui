@@ -32,9 +32,11 @@ agent-tui ask pi "summarize the README"
 --title fixed --dangerously-skip-permissions` inside `bash -c "cat
 | ..."`; etc.). One verb, no incantation.
 
-**Limitations.** Slow runs (>25s) hit the client's one-shot read
-timeout. For longer asks, use `agent-tui run --max 120000` directly
-or wait until that timeout becomes configurable.
+**Long asks.** `ask` defaults to a 120 s deadline (`--max <ms>`), and
+the client read timeout is derived from `--max` — a long ask no longer
+trips a fixed client-side cap. Raise it for very long runs:
+`agent-tui ask --max 300000 …`. See the **Timeouts** note in
+[core](../core/SKILL.md) for the per-verb `--max` defaults.
 
 ## Run any CLI
 <!-- tested-by: navigation -->

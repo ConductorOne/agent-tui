@@ -33,8 +33,9 @@ pub struct GlobalArgs {
     /// Override socket discovery root. Env: `AGENT_TUI_SOCKET_DIR`.
     #[arg(long, env = "AGENT_TUI_SOCKET_DIR", global = true)]
     pub socket_dir: Option<PathBuf>,
-    /// Engine selection. v0.1.0 ships `alacritty` (default; only working engine);
-    /// `wezterm` is a placeholder until a published substrate appears.
+    /// Engine selection. Only `alacritty` (the default) is implemented;
+    /// `wezterm` is an (unimplemented) placeholder and selecting it is an
+    /// error until a published substrate appears.
     #[arg(long, value_enum, default_value_t = EngineKind::Alacritty, global = true)]
     pub engine: EngineKind,
     /// JSON output for machine consumers.
@@ -67,7 +68,8 @@ pub enum EngineKind {
     /// `alacritty_terminal`-backed engine. The v1 default — published on
     /// crates.io, MSRV matches ours. See `tracker.md` for substrate context.
     Alacritty,
-    /// `wezterm-term`-backed engine. Placeholder; not yet on crates.io.
+    /// (unimplemented) `wezterm-term`-backed engine. Placeholder; not yet
+    /// on crates.io. Selecting it errors — only `alacritty` works today.
     Wezterm,
 }
 
@@ -364,7 +366,9 @@ pub enum Command {
     Pane(PaneArgs),
     /// Wait for a state-change condition.
     Wait(WaitArgs),
-    /// `eval` against an adapter (governed).
+    /// (unimplemented) Evaluate an adapter expression. Not wired in this
+    /// build — returns an error naming the alternative. For reading
+    /// structured screen state today, use `snapshot --select <selector>`.
     Eval {
         /// Pane id.
         #[arg(long)]
@@ -381,8 +385,10 @@ pub enum Command {
     Session(SessionArgs),
     /// `doctor` — environment / sanity / version-drift diagnostics.
     Doctor(DoctorArgs),
-    /// MCP server mode — proxy the CLI surface as MCP tools over stdio.
-    /// Lands in P4.
+    /// MCP server mode — serve agent-tui's capabilities as MCP tools over
+    /// stdio (JSON-RPC). `mcp serve` exposes `spawn`, `snapshot`
+    /// (`outline`/`text`/`cells`/`adapter`/`hybrid`), `press`, `type`,
+    /// `wait`, `die`, `focus`, `list`, and `daemon_status` to MCP clients.
     Mcp(McpArgs),
     /// `skills get/list` — print embedded skill docs.
     Skills(SkillsArgs),

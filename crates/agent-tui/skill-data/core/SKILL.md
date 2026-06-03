@@ -19,6 +19,38 @@ agent-tui skills list                # all available skills
 agent-tui skills get core --full     # this page + references + templates
 ```
 
+## Pick a verb (start here)
+<!-- tested-by: navigation -->
+
+| You want to… | Use |
+|---|---|
+| Run a headless CLI, get its stdout + exit code | `run -- <cmd>` (feed input with `--stdin`) |
+| Observe / drive an interactive TUI (vim, htop, less) | `spawn` → `wait` → `snapshot` → `press` |
+| Edit a file in one shot and capture the result | `edit <path>` |
+| Stream a long / following command's output | `watch -- <cmd>` (or `tail --follow`) |
+| Ask an AI CLI a question | `ask <provider> "<prompt>"` |
+
+Rule of thumb: **headless data → `run`; an interactive screen → the
+`spawn`/`snapshot`/`press` loop.** Everything below expands on these.
+
+## Timeouts
+<!-- tested-by: navigation -->
+
+Each sugar/wait verb carries its own deadline, set with `--max <ms>`.
+The client read timeout is **derived from `--max`**, so a long deadline
+no longer trips a fixed client-side cap. The defaults differ by verb —
+pass `--max` explicitly for long work:
+
+| Verb | default `--max` |
+|---|---|
+| `run` | 60000 ms (60 s) |
+| `ask` | 120000 ms (120 s) |
+| `wait` | 25000 ms (25 s) |
+
+A timed-out `wait` exits non-zero with the screen state at exit and a
+hint to raise `--max` — intentional, not a bug: raise `--max` when what
+you're waiting for legitimately takes longer than the default.
+
 ## Two modes
 <!-- tested-by: navigation -->
 

@@ -12,6 +12,15 @@ use crate::gc;
 
 /// Top-level dispatch entry point.
 pub async fn dispatch(cli: Cli) -> Result<()> {
+    // The `wezterm` engine is an unimplemented placeholder. Fail fast and
+    // name the working alternative instead of silently behaving as
+    // `alacritty` (which is what selecting it used to do).
+    if cli.globals.engine == EngineKind::Wezterm {
+        anyhow::bail!(
+            "the `wezterm` engine is not implemented in this build; \
+             use `--engine alacritty` (the default)"
+        );
+    }
     match cli.command {
         CliCmd::Daemon(args) => match args.action {
             DaemonAction::Run {
