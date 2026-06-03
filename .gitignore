@@ -4,6 +4,10 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Coverage output (cargo-llvm-cov; produced by `cargo llvm-cov --lcov
+# --output-path lcov.info` and the CI coverage job)
+/lcov.info
+
 # Editor / OS
 .vscode/
 .idea/
