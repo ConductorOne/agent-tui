@@ -12,7 +12,7 @@ situation — `--idle` alone is the wrong default.
 ```bash
 agent-tui wait --text "<regex>"        # until a regex matches the rendered screen
 agent-tui wait --hash <hex>            # until the screen's hash != <hex>
-agent-tui wait --sequence <n>          # until event >= n in the monotonic stream
+agent-tui wait --since <n>             # until the event sequence passes <n> (alias: --sequence)
 agent-tui wait --idle <ms>             # until <ms> ms pass with no PTY output
 ```
 
@@ -22,7 +22,7 @@ Auxiliary forms (rarely used directly):
 agent-tui wait --alt-screen on|off     # alt-screen toggled (modal open/close)
 agent-tui wait --cursor-stable <ms>    # cursor stopped moving for ms
 agent-tui wait --exit                  # the child process exited
-agent-tui wait --since <sequence>      # alias of --sequence
+agent-tui wait --sequence <n>          # visible alias of --since
 ```
 
 | Form | Strength | Right when |
