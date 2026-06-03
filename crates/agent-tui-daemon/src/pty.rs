@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_tui_engine::Engine;
@@ -51,6 +52,13 @@ pub struct PtyChild {
     /// Most recent OSC 133 marker seen on this PTY, used by the shell-state
     /// classifier. Updated by the reader task; read by the snapshot handler.
     last_osc133: Arc<Mutex<Option<crate::osc133::Marker>>>,
+    /// Set once the reader task observes EOF (or an error) on the PTY
+    /// master and exits — i.e. every byte the child ever wrote is now in
+    /// the output ring. The streaming `tail --follow` path waits for this
+    /// before emitting its terminal `eof` so a fast-exiting child's final
+    /// output isn't dropped (the child can be reaped by `try_wait` a beat
+    /// before the reader thread flushes the last bytes).
+    reader_done: Arc<AtomicBool>,
 }
 
 /// Holds the first ~`MAX_FIRST_BYTES` bytes of PTY output for the adapter
@@ -263,6 +271,8 @@ impl PtyChild {
         let reader_osc133 = last_osc133.clone();
         let output_buf = Arc::new(Mutex::new(OutputRing::default()));
         let reader_output_buf = output_buf.clone();
+        let reader_done = Arc::new(AtomicBool::new(false));
+        let reader_done_signal = reader_done.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(
                 reader,
@@ -272,6 +282,11 @@ impl PtyChild {
                 &reader_osc133,
                 &reader_output_buf,
             );
+            // Reader saw EOF/error and is exiting: every byte the child
+            // wrote is now in the output ring. Publish *after* the loop so
+            // a `reader_finished()` observer is guaranteed to see a fully
+            // drained ring.
+            reader_done_signal.store(true, Ordering::Release);
         });
 
         Ok(Self {
@@ -286,6 +301,7 @@ impl PtyChild {
             recorder,
             first_bytes,
             last_osc133,
+            reader_done,
         })
     }
 
@@ -433,6 +449,16 @@ impl PtyChild {
     /// Most recent OSC 133 marker observed on this PTY, if any.
     pub fn last_osc133_marker(&self) -> Option<crate::osc133::Marker> {
         self.last_osc133.lock().ok().and_then(|m| *m)
+    }
+
+    /// Whether the reader task has observed EOF on the PTY master and
+    /// exited. Once true, the output ring holds every byte the child ever
+    /// wrote — the streaming `tail --follow` path uses this to avoid
+    /// emitting `eof` (and dropping trailing output) while bytes are still
+    /// in flight from a child that `try_wait` already reports as exited.
+    #[must_use]
+    pub fn reader_finished(&self) -> bool {
+        self.reader_done.load(Ordering::Acquire)
     }
 }
 

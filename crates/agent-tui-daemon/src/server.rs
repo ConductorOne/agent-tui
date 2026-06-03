@@ -349,9 +349,42 @@ async fn handle_streaming_tail(
             write_envelope(writer, &env).await?;
             cursor = read.total;
         }
-        // Check child exit AFTER reading any final bytes the child
-        // wrote on its way out.
-        if pane_arc.pty.try_exit_code().ok().flatten().is_some() {
+        // Check child exit AFTER reading any final bytes the child wrote
+        // on its way out. The child can be reaped (`try_wait` → exited) a
+        // beat before the reader thread flushes its last bytes into the
+        // ring, so we only emit `eof` once the reader has actually drained
+        // the PTY (`reader_finished`). Until then we keep polling so the
+        // next iteration streams those trailing bytes — otherwise a
+        // fast-exiting `watch`/`tail --follow` child loses its output.
+        if pane_arc.pty.try_exit_code().ok().flatten().is_some() && pane_arc.pty.reader_finished() {
+            // Final drain: emit anything the reader flushed since the last
+            // read before the terminal envelope.
+            let tail = pane_arc.pty.tail(cursor);
+            if !tail.bytes.is_empty() {
+                let payload = if strip_ansi {
+                    let text = strip_ansi_for_streaming(&tail.bytes);
+                    serde_json::json!({
+                        "type": "chunk",
+                        "pane": pane_arc.id,
+                        "text": text,
+                        "next_since": tail.total,
+                        "lost_bytes": tail.lost_bytes,
+                    })
+                } else {
+                    use base64::Engine as _;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&tail.bytes);
+                    serde_json::json!({
+                        "type": "chunk",
+                        "pane": pane_arc.id,
+                        "bytes_b64": encoded,
+                        "next_since": tail.total,
+                        "lost_bytes": tail.lost_bytes,
+                    })
+                };
+                let env = wrap_envelope(state, req.id, Response::ok(payload));
+                write_envelope(writer, &env).await?;
+                cursor = tail.total;
+            }
             let payload = serde_json::json!({
                 "type": "eof",
                 "pane": pane_arc.id,
