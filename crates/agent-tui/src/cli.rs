@@ -157,6 +157,11 @@ pub enum Command {
         /// pre-order. Without `--select` this is ignored.
         #[arg(long)]
         all: bool,
+        /// With `--mode text` (or `hybrid`), keep color: reconstruct
+        /// per-cell SGR escapes instead of stripping them. Ignored by
+        /// other modes.
+        #[arg(long)]
+        keep_color: bool,
     },
     /// Press a key-token sequence (`"i hello<esc>:w<cr>"`).
     Press {
@@ -372,6 +377,8 @@ pub enum Command {
     },
     /// Daemon management.
     Daemon(DaemonArgs),
+    /// Session state management (`session gc`).
+    Session(SessionArgs),
     /// `doctor` — environment / sanity / version-drift diagnostics.
     Doctor(DoctorArgs),
     /// MCP server mode — proxy the CLI surface as MCP tools over stdio.
@@ -387,6 +394,34 @@ pub struct PaneArgs {
     /// What to do with the pane focus.
     #[command(subcommand)]
     pub action: PaneAction,
+}
+
+/// `session` subcommand group.
+#[derive(Debug, Args)]
+pub struct SessionArgs {
+    /// What to do with session state.
+    #[command(subcommand)]
+    pub action: SessionAction,
+}
+
+/// `session` subcommand actions.
+#[derive(Debug, Subcommand)]
+pub enum SessionAction {
+    /// Garbage-collect dead sessions' on-disk state — sidecar files in
+    /// the socket root plus cast dirs under `$XDG_STATE_HOME`. Never
+    /// touches a session whose daemon is still answering its socket.
+    Gc {
+        /// Only prune dead sessions whose most-recent state is at least
+        /// this many days old. Ignored with `--all`.
+        #[arg(long, value_name = "DAYS", default_value_t = 7)]
+        older_than_days: u64,
+        /// Prune every dead session regardless of age.
+        #[arg(long)]
+        all: bool,
+        /// Report what would be pruned without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Pane subcommand actions.

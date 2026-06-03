@@ -175,6 +175,12 @@ pub enum Command {
         /// Without `select`, ignored. Default false → first match only.
         #[serde(default)]
         all: bool,
+        /// With `mode = text` (or `hybrid`), reconstruct per-cell SGR
+        /// escape sequences instead of emitting plain UTF-8. Lets a
+        /// caller preserve color when presenting to a human or
+        /// debugging. Ignored by non-text modes.
+        #[serde(default)]
+        keep_color: bool,
     },
     /// Press the given key-token sequence at the focused pane.
     Press {

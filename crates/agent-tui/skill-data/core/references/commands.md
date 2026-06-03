@@ -28,7 +28,7 @@ catch flags referenced in skill pages that don't exist in clap).
 
 ```
 agent-tui run [--stdin <text>] [--stdin-file <path>] [--max <ms>]
-              [--raw] [--keep-daemon] -- <argv...>
+              [--raw] [--keep-daemon] [--cwd <path>] [--env K=V]... -- <argv...>
 ```
 
 Sugar verb: spawn + optionally write stdin + close-stdin + wait for
@@ -37,10 +37,19 @@ pattern in one verb. Default `--stdin <text>` writes literal bytes
 then closes; `--raw` returns bytes-with-escapes instead of stripped
 text; `--keep-daemon` skips the daemon shutdown step.
 
+`--cwd <path>` sets the child's working directory; `--env K=V`
+(repeatable) sets environment variables — together they replace the
+`bash -c "cd …; K=V …"` wrapper most workflows used to need.
+
+`--max <ms>` is the child's deadline. It is honored end-to-end: the
+client read timeout is derived from it (plus a safety margin), so a
+long `--max` no longer trips a fixed client-side cap.
+
 ### `spawn`
 
 ```
-agent-tui spawn [--stdin pty|pipe|closed] [--cols <N>] [--rows <N>] -- <argv...>
+agent-tui spawn [--stdin pty|pipe|closed] [--cwd <path>] [--env K=V]...
+                [--cols <N>] [--rows <N>] -- <argv...>
 ```
 
 Spawn a PTY-backed pane running `argv`. Returns the pane id (e.g.
@@ -48,7 +57,8 @@ Spawn a PTY-backed pane running `argv`. Returns the pane id (e.g.
 
 `--stdin pty` (default) gives the slave PTY for stdin. `--stdin
 pipe` gives a kernel pipe — required by CLIs that do `isatty(0)`
-checks. `--stdin closed` ties stdin to `/dev/null`.
+checks. `--stdin closed` ties stdin to `/dev/null`. `--cwd` /
+`--env` set the child's working directory and environment.
 
 ### `list`
 
@@ -61,8 +71,8 @@ List the panes in the current session.
 ### `snapshot`
 
 ```
-agent-tui snapshot [--pane <id>] [--mode outline|cells|adapter|hybrid]
-                   [--png <path>] [--annotate]
+agent-tui snapshot [--pane <id>] [--mode outline|text|cells|adapter|hybrid]
+                   [--png <path>] [--annotate] [--keep-color]
 ```
 
 Snapshot the focused pane (or a specific one with `--pane`).
@@ -70,12 +80,19 @@ Snapshot the focused pane (or a specific one with `--pane`).
 | Mode | Output |
 |---|---|
 | `outline` | Compact semantic tree with `@eN` refs (default) |
+| `text` | Visible cells flattened to a plain UTF-8 string |
 | `cells` | RLE cell-grid of the screen |
 | `adapter` | Adapter-specific tree (vim's mode + filename, shell's state, …) |
 | `hybrid` | All three concatenated |
 
 `--png <path>` rasterizes the pane into a PNG (e.g. for inspection).
 `--annotate` overlays numeric labels keyed to `@eN` refs.
+
+`--keep-color` (with `--mode text` or `hybrid`) reconstructs per-cell
+SGR escape sequences from each cell's color/attributes instead of
+stripping them — useful when presenting output to a human or
+debugging color logic. Ignored by non-text modes. Default text mode
+stays plain (no escapes).
 
 ### `press`
 
@@ -196,6 +213,26 @@ agent-tui daemon shutdown [--all]
 Daemon management. `run` is the in-process daemon (normally lazily
 spawned by other commands; only used directly by tests and the
 `AGENT_TUI_NO_LAZY_SPAWN=1` mode).
+
+### `session`
+
+```
+agent-tui session gc [--older-than-days <DAYS>] [--all] [--dry-run]
+```
+
+`agent-tui session gc` reaps the on-disk state left behind by dead
+sessions — sidecar files in the socket root plus cast dirs under
+`$XDG_STATE_HOME/agent-tui/<session>/`. A crash or `kill -9` orphans
+these; nothing else prunes them.
+
+A session is **never** reaped while its daemon still answers the
+socket (gc probes liveness without spawning a daemon). Among the dead,
+`--older-than-days <DAYS>` (default 7) keeps anything whose most-recent
+state is newer than the threshold, so a session that just crashed
+isn't pulled out from under a retry. `--all` reaps every dead session
+regardless of age. `--dry-run` reports what would be pruned without
+deleting. `--json` emits `{pruned, skipped_alive, skipped_young,
+dry_run}`.
 
 ### `doctor`
 

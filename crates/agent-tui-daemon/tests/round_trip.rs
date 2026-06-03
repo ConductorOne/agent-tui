@@ -134,6 +134,7 @@ async fn pty_echo_round_trip() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -235,6 +236,7 @@ async fn press_round_trip_through_pty() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -434,6 +436,7 @@ async fn snapshot_uses_attached_adapter_outline() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -466,6 +469,7 @@ async fn snapshot_response_carries_nonced_delimiter() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -522,6 +526,7 @@ async fn osc133_marker_upgrades_state_to_shell() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -569,6 +574,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -595,6 +601,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -667,6 +674,7 @@ async fn focus_cleared_when_focused_pane_dies() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -704,6 +712,7 @@ async fn snapshot_cells_mode_returns_rle_grid() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -755,6 +764,7 @@ async fn snapshot_hybrid_mode_carries_both() {
             annotate: false,
             select: None,
             all: false,
+            keep_color: false,
         },
     )
     .await;
@@ -792,6 +802,7 @@ async fn snapshot_hash_changes_after_output() {
                 annotate: false,
                 select: None,
                 all: false,
+                keep_color: false,
             },
         )
         .await;
@@ -809,6 +820,7 @@ async fn snapshot_hash_changes_after_output() {
                     annotate: false,
                     select: None,
                     all: false,
+                    keep_color: false,
                 },
             )
             .await;

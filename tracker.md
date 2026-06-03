@@ -40,7 +40,36 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 - **wezterm engine real impl** — Blocked on `wezterm-term` being published to crates.io. Track only.
 - **Windows runtime — cycle W2 (signal mapping + `.exe` strip in adapter comm + re-enable `windows-latest` in CI).** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; Windows-specific signal handling (`GenerateConsoleCtrlEvent` / `TerminateProcess` instead of `killpg`) is the next ~80 LOC cycle. See `docs/windows-strategy.md` for the full plan.
 
-### Recently paid down (this PR)
+### P-UX6 — timeout fix + small primitives (this PR)
+
+- ✅ **Client read-timeout derives from the command** — `send_and_recv`
+  no longer hardcodes 25s. `Wait` carries its own deadline (`--max`), so
+  the read timeout is `wait_timeout + 5s` margin; everything else keeps
+  the 25s base. Fixes `ask … --max 120000` / `run --max >25s` dying at
+  25s while the daemon was still working (gaps §3.3). Global `--timeout`
+  is still unwired — left for a follow-up; deriving from the command is
+  the prescribed fix and is self-contained.
+- ✅ **`snapshot --mode text --keep-color`** — reconstructs per-cell SGR
+  from `fg/bg/attrs` (palette / 24-bit / attrs), coalescing same-style
+  runs and resetting per row. Default text stays plain (gaps §3.7).
+  Color→SGR mapping unit-tested; `>=256` colors (NamedColor defaults)
+  map to terminal default.
+- ✅ **`session gc`** — `[--older-than-days N=7] [--all] [--dry-run]`.
+  Reaps dead sessions' sidecars + cast dirs; never reaps a session whose
+  socket still answers (non-spawning liveness probe). Age-gated so a
+  just-crashed session isn't pulled from under a retry (gaps §3.9).
+  Pure planning logic + fs enumeration unit-tested; e2e tokio test.
+
+Deferred from this PR (with reason): `wait --ready-for-stdin` (needs
+ptrace/syscall tracing or a recipe startup-delay hint — not a small
+primitive, gaps §3.5) and uniform `--json` (cross-cutting output-format
+refactor touching every verb + the integration suite, gaps §3.13).
+
+Pre-existing red left untouched: `xtask docs-coverage` fails on 13
+un-annotated headings in `ai-cli`/`addressing`/`vim` skills (identical
+on clean main). Per lesson §7, that's a standalone fix-up, not this PR.
+
+### Recently paid down (earlier)
 
 - ✅ **Focus tracking** — `pane focus <id>` command + tri-state focus (Auto/Focused/Held). Focused-pane death promotes to Held; explicit refocus required.
 - ✅ **Marker events** — Every command emits an `m` recorder event with {kind, ok, error_code}.

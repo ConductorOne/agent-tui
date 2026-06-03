@@ -6,8 +6,9 @@ use agent_tui_daemon::{DaemonConfig, run_daemon};
 use agent_tui_protocol::{Command, SessionId};
 use anyhow::{Result, anyhow};
 
-use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind, PaneAction};
+use crate::cli::{Cli, Command as CliCmd, DaemonAction, EngineKind, PaneAction, SessionAction};
 use crate::client;
+use crate::gc;
 
 /// Top-level dispatch entry point.
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -21,6 +22,13 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             DaemonAction::Shutdown { force } => {
                 one_shot_print(&cli.globals, Command::DaemonShutdown { force }).await
             }
+        },
+        CliCmd::Session(args) => match args.action {
+            SessionAction::Gc {
+                older_than_days,
+                all,
+                dry_run,
+            } => session_gc(&cli.globals, older_than_days, all, dry_run).await,
         },
         CliCmd::Doctor(args) => doctor(&cli.globals, &args).await,
         CliCmd::Skills(args) => skills(&args),
@@ -838,6 +846,7 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             annotate,
             select,
             all,
+            keep_color,
         } => Ok(Command::Snapshot {
             pane: pane.map(agent_tui_protocol::PaneId),
             mode: mode.into(),
@@ -845,6 +854,7 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             annotate,
             select,
             all,
+            keep_color,
         }),
         CliCmd::Press { pane, keys, to } => Ok(Command::Press {
             pane: pane.map(agent_tui_protocol::PaneId),
@@ -1009,6 +1019,61 @@ async fn doctor(g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Re
     }
 
     println!("{report}");
+    Ok(())
+}
+
+/// `session gc` — prune dead sessions' on-disk state.
+async fn session_gc(
+    g: &crate::cli::GlobalArgs,
+    older_than_days: u64,
+    all: bool,
+    dry_run: bool,
+) -> Result<()> {
+    // The socket root is session-independent — every session's sidecars
+    // live in the same directory — so any session name resolves it.
+    let socket_root = client::layout_for(&g.session, g.socket_dir.as_deref()).root;
+    let state_root = agent_tui_daemon::paths::state_root();
+    let opts = gc::GcOptions {
+        older_than: std::time::Duration::from_secs(older_than_days.saturating_mul(86_400)),
+        prune_all: all,
+        dry_run,
+    };
+    let report = gc::run_gc(
+        &socket_root,
+        state_root.as_deref(),
+        &opts,
+        std::time::SystemTime::now(),
+    )
+    .await?;
+
+    if g.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "pruned": report.pruned,
+                "skipped_alive": report.skipped_alive,
+                "skipped_young": report.skipped_young,
+                "dry_run": report.dry_run,
+            })
+        );
+    } else {
+        let verb = if report.dry_run {
+            "would prune"
+        } else {
+            "pruned"
+        };
+        if report.pruned.is_empty() {
+            println!("{verb}: 0 sessions");
+        } else {
+            println!("{verb}: {}", report.pruned.join(", "));
+        }
+        eprintln!(
+            "[{} pruned] [{} alive, kept] [{} too young, kept]",
+            report.pruned.len(),
+            report.skipped_alive,
+            report.skipped_young,
+        );
+    }
     Ok(())
 }
 

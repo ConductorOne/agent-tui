@@ -43,6 +43,15 @@ async fn connect(layout: &SocketLayout) -> Result<Stream> {
         .with_context(|| format!("connect to daemon socket {}", layout.socket.display()))
 }
 
+/// Non-spawning liveness check: is a daemon answering this session's
+/// socket? Unlike [`one_shot`], this never lazily spawns a daemon — a
+/// failed connect (missing socket file or a stale socket with no
+/// listener) reports `false`. Used by `session gc` to avoid reaping a
+/// live session.
+pub(crate) async fn probe_live(layout: &SocketLayout) -> bool {
+    connect(layout).await.is_ok()
+}
+
 fn is_unreachable(err: &anyhow::Error) -> bool {
     err.chain()
         .filter_map(|e| e.downcast_ref::<std::io::Error>())
@@ -153,7 +162,30 @@ pub async fn stream(
     Ok(())
 }
 
+/// Baseline read timeout for fast round-trip commands (spawn, snapshot,
+/// stdin, …). These return promptly; if the daemon goes silent for this
+/// long it is wedged, not working.
+const BASE_READ_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Safety margin added on top of a blocking command's own deadline. The
+/// client read timeout must outlive the daemon's enforced deadline, or a
+/// long-but-healthy wait fails spuriously on the client side.
+const WAIT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
+/// How long the client should wait for the daemon's reply to a given
+/// command. Blocking commands (`wait`, and the `wait --exit` step inside
+/// `run`/`ask`) carry their own deadline via `--max`; the client must wait
+/// at least that long plus a margin. A fixed cap here is the bug behind
+/// `ask … --max 120000` dying at 25s while the daemon is still working.
+fn read_timeout_for(command: &Command) -> Duration {
+    match command {
+        Command::Wait { timeout, .. } => timeout.saturating_add(WAIT_TIMEOUT_MARGIN),
+        _ => BASE_READ_TIMEOUT,
+    }
+}
+
 async fn send_and_recv(stream: Stream, command: Command) -> Result<ResponseEnvelope> {
+    let read_timeout = read_timeout_for(&command);
     let req = Request {
         id: Uuid::new_v4(),
         protocol: PROTOCOL_VERSION,
@@ -165,9 +197,9 @@ async fn send_and_recv(stream: Stream, command: Command) -> Result<ResponseEnvel
     let (reader, mut writer) = tokio::io::split(stream);
     writer.write_all(&bytes).await?;
     let mut lines = BufReader::new(reader).lines();
-    let line = timeout(Duration::from_secs(25), lines.next_line())
+    let line = timeout(read_timeout, lines.next_line())
         .await
-        .context("daemon read timed out (25s)")?
+        .with_context(|| format!("daemon read timed out ({}s)", read_timeout.as_secs()))?
         .context("daemon read failed")?
         .context("daemon closed without responding")?;
 
@@ -181,5 +213,65 @@ pub fn layout_for(session: &str, override_root: Option<&Path>) -> SocketLayout {
     match override_root {
         Some(root) => SocketLayout::for_session_in(&session_id, root.to_path_buf()),
         None => SocketLayout::for_session(&session_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_tui_protocol::request::WaitCondition;
+
+    #[test]
+    fn wait_read_timeout_outlives_its_own_deadline() {
+        // The regression: `ask … --max 120000` decomposes into a
+        // `wait --exit` with a 120s deadline. The client must wait
+        // longer than that, not cap at the old hardcoded 25s.
+        let cmd = Command::Wait {
+            pane: None,
+            condition: WaitCondition::Exit,
+            timeout: Duration::from_secs(120),
+        };
+        let got = read_timeout_for(&cmd);
+        assert!(
+            got > Duration::from_secs(120),
+            "wait read timeout {got:?} must exceed its own 120s deadline"
+        );
+        assert_eq!(got, Duration::from_secs(120) + WAIT_TIMEOUT_MARGIN);
+    }
+
+    #[test]
+    fn short_wait_still_gets_margin() {
+        let cmd = Command::Wait {
+            pane: None,
+            condition: WaitCondition::Exit,
+            timeout: Duration::from_secs(1),
+        };
+        assert_eq!(
+            read_timeout_for(&cmd),
+            Duration::from_secs(1) + WAIT_TIMEOUT_MARGIN
+        );
+    }
+
+    #[test]
+    fn non_wait_commands_use_base_timeout() {
+        assert_eq!(
+            read_timeout_for(&Command::Die { pane: None }),
+            BASE_READ_TIMEOUT
+        );
+        assert_eq!(
+            read_timeout_for(&Command::List { all: false }),
+            BASE_READ_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn enormous_wait_does_not_overflow() {
+        let cmd = Command::Wait {
+            pane: None,
+            condition: WaitCondition::Exit,
+            timeout: Duration::MAX,
+        };
+        // saturating_add must not panic.
+        assert_eq!(read_timeout_for(&cmd), Duration::MAX);
     }
 }

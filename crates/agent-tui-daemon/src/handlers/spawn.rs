@@ -150,7 +150,7 @@ fn policy_response(decision: &agent_tui_protocol::Decision) -> Option<Response> 
 /// Open a recorder under `$XDG_STATE_HOME/agent-tui/<session>/`. Returns
 /// `None` (and logs) if we can't pick a state dir.
 fn start_recorder(session: &SessionId, pane: &agent_tui_protocol::PaneId) -> Option<Recorder> {
-    let dir = state_dir().map(|d| d.join("agent-tui").join(&session.0))?;
+    let dir = crate::paths::state_root().map(|d| d.join("agent-tui").join(&session.0))?;
     let cfg = RecorderConfig::new(dir, pane.0.clone());
     match Recorder::start(cfg) {
         Ok((rec, _handle)) => Some(rec),
@@ -159,13 +159,6 @@ fn start_recorder(session: &SessionId, pane: &agent_tui_protocol::PaneId) -> Opt
             None
         }
     }
-}
-
-fn state_dir() -> Option<PathBuf> {
-    if let Ok(s) = std::env::var("XDG_STATE_HOME") {
-        return Some(PathBuf::from(s));
-    }
-    dirs::state_dir()
 }
 
 /// Spawn a deferred adapter-redetect task. Waits briefly for the child to

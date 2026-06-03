@@ -50,16 +50,32 @@ impl GenerationTracker {
     }
 }
 
+/// What to render for a snapshot. Bundled so `run` keeps a sane arity.
+pub struct SnapshotParams {
+    /// Rendering mode (outline / text / cells / adapter / hybrid).
+    pub mode: SnapshotMode,
+    /// Optional outline selector (RFC §2.2).
+    pub select: Option<String>,
+    /// With `select`, return every match rather than just the first.
+    pub all: bool,
+    /// With text/hybrid, reconstruct per-cell SGR instead of stripping.
+    pub keep_color: bool,
+}
+
 /// Snapshot a pane in the requested mode.
 pub async fn run(
     registry: &Arc<Registry>,
     generations: &Arc<GenerationTracker>,
     hashes: &Arc<HashWindow>,
     pane: Option<PaneId>,
-    mode: SnapshotMode,
-    select: Option<String>,
-    all: bool,
+    params: SnapshotParams,
 ) -> Response {
+    let SnapshotParams {
+        mode,
+        select,
+        all,
+        keep_color,
+    } = params;
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -103,6 +119,7 @@ pub async fn run(
         &engine_snap,
         generation,
         effective_mode,
+        keep_color,
     )
     .await;
     // Carry forward `select` so we can attach a "no-match" warning
@@ -170,6 +187,7 @@ async fn build_snapshot(
     engine_snap: &EngineSnapshot,
     generation: u64,
     mode: SnapshotMode,
+    keep_color: bool,
 ) -> Snapshot {
     let hash = engine_snap.canonical_hash();
     let osc = pane.pty.last_osc133_marker();
@@ -187,11 +205,11 @@ async fn build_snapshot(
     let (outline, cells, text) = match mode {
         SnapshotMode::Outline | SnapshotMode::Adapter => (Some(outline_for_mode), None, None),
         SnapshotMode::Cells => (None, Some(rle_grid(engine_snap)), None),
-        SnapshotMode::Text => (None, None, Some(grid_to_text(engine_snap))),
+        SnapshotMode::Text => (None, None, Some(grid_to_text(engine_snap, keep_color))),
         SnapshotMode::Hybrid => (
             Some(outline_for_mode),
             Some(rle_grid(engine_snap)),
-            Some(grid_to_text(engine_snap)),
+            Some(grid_to_text(engine_snap, keep_color)),
         ),
     };
 
@@ -223,37 +241,104 @@ async fn build_snapshot(
     }
 }
 
-/// Flatten the cell grid into a plain UTF-8 string. Rows joined with
-/// `\n`, per-row trailing whitespace trimmed. Empty trailing rows are
-/// dropped — agents reading "what does the screen say" rarely want
-/// the blank padding.
-fn grid_to_text(snap: &EngineSnapshot) -> String {
+/// Flatten the cell grid into a string. Rows joined with `\n`, trailing
+/// padding trimmed, empty trailing rows dropped — agents reading "what
+/// does the screen say" rarely want the blank padding.
+///
+/// With `keep_color`, a styled run is opened with a self-contained SGR
+/// escape (reconstructed from the cell's fg/bg/attrs) and held until the
+/// style changes — consecutive identical-style cells share one escape —
+/// then the row is reset (`ESC[0m`) at its last styled cell. Without it,
+/// the output is plain UTF-8 with no escapes.
+fn grid_to_text(snap: &EngineSnapshot, keep_color: bool) -> String {
     let cols = usize::from(snap.grid.cols);
     let rows = usize::from(snap.grid.rows);
     let mut lines: Vec<String> = Vec::with_capacity(rows);
     for row in 0..rows {
-        let mut line = String::with_capacity(cols);
         let start = row * cols;
-        for col in 0..cols {
-            let cell = &snap.grid.cells[start + col];
-            // `cell.ch` is a string (may be multi-byte/multi-char for
-            // graphemes); just append. Empty `ch` slots are spaces.
+        let row_cells = &snap.grid.cells[start..start + cols];
+        // Rightmost column worth emitting: any non-blank glyph, or (in
+        // color mode) any styled cell — a colored space still carries a
+        // background we must not trim away.
+        let last = row_cells.iter().rposition(|c| {
+            let blank = c.ch.is_empty() || c.ch == " ";
+            !blank || (keep_color && cell_sgr(c.fg, c.bg, c.attrs).is_some())
+        });
+        let Some(last) = last else {
+            lines.push(String::new());
+            continue;
+        };
+        let mut line = String::with_capacity(last + 1);
+        // The currently-open style (`None` = default / nothing open).
+        let mut cur: Option<String> = None;
+        for cell in &row_cells[..=last] {
+            if keep_color {
+                let sgr = cell_sgr(cell.fg, cell.bg, cell.attrs);
+                if sgr != cur {
+                    match &sgr {
+                        Some(open) => line.push_str(open),
+                        None => line.push_str("\x1b[0m"),
+                    }
+                    cur = sgr;
+                }
+            }
             if cell.ch.is_empty() {
                 line.push(' ');
             } else {
                 line.push_str(&cell.ch);
             }
         }
-        // Trim per-row trailing spaces — almost always padding noise.
-        let trimmed = line.trim_end().to_string();
-        lines.push(trimmed);
+        if cur.is_some() {
+            line.push_str("\x1b[0m");
+        }
+        lines.push(line);
     }
-    // Drop trailing all-empty rows so a mostly-empty screen doesn't
-    // emit a wall of blank lines.
     while lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
     lines.join("\n")
+}
+
+/// Reconstruct the SGR escape for a cell's style, or `None` if the cell is
+/// fully default (so default cells emit no escape at all). Leads with `0`
+/// (reset) so each run is self-contained — no need to diff against the
+/// previous cell. The attribute bit layout mirrors `pack_attrs` in the
+/// alacritty engine: 0=bold 1=italic 2=underline 3=inverse 4=strikeout.
+fn cell_sgr(fg: u32, bg: u32, attrs: u8) -> Option<String> {
+    let mut params: Vec<String> = Vec::new();
+    for (bit, code) in [(0u8, "1"), (1, "3"), (2, "4"), (3, "7"), (4, "9")] {
+        if attrs & (1 << bit) != 0 {
+            params.push(code.to_string());
+        }
+    }
+    if let Some(c) = color_param(fg, 38) {
+        params.push(c);
+    }
+    if let Some(c) = color_param(bg, 48) {
+        params.push(c);
+    }
+    if params.is_empty() {
+        None
+    } else {
+        Some(format!("\x1b[0;{}m", params.join(";")))
+    }
+}
+
+/// Map a packed color (see `encode_color` in the alacritty engine) to an
+/// SGR color parameter under `base` (38 = foreground, 48 = background).
+/// Returns `None` for the terminal default, encoded as a `NamedColor`
+/// special (value >= 256 without the RGB bit).
+fn color_param(color: u32, base: u32) -> Option<String> {
+    if color & 0x0100_0000 != 0 {
+        let r = (color >> 16) & 0xff;
+        let g = (color >> 8) & 0xff;
+        let b = color & 0xff;
+        Some(format!("{base};2;{r};{g};{b}"))
+    } else if color <= 255 {
+        Some(format!("{base};5;{color}"))
+    } else {
+        None
+    }
 }
 
 /// RLE-compress the cell grid row-by-row and base64-encode each row's JSON.
@@ -346,5 +431,104 @@ fn generic_outline(snap: &EngineSnapshot) -> Outline {
             children: Vec::new(),
             ..OutlineNode::default()
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_tui_engine::{CellGrid, ModeFlags};
+
+    /// Build a one-row snapshot from `(ch, fg, bg, attrs)` tuples.
+    fn row(cells: &[(&str, u32, u32, u8)]) -> EngineSnapshot {
+        let grid_cells = cells
+            .iter()
+            .map(|&(ch, fg, bg, attrs)| Cell {
+                ch: ch.to_string(),
+                width: 1,
+                fg,
+                bg,
+                attrs,
+            })
+            .collect::<Vec<_>>();
+        EngineSnapshot {
+            grid: CellGrid {
+                cols: u16::try_from(cells.len()).unwrap(),
+                rows: 1,
+                cells: grid_cells,
+                cursor: (0, 0),
+            },
+            modes: ModeFlags::default(),
+            sequence: 0,
+        }
+    }
+
+    // Default fg/bg in alacritty's encoding: NamedColor::Foreground/Background
+    // are >= 256, so a fully-default cell carries no color.
+    const DEF: u32 = 256;
+
+    #[test]
+    fn plain_mode_emits_no_escapes() {
+        let snap = row(&[("h", 1, DEF, 0), ("i", DEF, DEF, 0)]);
+        let out = grid_to_text(&snap, false);
+        assert_eq!(out, "hi");
+        assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn keep_color_reconstructs_named_fg_and_resets() {
+        // Red ("Named(Red)" == palette index 1) then a default cell.
+        let snap = row(&[("R", 1, DEF, 0), ("x", DEF, DEF, 0)]);
+        let out = grid_to_text(&snap, true);
+        assert_eq!(out, "\x1b[0;38;5;1mR\x1b[0mx");
+    }
+
+    #[test]
+    fn keep_color_coalesces_a_same_style_run() {
+        // Three red cells share one open escape and one reset, not three.
+        let snap = row(&[("R", 1, DEF, 0), ("E", 1, DEF, 0), ("D", 1, DEF, 0)]);
+        let out = grid_to_text(&snap, true);
+        assert_eq!(out, "\x1b[0;38;5;1mRED\x1b[0m");
+    }
+
+    #[test]
+    fn keep_color_reopens_on_style_change() {
+        // Red then green: the green run reopens (its `0;` resets red first).
+        let snap = row(&[("R", 1, DEF, 0), ("G", 2, DEF, 0)]);
+        let out = grid_to_text(&snap, true);
+        assert_eq!(out, "\x1b[0;38;5;1mR\x1b[0;38;5;2mG\x1b[0m");
+    }
+
+    #[test]
+    fn keep_color_rgb_truecolor() {
+        // Spec(0x10_20_30) → RGB bit set.
+        let rgb = 0x0100_0000 | 0x0010_2030;
+        let snap = row(&[("A", rgb, DEF, 0)]);
+        let out = grid_to_text(&snap, true);
+        assert_eq!(out, "\x1b[0;38;2;16;32;48mA\x1b[0m");
+    }
+
+    #[test]
+    fn keep_color_attrs_and_bg() {
+        // bold (bit 0) + underline (bit 2) = 0b101 = 5, bg = palette 4.
+        let snap = row(&[("B", DEF, 4, 0b101)]);
+        let out = grid_to_text(&snap, true);
+        assert_eq!(out, "\x1b[0;1;4;48;5;4mB\x1b[0m");
+    }
+
+    #[test]
+    fn keep_color_preserves_trailing_colored_space_that_plain_trims() {
+        // A trailing space carrying a background color must survive in
+        // color mode but be trimmed as padding in plain mode.
+        let snap = row(&[("x", DEF, DEF, 0), (" ", DEF, 2, 0)]);
+        assert_eq!(grid_to_text(&snap, false), "x");
+        assert_eq!(grid_to_text(&snap, true), "x\x1b[0;48;5;2m \x1b[0m");
+    }
+
+    #[test]
+    fn default_only_row_trims_to_empty() {
+        let snap = row(&[(" ", DEF, DEF, 0), (" ", DEF, DEF, 0)]);
+        assert_eq!(grid_to_text(&snap, true), "");
+        assert_eq!(grid_to_text(&snap, false), "");
     }
 }
