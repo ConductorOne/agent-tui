@@ -169,7 +169,7 @@ need to emit bytes the PTY isn't parsing through readline.
 
 ```bash {test=send-ansi}
 agent-tui spawn -- less /work/log.txt
-agent-tui wait --text ":"
+agent-tui wait --text "log.txt"                 # less shows the FILENAME, not a ":" prompt
 agent-tui send-ansi "/needle\r"                 # send literal /, needle, CR
 agent-tui wait --text "needle"
 agent-tui snapshot

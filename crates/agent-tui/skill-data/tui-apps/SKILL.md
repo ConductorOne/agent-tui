@@ -32,7 +32,7 @@ agent-tui press "q"
 agent-tui spawn -- htop --no-color
 agent-tui wait --text "F10"
 agent-tui press "<f2>"                      # Setup
-agent-tui wait --text "Categories"
+agent-tui wait --text "Setup"               # the Setup screen's title
 agent-tui press "<esc>"
 agent-tui wait --text "F10"
 agent-tui press "q"
@@ -48,7 +48,7 @@ handling. Confirms refs reset cleanly after a modal close.
 agent-tui spawn -- htop --no-color
 agent-tui wait --text "F10"
 agent-tui press "<f5>"                      # toggle tree mode
-agent-tui wait --text "├─"                  # tree characters appear
+agent-tui wait --text "├─|\|--"             # tree glyphs — Unicode OR ascii fallback
 agent-tui snapshot
 agent-tui press "q"
 ```
@@ -58,17 +58,24 @@ agent-tui press "q"
 
 ```bash {test=less-open}
 agent-tui spawn -- less /work/big-file.txt
-agent-tui wait --text ":"                   # less's command prompt
+agent-tui wait --text "big-file"            # less puts the FILENAME in its status line
+agent-tui wait --idle 150                   # let the first screenful settle
 agent-tui snapshot
 agent-tui press "q"
 ```
+
+> **less has no `:` prompt to wait on.** On open, `less` renders the
+> first screenful and shows the **filename** in the status line (or
+> `(END)` if the whole file fits) — it does *not* print a bare `:` until
+> *you* issue a command. Wait on the filename (or any line you know is on
+> screen) and/or `--idle` to settle; `wait --text ":"` will time out.
 
 ## less — slash search
 <!-- tested-by: bwrap_less_search_finds_anchor -->
 
 ```bash {test=less-search}
 agent-tui spawn -- less /work/big-file.txt
-agent-tui wait --text ":"
+agent-tui wait --text "big-file"            # filename in the status line (not ":")
 agent-tui send-ansi "/needle\r"             # send-ansi for the literal `/`
 agent-tui wait --text "needle"
 agent-tui snapshot
@@ -80,7 +87,7 @@ agent-tui press "q"
 
 ```bash {test=less-end}
 agent-tui spawn -- less /work/big-file.txt
-agent-tui wait --text ":"
+agent-tui wait --text "big-file"            # filename in the status line (not ":")
 agent-tui press "G"
 agent-tui wait --text "(END)"
 agent-tui snapshot
@@ -138,7 +145,7 @@ agent-tui spawn -- lazygit -p /work/repo
 agent-tui wait --text "Files"
 agent-tui press "<tab>"                     # move panel focus
 agent-tui press "<tab>"
-agent-tui wait --text "Branches"
+agent-tui wait --text "Local branches"      # the Branches panel's title is "Local branches"
 agent-tui snapshot
 agent-tui press "q"
 ```
@@ -160,7 +167,7 @@ agent-tui press "q"
 
 ```bash {test=tig-main}
 agent-tui spawn -- bash -c "cd /work/repo && tig"
-agent-tui wait --text "Main"
+agent-tui wait --text "\[main\]"            # tig labels the main view "[main]" in its title
 agent-tui snapshot
 agent-tui press "q"
 ```
@@ -170,9 +177,9 @@ agent-tui press "q"
 
 ```bash {test=tig-diff}
 agent-tui spawn -- bash -c "cd /work/repo && tig"
-agent-tui wait --text "Main"
+agent-tui wait --text "\[main\]"            # main view label
 agent-tui press "<cr>"                      # open diff for selected commit
-agent-tui wait --text "Diff"
+agent-tui wait --text "\[diff\]"            # tig's diff view label
 agent-tui snapshot
 agent-tui press "q"                         # back to main
 agent-tui press "q"                         # exit
