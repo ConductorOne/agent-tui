@@ -248,8 +248,33 @@ Environment / sanity / version-drift diagnostics.
 agent-tui mcp serve
 ```
 
-Run the MCP protocol over stdio. Exposes a subset of the CLI surface
-as MCP tools.
+Run the MCP protocol over stdio (JSON-RPC: `initialize` →
+`notifications/initialized` → `tools/list` → `tools/call`). Exposes a
+**subset** of the CLI surface as MCP tools — these nine:
+
+```
+spawn  list  snapshot  press  type  wait  die  focus  daemon_status
+```
+
+Notably **not** exposed over MCP (use the CLI for these): `run`/`ask`
+(subprocess-as-data sugar), `tail` (raw byte stream), `stdin`/
+`close-stdin` (pipe feeding), `send-ansi`, `resize`, `signal`, `edit`/
+`watch`, and `snapshot --png/--annotate`. If you need a headless CLI's
+stdout, run it via the CLI `run` verb, not MCP.
+
+**`snapshot` modes over MCP:** `outline` (default), `text`, `cells`,
+`adapter`, `hybrid` — full parity with the CLI, including `text` (the
+plain-string "what does the screen say" mode). `select`/`all` are also
+supported. An unknown mode returns JSON-RPC `-32602` naming the valid
+set.
+
+**Shared daemon / focus:** the MCP server talks to the *same*
+per-session daemon as the CLI — panes spawned via the CLI or a prior
+MCP call persist. When more than one pane exists, the daemon can't
+guess which you mean: tool calls return `NO_ACTIVE_PANE` (numeric
+`1005`) until you either pass `pane` on the call or set focus with the
+`focus` tool (`{"name":"focus","arguments":{"pane":"p1"}}`). A
+single-pane session needs no focus call.
 
 ### `skills`
 

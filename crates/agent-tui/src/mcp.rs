@@ -313,11 +313,12 @@ fn mode_from_str(mode: &str) -> Result<agent_tui_protocol::request::SnapshotMode
     use agent_tui_protocol::request::SnapshotMode;
     match mode {
         "outline" => Ok(SnapshotMode::Outline),
+        "text" => Ok(SnapshotMode::Text),
         "cells" => Ok(SnapshotMode::Cells),
         "adapter" => Ok(SnapshotMode::Adapter),
         "hybrid" => Ok(SnapshotMode::Hybrid),
         other => Err(format!(
-            "unknown snapshot mode: {other} (want outline/cells/adapter/hybrid)"
+            "unknown snapshot mode {other:?}; valid: outline|text|cells|adapter|hybrid"
         )),
     }
 }
@@ -350,14 +351,14 @@ fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "snapshot",
-            "description": "Capture the focused pane (or a named one). `mode` selects the payload shape: 'outline' (structured per-adapter view, default), 'cells' (raw RLE-packed grid), 'adapter' (just the adapter outline), 'hybrid' (cells + outline). Optional `select` is a CSS-subset selector that filters the outline to matching nodes only (e.g. `[role=buffer][focused]`, `@vim.statusline`); `all` returns every match in depth-first pre-order. With `select`, an outline is always included even if `mode` would otherwise omit it.",
+            "description": "Capture the focused pane (or a named one). `mode` selects the payload shape: 'outline' (structured per-adapter view, default), 'text' (visible cells flattened to a plain UTF-8 string — the right answer for 'what does the screen say' on unstructured output), 'cells' (raw RLE-packed grid), 'adapter' (just the adapter outline), 'hybrid' (outline + cells + adapter + text). Optional `select` is a CSS-subset selector that filters the outline to matching nodes only (e.g. `[role=buffer][focused]`, `@vim.statusline`); `all` returns every match in depth-first pre-order. With `select`, an outline is always included even if `mode` would otherwise omit it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pane": { "type": "string" },
                     "mode": {
                         "type": "string",
-                        "enum": ["outline", "cells", "adapter", "hybrid"]
+                        "enum": ["outline", "text", "cells", "adapter", "hybrid"]
                     },
                     "png": { "type": "string", "description": "Path to write a PNG render alongside the response." },
                     "annotate": { "type": "boolean" },
@@ -525,6 +526,43 @@ mod tests {
             Command::Snapshot { mode, .. } => assert!(matches!(mode, SnapshotMode::Outline)),
             _ => panic!("expected Snapshot"),
         }
+    }
+
+    #[test]
+    fn build_command_snapshot_accepts_text_mode() {
+        // Regression for PR-E1 / RFC §P0-1: `mode:"text"` used to be
+        // rejected over MCP even though the CLI + engine support it.
+        let args = json!({ "mode": "text" });
+        let cmd = build_command("snapshot", &args).unwrap();
+        match cmd {
+            Command::Snapshot { mode, .. } => assert!(matches!(mode, SnapshotMode::Text)),
+            _ => panic!("expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn snapshot_schema_advertises_text_mode() {
+        let schema = tool_schemas()
+            .into_iter()
+            .find(|t| t["name"] == "snapshot")
+            .expect("snapshot schema");
+        let modes: Vec<String> = schema["inputSchema"]["properties"]["mode"]["enum"]
+            .as_array()
+            .expect("mode enum")
+            .iter()
+            .map(|m| m.as_str().unwrap().to_string())
+            .collect();
+        assert!(modes.contains(&"text".to_string()), "modes: {modes:?}");
+    }
+
+    #[test]
+    fn build_command_snapshot_rejects_unknown_mode_with_valid_set() {
+        let args = json!({ "mode": "bogus" });
+        let err = build_command("snapshot", &args).unwrap_err();
+        assert!(
+            err.contains("text"),
+            "error should name the valid set: {err}"
+        );
     }
 
     #[test]
