@@ -241,6 +241,83 @@ fn mcp_handshake_lists_tools_and_drives_a_real_pane() {
     assert_eq!(by_id(&resp, 6)["result"]["isError"], false);
 }
 
+/// `snapshot {"mode":"text"}` parity over MCP (regression for PR-E1 /
+/// RFC §P0-1). The CLI has supported `--mode text` since 0.1; MCP used to
+/// reject it with `-32602 "unknown snapshot mode: text"` — the first error
+/// in BOTH sonnet MCP eval trials. This asserts, against a real daemon +
+/// real PTY child: (a) the `snapshot` schema advertises `text` in its
+/// `mode` enum, and (b) a real `tools/call snapshot {"mode":"text"}`
+/// returns the plain-text screen (carrying the child's output) with NO
+/// JSON-RPC error.
+#[test]
+fn mcp_snapshot_text_mode_returns_plain_text() {
+    let h = Harness::new("textmode");
+    let reqs = vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+            "name":"spawn",
+            "arguments":{"argv":["/bin/sh","-c","printf TEXTMODE_OK; sleep 2"]}
+        }}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+            "name":"wait","arguments":{"text":"TEXTMODE_OK","max":8000}
+        }}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+            "name":"snapshot","arguments":{"mode":"text"}
+        }}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{
+            "name":"die","arguments":{}
+        }}),
+    ];
+    let resp = h.drive(&reqs, Duration::from_secs(25));
+
+    // (a) The schema must advertise `text` in the snapshot mode enum.
+    let tools = by_id(&resp, 2)["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    let snapshot_schema = tools
+        .iter()
+        .find(|t| t["name"] == "snapshot")
+        .expect("snapshot tool schema");
+    let modes: Vec<&str> = snapshot_schema["inputSchema"]["properties"]["mode"]["enum"]
+        .as_array()
+        .expect("mode enum array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        modes.contains(&"text"),
+        "snapshot schema must advertise `text` mode: {modes:?}"
+    );
+
+    // (b) The real round-trip must succeed — no -32602, a success envelope,
+    // and the plain-text payload carries the child's visible output.
+    let snap = by_id(&resp, 5);
+    assert!(
+        snap.get("error").is_none(),
+        "snapshot text mode must not return a JSON-RPC error: {snap:?}"
+    );
+    assert_eq!(
+        snap["result"]["isError"], false,
+        "snapshot text mode tool errored: {snap:?}"
+    );
+    let text = snap["result"]["content"][0]["text"]
+        .as_str()
+        .expect("snapshot content text");
+    let envelope: Value =
+        serde_json::from_str(text).expect("snapshot content must be a JSON envelope");
+    assert_eq!(
+        envelope["success"], true,
+        "snapshot text-mode envelope: {envelope:?}"
+    );
+    assert!(
+        text.contains("TEXTMODE_OK"),
+        "text-mode snapshot should carry the child's output; got {text}"
+    );
+
+    assert_eq!(by_id(&resp, 6)["result"]["isError"], false, "die failed");
+}
+
 /// Error half (the coldest part of `mcp.rs`): an unknown method maps to
 /// JSON-RPC `-32601` (method not found); a `tools/call` for an unknown
 /// tool maps to `-32602` (invalid params). Both must come back as
