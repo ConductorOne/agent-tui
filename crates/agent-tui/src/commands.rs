@@ -526,9 +526,18 @@ fn dump_surface() -> Result<()> {
     fn walk(cmd: &clap::Command) -> serde_json::Value {
         let flags: Vec<String> = cmd
             .get_arguments()
-            .filter_map(|a| {
-                // Skip global-position positionals.
-                a.get_long().map(|long| format!("--{long}"))
+            .flat_map(|a| {
+                // The primary long plus any *visible* aliases — both are
+                // real, documentable spellings (e.g. `--since` /
+                // `--sequence`). Positionals (no long) are skipped.
+                let mut names = Vec::new();
+                if let Some(long) = a.get_long() {
+                    names.push(format!("--{long}"));
+                }
+                if let Some(aliases) = a.get_visible_aliases() {
+                    names.extend(aliases.into_iter().map(|al| format!("--{al}")));
+                }
+                names
             })
             .collect();
         let subs: Vec<serde_json::Value> = cmd

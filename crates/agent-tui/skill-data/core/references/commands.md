@@ -2,8 +2,11 @@
 
 Every `agent-tui` subcommand, flag, and alias. This file is meant to
 be regeneratable from `agent-tui --help` — when the CLI changes,
-update this file in the same PR (CI's `xtask docs-coverage` will
-catch flags referenced in skill pages that don't exist in clap).
+update this file in the same PR. This is **enforced**: the
+`commands_md_flags_all_exist_in_cli` test (run by CI's `cargo test
+--workspace`) and `cargo xtask help-conformance` both fail if this
+file names a `--flag` that doesn't exist in clap, so drift can't
+silently return.
 
 ## Global options
 <!-- tested-by: navigation -->
@@ -195,17 +198,25 @@ Held); see [snapshot-refs.md](snapshot-refs.md).
 ### `wait`
 
 ```
-agent-tui wait [--text <regex>] [--hash <hex>] [--sequence <n>] [--idle <ms>]
+agent-tui wait [--text <regex>] [--ref <selector> [--gone]] [--hash <hex>]
+               [--since <n>] [--sequence <n>] [--idle <ms>]
+               [--cursor-stable <ms>] [--alt-screen <bool>] [--exit]
                [--max <ms>] [--pane <id>]
 ```
 
-Block until a state-change condition matches. See
-[wait-and-events.md](wait-and-events.md).
+Block until a state-change condition matches. Exactly one wait mode:
+`--text` (regex over the rendered screen), `--ref` (a selector matches
+a node; add `--gone` to wait until it matches nothing), `--hash` (screen
+hash differs), `--since <n>` (event sequence passes `<n>`; **`--sequence`
+is a visible alias**), `--idle <ms>` (no output for N ms),
+`--cursor-stable <ms>`, `--alt-screen <bool>` (alt-screen toggled), or
+`--exit` (child process exits). `--max <ms>` caps the wait (default
+25000). See [wait-and-events.md](wait-and-events.md).
 
 ### `daemon`
 
 ```
-agent-tui daemon run [--monitor-parent <PID>] [--idle-timeout <SECS>]
+agent-tui daemon run [--monitor-parent <PID>] [--idle-timeout-secs <SECS>]
 agent-tui daemon status
 agent-tui daemon shutdown [--all]
 ```

@@ -33,6 +33,13 @@ enum Cmd {
     /// least one skill page (or on `.undocumented-allowlist.txt`).
     /// Walks `agent-tui help` recursively to enumerate the surface.
     CliCoverage(CliCoverageArgs),
+    /// Check that every `--flag` named in a usage synopsis in
+    /// `commands.md` actually exists in the clap CLI surface (incl.
+    /// visible aliases). Catches doc↔`--help` drift like the
+    /// `--sequence` flag the docs named before it existed. The same
+    /// check also runs in CI as the `commands_md_flags_all_exist_in_cli`
+    /// unit test.
+    HelpConformance(HelpConformanceArgs),
     /// Run `cargo check` for each target we ship to (macOS, Windows)
     /// to catch platform-specific compile breakage before push.
     ///
@@ -83,8 +90,118 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::DocsCoverage(args) => docs_coverage(&args),
         Cmd::CliCoverage(args) => cli_coverage(&args),
+        Cmd::HelpConformance(args) => help_conformance(&args),
         Cmd::CrossCheck(args) => cross_check(&args),
     }
+}
+
+#[derive(clap::Args)]
+struct HelpConformanceArgs {
+    /// Repo root. Defaults to the parent of `CARGO_MANIFEST_DIR`.
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    /// Path to the built `agent-tui` binary. Defaults to
+    /// `target/debug/agent-tui` under the repo root.
+    #[arg(long)]
+    bin: Option<PathBuf>,
+}
+
+/// Fail if `commands.md` documents (inside a usage code fence) a
+/// `--flag` that the real CLI surface doesn't expose. Mirrors the
+/// `commands_md_flags_all_exist_in_cli` unit test, but drives the built
+/// binary's `__surface` dump so it can be run standalone before a push.
+fn help_conformance(args: &HelpConformanceArgs) -> Result<()> {
+    let repo = args
+        .repo
+        .clone()
+        .or_else(|| {
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .map(PathBuf::from)
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    let bin = args
+        .bin
+        .clone()
+        .unwrap_or_else(|| repo.join("target/debug/agent-tui"));
+    if !bin.is_file() {
+        bail!(
+            "agent-tui binary not found at {} (run `cargo build -p agent-tui` first)",
+            bin.display()
+        );
+    }
+    let commands_md = repo.join("crates/agent-tui/skill-data/core/references/commands.md");
+    let text = std::fs::read_to_string(&commands_md)
+        .with_context(|| format!("read {}", commands_md.display()))?;
+
+    // Real flags = every long + visible alias the binary reports, plus
+    // the clap-injected --help/--version.
+    let mut real: BTreeSet<String> = collect_cli_surface(&bin)?
+        .into_iter()
+        .filter_map(|e| e.flag)
+        .collect();
+    real.insert("--help".into());
+    real.insert("--version".into());
+
+    let documented = fenced_flag_tokens(&text);
+    let invented: Vec<&String> = documented.iter().filter(|t| !real.contains(*t)).collect();
+    if !invented.is_empty() {
+        eprintln!(
+            "help-conformance: FAIL ({} documented flag(s) not in the CLI)",
+            invented.len()
+        );
+        for f in &invented {
+            eprintln!("  ✗ {f}");
+        }
+        eprintln!();
+        eprintln!(
+            "  Regenerate the synopsis in {} from `agent-tui <sub> --help`.",
+            commands_md.display()
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "help-conformance: PASS  ({} documented flag(s), all real)",
+        documented.len()
+    );
+    Ok(())
+}
+
+/// Extract `--flag` tokens from inside ```` ``` ```` fenced code blocks
+/// (the usage synopses). Prose mentions are commentary, not normative.
+fn fenced_flag_tokens(md: &str) -> BTreeSet<String> {
+    let mut toks = BTreeSet::new();
+    let mut in_fence = false;
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'-' && bytes[i + 1] == b'-' && bytes[i + 2].is_ascii_lowercase() {
+                let start = i + 2;
+                let mut j = start;
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_lowercase()
+                        || bytes[j].is_ascii_digit()
+                        || bytes[j] == b'-')
+                {
+                    j += 1;
+                }
+                toks.insert(format!("--{}", &line[start..j]));
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    toks
 }
 
 /// Default cross-check targets — macOS and Windows. These are the

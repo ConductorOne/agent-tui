@@ -443,8 +443,10 @@ pub struct WaitArgs {
     /// Pane id; defaults to focused.
     #[arg(long, global = false)]
     pub pane: Option<String>,
-    /// Block until next mutation past `<seq>`. Primary wait primitive.
-    #[arg(long, group = "wait_mode")]
+    /// Block until the event sequence advances past `<seq>`. Primary
+    /// wait primitive. `--sequence` is a visible alias of this flag
+    /// (same semantics: wait until the event stream passes `<seq>`).
+    #[arg(long, visible_alias = "sequence", group = "wait_mode")]
     pub since: Option<u64>,
     /// Sugar over `--since` using the seq→hash window.
     #[arg(long, group = "wait_mode")]
@@ -593,5 +595,116 @@ impl From<SnapshotMode> for agent_tui_protocol::request::SnapshotMode {
             SnapshotMode::Text => Self::Text,
             SnapshotMode::Hybrid => Self::Hybrid,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Command};
+    use clap::{CommandFactory, Parser};
+    use std::collections::BTreeSet;
+
+    /// `--sequence` is a visible alias of `--since` (RFC P1-1): the
+    /// canonical docs use `wait --sequence <n>`, which used to error
+    /// (`unexpected argument`). Parse the real CLI and assert the alias
+    /// lands on the same field with the same value.
+    #[test]
+    fn wait_sequence_is_visible_alias_of_since() {
+        let cli = Cli::try_parse_from(["agent-tui", "wait", "--sequence", "7"])
+            .expect("`wait --sequence 7` must parse");
+        match cli.command {
+            Command::Wait(w) => {
+                assert_eq!(w.since, Some(7), "--sequence must set the `since` field");
+            }
+            other => panic!("expected Wait, got {other:?}"),
+        }
+        // And the original spelling still works identically.
+        let cli2 = Cli::try_parse_from(["agent-tui", "wait", "--since", "7"]).unwrap();
+        assert!(matches!(cli2.command, Command::Wait(w) if w.since == Some(7)));
+    }
+
+    /// Recursively collect every long flag + visible alias the real clap
+    /// surface exposes (e.g. `--since`, `--sequence`).
+    fn real_flags() -> BTreeSet<String> {
+        fn walk(cmd: &clap::Command, out: &mut BTreeSet<String>) {
+            for a in cmd.get_arguments() {
+                if let Some(long) = a.get_long() {
+                    out.insert(format!("--{long}"));
+                }
+                if let Some(aliases) = a.get_visible_aliases() {
+                    out.extend(aliases.into_iter().map(|al| format!("--{al}")));
+                }
+            }
+            for s in cmd.get_subcommands() {
+                if s.get_name() != "help" {
+                    walk(s, out);
+                }
+            }
+        }
+        let mut set = BTreeSet::new();
+        walk(&Cli::command(), &mut set);
+        // clap-injected flags that may not surface as positional args.
+        set.insert("--help".into());
+        set.insert("--version".into());
+        set
+    }
+
+    /// Extract `--flag` tokens from inside ```` ``` ```` fenced code
+    /// blocks only — the usage synopses. Prose mentions (e.g. "the
+    /// `--foo` flag") are commentary, not normative, and are skipped.
+    fn fenced_flag_tokens(md: &str) -> BTreeSet<String> {
+        let mut toks = BTreeSet::new();
+        let mut in_fence = false;
+        for line in md.lines() {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if !in_fence {
+                continue;
+            }
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i + 2 < bytes.len() {
+                if bytes[i] == b'-' && bytes[i + 1] == b'-' && bytes[i + 2].is_ascii_lowercase() {
+                    let start = i + 2;
+                    let mut j = start;
+                    while j < bytes.len()
+                        && (bytes[j].is_ascii_lowercase()
+                            || bytes[j].is_ascii_digit()
+                            || bytes[j] == b'-')
+                    {
+                        j += 1;
+                    }
+                    toks.insert(format!("--{}", &line[start..j]));
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        toks
+    }
+
+    /// Doc-vs-`--help` conformance (RFC P1-1): every `--flag` documented
+    /// in a usage synopsis in `commands.md` must exist in the real clap
+    /// surface. Guards against the `--sequence`-style drift where the doc
+    /// named a flag the binary never had. Runs under `cargo test
+    /// --workspace`, so CI fails on future drift.
+    #[test]
+    fn commands_md_flags_all_exist_in_cli() {
+        const COMMANDS_MD: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill-data/core/references/commands.md"
+        ));
+        let real = real_flags();
+        let documented = fenced_flag_tokens(COMMANDS_MD);
+        let invented: Vec<&String> = documented.iter().filter(|t| !real.contains(*t)).collect();
+        assert!(
+            invented.is_empty(),
+            "commands.md documents flag(s) that do not exist in the CLI: {invented:?}\n\
+             (regenerate the synopsis from `agent-tui <sub> --help`; \
+             real flags: {real:?})"
+        );
     }
 }
