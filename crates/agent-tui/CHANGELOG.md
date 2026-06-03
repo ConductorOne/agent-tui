@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/ConductorOne/agent-tui/compare/v0.1.2...v0.1.3) - 2026-06-03
+
+### Added
+
+- *(cli)* per-command read timeout, snapshot --keep-color, session gc ([#21](https://github.com/ConductorOne/agent-tui/pull/21))
+
+### Other
+
+- *(streaming)* real-system e2e for `watch` / `tail --follow` ([#25](https://github.com/ConductorOne/agent-tui/pull/25))
+- *(run)* real-system e2e for the `run` orchestration verb ([#23](https://github.com/ConductorOne/agent-tui/pull/23))
+
 ## [0.1.2](https://github.com/ConductorOne/agent-tui/compare/v0.1.1...v0.1.2) - 2026-05-29
 
 ### Added
