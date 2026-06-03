@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-tui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-adapter",
  "agent-tui-daemon",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-adapter"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-engine",
  "agent-tui-protocol",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-adapter",
  "agent-tui-engine",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-engine"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-protocol",
  "hex",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-engine-alacritty"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-engine",
  "agent-tui-protocol",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-engine-wezterm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-engine",
  "agent-tui-protocol",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-integration"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-protocol",
  "anyhow",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-protocol"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "proptest",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-recorder"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "agent-tui-protocol",
  "anyhow",
@@ -3587,7 +3587,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
