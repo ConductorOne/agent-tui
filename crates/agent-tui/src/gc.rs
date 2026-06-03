@@ -361,4 +361,98 @@ mod tests {
         fs::remove_dir_all(&sock).ok();
         fs::remove_dir_all(&state).ok();
     }
+
+    /// End-to-end liveness guard: a session whose daemon is actually
+    /// answering its socket must be skipped even under `--all`. This binds
+    /// a *real* listener (the same way the daemon does) so the
+    /// non-spawning `probe_live` connects successfully — proving the skip
+    /// is driven by a live socket, not just a hardcoded `alive` flag as in
+    /// the pure `plan` tests. Regress `probe_live` to always-`false` and
+    /// this test deletes a live session's files and fails.
+    #[tokio::test]
+    async fn run_gc_skips_a_live_session_end_to_end() {
+        use agent_tui_daemon::paths::socket_name;
+        use interprocess::local_socket::ListenerOptions;
+        use interprocess::local_socket::tokio::Listener;
+
+        let sock = temp_dir("live-sock");
+        let state = temp_dir("live-state");
+        // A real daemon owns a `.pid` sidecar alongside its socket.
+        touch(&sock.join("alive.pid"));
+        // Bind a real listener at `<root>/alive.sock`; this both makes
+        // `probe_live` succeed and creates the `.sock` sidecar that marks
+        // the session as a gc candidate.
+        let layout = SocketLayout::for_session_in(&SessionId("alive".to_string()), sock.clone());
+        let name = socket_name(&layout).expect("socket name");
+        let listener: Listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("bind live session socket");
+
+        let opts = GcOptions {
+            older_than: Duration::ZERO,
+            prune_all: true,
+            dry_run: false,
+        };
+        let report = run_gc(&sock, Some(&state), &opts, SystemTime::now())
+            .await
+            .unwrap();
+
+        assert!(
+            report.pruned.is_empty(),
+            "a live session must never be reaped, even under --all; pruned={:?}",
+            report.pruned
+        );
+        assert_eq!(
+            report.skipped_alive, 1,
+            "the live session must be counted as skipped-alive"
+        );
+        assert!(
+            sock.join("alive.pid").exists(),
+            "a live session's sidecars must survive gc"
+        );
+
+        drop(listener);
+        fs::remove_dir_all(&sock).ok();
+        fs::remove_dir_all(&state).ok();
+    }
+
+    /// Path-safety guard against the data-loss bug class: a symlink planted
+    /// where a session cast dir would be must not let gc delete *through*
+    /// it into data outside its roots. `remove_dir_all` on a symlinked dir
+    /// unlinks the link, never recursing into the target — this test fails
+    /// loudly if that ever regresses (e.g. a switch to a follow-symlinks
+    /// deletion path).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_gc_cannot_delete_through_a_symlinked_cast_dir() {
+        let sock = temp_dir("sym-sock");
+        let state = temp_dir("sym-state");
+        let victim = temp_dir("sym-victim");
+        touch(&victim.join("precious.txt"));
+
+        let cast_parent = state.join("agent-tui");
+        fs::create_dir_all(&cast_parent).unwrap();
+        // The hostile input: a session entry that is really a symlink to a
+        // path outside both gc roots.
+        std::os::unix::fs::symlink(&victim, cast_parent.join("evil")).unwrap();
+
+        let opts = GcOptions {
+            older_than: Duration::ZERO,
+            prune_all: true,
+            dry_run: false,
+        };
+        run_gc(&sock, Some(&state), &opts, SystemTime::now())
+            .await
+            .unwrap();
+
+        assert!(
+            victim.join("precious.txt").exists(),
+            "gc must not delete through a symlink into a path outside its roots"
+        );
+
+        fs::remove_dir_all(&sock).ok();
+        fs::remove_dir_all(&state).ok();
+        fs::remove_dir_all(&victim).ok();
+    }
 }
