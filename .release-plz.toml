@@ -20,7 +20,19 @@ publish = false
 
 # Single tag per workspace release (vs one tag per crate). Matches
 # the "one binary, one version" reality of agent-tui.
-git_release_enable = true
+#
+# release-plz pushes the tag but does NOT create the GitHub Release.
+# cargo-dist (release.yml) owns the GitHub Release + asset uploads: it
+# runs `gh release create v<X.Y.Z> … artifacts/*` and its generated
+# notes already carry the install instructions + download table. If
+# release-plz ALSO created the release (git_release_enable = true, the
+# default), the two collide — cargo-dist's "Create GitHub Release" step
+# fails with "a release with the same tag name already exists". So:
+#   git_tag_enable   (default true)  -> release-plz creates + pushes the tag,
+#                                       which triggers cargo-dist
+#   git_release_enable = false       -> release-plz leaves the GitHub Release
+#                                       to cargo-dist
+git_release_enable = false
 git_tag_name = "v{{ version }}"
 
 # Conventional commits drive the changelog.
