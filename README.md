@@ -8,10 +8,10 @@ Headless terminal automation for AI agents — the
 PTYs. Drive any terminal app (`vim`, `htop`, `psql`, a REPL, `claude`) and
 read its screen back as structured, addressable text.
 
-## The 30-second taste
+## Read any screen as text
 
 `htop` is a full-screen ncurses dashboard — no headless mode, no `--json`.
-agent-tui spawns it on a PTY and hands you its live screen as plain text:
+agent-tui spawns it on a PTY and returns its live screen as plain text:
 
 ```bash
 agent-tui spawn -- htop
@@ -30,12 +30,11 @@ agent-tui --json snapshot --mode text | jq -r .data.text
       1 squire      20   0 3831M  274M 38368 S   0.0  0.2  0:55.95 squire-envmgr
 ```
 
-No screen-scraping, no terminal-byte parsing, no coordinates. The agent reads
-the screen the way it reads a file.
+No screen-scraping, no terminal-byte parsing, no coordinates.
 
 ## Two ways to drive a child
 
-agent-tui has a dual nature — pick the verb for the shape of your task:
+agent-tui drives a child two ways — pick the verb for your task:
 
 - **`run` — subprocess as data.** The child has a non-interactive mode
   (`claude -p`, `gh api`, `jq`, `gpg`). You want stdin in, stdout out, in one
@@ -49,7 +48,7 @@ agent-tui has a dual nature — pick the verb for the shape of your task:
   `psql`) or you want to observe its TUI. You step it: spawn the PTY, read the
   snapshot, act on refs, wait for the next state (the rest of this README).
 
-The decision line: **want stdout? → `run`. Want to observe or drive a screen?
+In short: **want stdout? → `run`. Want to observe or drive a screen?
 → `spawn` + `snapshot` + `press` + `wait`.** Full mapping in
 [How it works](#how-it-works--the-agent-browser-bridge).
 
@@ -97,7 +96,7 @@ cargo build --release
 
 </details>
 
-## Refs — the one concept that unlocks the rest
+## Refs: bringing the DOM to the terminal
 
 Every snapshot turns the screen into a tree of **addressable nodes**, each with
 a stable **ref**: a handle the agent uses to *name* an on-screen element
@@ -117,17 +116,17 @@ agent-tui --json snapshot --select '@vim.mode' | jq -c '.data.outline.nodes[0]'
 frame, whether it reads `normal` or `insert`. Adapter-aware apps emit named
 refs (`@vim.buffer`, `@vim.mode`, `@shell.prompt`); anything without a
 dedicated adapter still gets generic positional refs (`@e1`, `@e2`) tagged with
-a `role`. This is the [`agent-browser`](https://github.com/vercel-labs/agent-browser)
-move for terminals — see the [mapping below](#how-it-works--the-agent-browser-bridge).
+a `role`. This mirrors [`agent-browser`](https://github.com/vercel-labs/agent-browser)'s
+element refs, applied to the terminal screen — see the
+[mapping below](#how-it-works--the-agent-browser-bridge).
 
 You find and wait on refs with **selectors** — a CSS subset:
 `[role=buffer][focused]`, `@vim.mode[value=insert]`, `@tmux.pane[%2]`.
 
 ## Refs in action
 
-Here's a real edit flow. Notice there is not a single `sleep` — every step
-blocks on a *structured state*, so it's deterministic regardless of how fast or
-slow vim is:
+This edit flow uses no `sleep`: every step blocks on a *structured state*, so
+it's deterministic regardless of how fast vim is:
 
 ```bash
 agent-tui spawn -- vim todo.txt
@@ -140,8 +139,8 @@ agent-tui wait --ref '@vim.mode[value=normal]'  # 6. wait for the mode to flip b
 agent-tui press ':wq<cr>'                       # 7. save + quit
 ```
 
-Steps 3 and 6 are the point. The mode ref flips the instant vim is ready — so
-the agent acts on a fact, not a timer:
+The mode ref flips the instant vim is ready, so the agent acts on a fact rather
+than a timer:
 
 ```bash
 agent-tui --json snapshot --select '@vim.mode' | jq -c '.data.outline.nodes[0]'
@@ -231,8 +230,8 @@ agent-tui --json snapshot --mode text | jq -r .data.text
 ```
 
 **A one-shot `vim` edit.** Open, prepend to line 1, leave insert mode, then read
-the buffer back — the `wait` on `value=normal` is what makes the readback
-deterministic:
+the buffer back — the `wait` on `value=normal` confirms the edit landed before
+the snapshot:
 
 ```bash
 agent-tui spawn -- vim notes.md
