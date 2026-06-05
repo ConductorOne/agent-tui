@@ -16,7 +16,7 @@ use agent_tui_engine::Engine;
 use agent_tui_protocol::request::StdinMode;
 use agent_tui_recorder::Recorder;
 use anyhow::{Context, Result, anyhow};
-use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, ChildKiller, MasterPty, PtySize, native_pty_system};
 use tokio::task::JoinHandle;
 
 /// A spawned PTY child, paired with the engine that consumes its output.
@@ -148,7 +148,7 @@ impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
     /// reader task piping output into `engine.feed`. `recorder`, when
     /// supplied, gets a tee of every byte chunk read from the PTY.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
@@ -210,10 +210,20 @@ impl PtyChild {
 
         let (child, stdin_pipe): (Box<dyn Child + Send + Sync>, Option<std::fs::File>) =
             match stdin_mode {
+                // Unix: route EVERY stdin mode through our own std::process
+                // spawn (slave PTY on all three FDs for `Pty`). This gives a
+                // `std::process::Child` whose wait status we map via `map_exit`
+                // (signal death → 128+sig), so the exit code is shell-faithful
+                // (SIGTERM→143, SIGKILL→137) — portable-pty's own child would
+                // collapse any signal death to code 1.
+                #[cfg(unix)]
                 StdinMode::Pty => {
-                    // Existing behavior: portable-pty spawn, slave PTY on all
-                    // three FDs.
-                    let mut cmd = CommandBuilder::new(&argv[0]);
+                    spawn_with_custom_stdin(argv, cwd, &env_overrides, &*pair.master, stdin_mode)?
+                }
+                // Non-unix: portable-pty spawn, slave PTY on all three FDs.
+                #[cfg(not(unix))]
+                StdinMode::Pty => {
+                    let mut cmd = portable_pty::CommandBuilder::new(&argv[0]);
                     for arg in &argv[1..] {
                         cmd.arg(arg);
                     }
@@ -567,7 +577,14 @@ fn spawn_with_custom_stdin(
             )
         }
         StdinMode::Closed => (None, Stdio::null()),
-        StdinMode::Pty => unreachable!("Pty stdin doesn't use the custom path"),
+        // PTY stdin: the slave on fd 0 too (a third dup), so the child reads
+        // input from the same PTY it writes to — the classic interactive setup.
+        StdinMode::Pty => {
+            let slave_in = dup_owned(&slave_owned)?;
+            #[allow(unsafe_code)]
+            let stdio = unsafe { Stdio::from_raw_fd(slave_in.into_raw_fd()) };
+            (None, stdio)
+        }
     };
 
     let mut cmd = std::process::Command::new(&argv[0]);

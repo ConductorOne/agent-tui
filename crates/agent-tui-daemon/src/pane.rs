@@ -39,6 +39,12 @@ pub struct Pane {
     /// historical default, so single-driver users are unaffected). Acquired by
     /// `attach --write-lease`, auto-released when that attacher disconnects.
     pub(crate) lease: std::sync::Mutex<Option<uuid::Uuid>>,
+    /// Remembered shell-style exit code once the child has terminated (signal
+    /// death → 128+sig, via `map_exit`). `None` while running. Set lazily the
+    /// first time the daemon observes the child exit (any follower poll, `die`,
+    /// or `list`), making a terminal pane **retained**: late observers and
+    /// `list` read the remembered outcome instead of "no such pane".
+    pub(crate) last_exit: std::sync::Mutex<Option<i32>>,
 }
 
 impl Pane {
@@ -46,6 +52,38 @@ impl Pane {
     /// hold the lock.
     pub async fn adapter(&self) -> Arc<dyn Adapter> {
         self.adapter.read().await.clone()
+    }
+
+    /// Observe the child's exit, memoizing the shell-style code the first time
+    /// it's seen. Returns the remembered code (or freshly-observed one), or
+    /// `None` while the child is still running. Idempotent and authoritative:
+    /// once set, it stands even after the OS child handle is reaped.
+    #[must_use]
+    pub fn poll_exit(&self) -> Option<i32> {
+        if let Some(code) = *self.last_exit.lock().expect("last_exit poisoned") {
+            return Some(code);
+        }
+        // try_exit_code returns the `map_exit`-mapped code (128+sig on signal
+        // death) for our std::process-backed children.
+        if let Ok(Some(code)) = self.pty.try_exit_code() {
+            let code = i32::try_from(code).unwrap_or(1);
+            *self.last_exit.lock().expect("last_exit poisoned") = Some(code);
+            return Some(code);
+        }
+        None
+    }
+
+    /// The remembered exit code without polling the OS (read-only).
+    #[must_use]
+    pub fn remembered_exit(&self) -> Option<i32> {
+        *self.last_exit.lock().expect("last_exit poisoned")
+    }
+
+    /// Whether this pane is terminal-retained (its child has exited and the
+    /// code is remembered).
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.poll_exit().is_some()
     }
 
     /// Swap in a new adapter; returns the previous one.
@@ -167,6 +205,9 @@ impl Registry {
                     spawned_at: p.spawned_at,
                     cols,
                     rows,
+                    // Surface the remembered exit code; `poll_exit` also lazily
+                    // records it the first time `list` observes a finished child.
+                    exit_code: p.poll_exit(),
                 }
             })
             .collect()
@@ -299,4 +340,8 @@ pub struct PaneSummary {
     pub cols: u16,
     /// Geometry — rows.
     pub rows: u16,
+    /// Remembered shell-style exit code for a terminal-retained pane
+    /// (signal death → 128+sig); `None` while the child is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }

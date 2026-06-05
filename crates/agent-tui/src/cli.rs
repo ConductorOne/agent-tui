@@ -337,7 +337,8 @@ pub enum Command {
     },
     /// Read raw bytes the child has written since `--since`. For
     /// headless CLIs where the agent wants the output stream, not the
-    /// rendered terminal grid.
+    /// rendered terminal grid. With `--follow`, this CLI's exit status
+    /// mirrors the child's (e.g. 137/143) once the stream ends.
     Tail {
         /// Pane id; defaults to focused.
         #[arg(long)]
@@ -361,6 +362,8 @@ pub enum Command {
     /// current frame + the exact follow offset, captured under one lock) then
     /// raw byte chunks from that offset, then `eof`. Lets many late joiners fan
     /// out from one PTY with no gap/overlap at the seam (unlike snapshot+tail).
+    /// This CLI's exit status mirrors the child (e.g. 137/143); a late attach
+    /// after the child died returns the remembered exit code, not an error.
     Attach {
         /// Pane id; defaults to focused.
         #[arg(long)]
