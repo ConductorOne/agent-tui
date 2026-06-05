@@ -24,11 +24,8 @@ pub struct Pane {
     pub argv: Vec<String>,
     /// Wall-clock spawn time.
     pub spawned_at: DateTime<Utc>,
-    /// Geometry — columns.
-    pub cols: u16,
-    /// Geometry — rows.
-    pub rows: u16,
-    /// VT engine consuming PTY output.
+    /// VT engine consuming PTY output. Source of truth for the pane's live
+    /// geometry (see [`Registry::list`]).
     pub engine: Arc<dyn Engine>,
     /// PTY master + child handle.
     pub pty: PtyChild,
@@ -109,17 +106,25 @@ impl Registry {
     }
 
     /// Snapshot of `(id, argv, spawned_at, cols, rows)` for every live pane.
+    ///
+    /// `cols`/`rows` are the pane's **live** geometry, read from the engine
+    /// grid (the same source `snapshot --mode cells` reflects), so `list`
+    /// agrees with reality after a `resize` rather than reporting the
+    /// spawn-time size.
     pub async fn list(&self) -> Vec<PaneSummary> {
         self.panes
             .read()
             .await
             .values()
-            .map(|p| PaneSummary {
-                id: p.id.clone(),
-                argv: p.argv.clone(),
-                spawned_at: p.spawned_at,
-                cols: p.cols,
-                rows: p.rows,
+            .map(|p| {
+                let (cols, rows) = p.engine.dimensions();
+                PaneSummary {
+                    id: p.id.clone(),
+                    argv: p.argv.clone(),
+                    spawned_at: p.spawned_at,
+                    cols,
+                    rows,
+                }
             })
             .collect()
     }

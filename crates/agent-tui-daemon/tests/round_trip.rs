@@ -391,40 +391,51 @@ async fn signal_bogus_name_rejected() {
 }
 
 #[tokio::test]
-async fn resize_updates_engine_geometry() {
+async fn list_reports_live_size_after_resize() {
     let (cfg, _h) = boot_daemon().await;
+    // Spawn at 80×24, then resize to 100×30. `list` must report the *live*
+    // post-resize geometry (100×30) — not the stale spawn-time 80×24 it used
+    // to cache. The dims are sourced from the engine grid, the same source
+    // `resize` / `snapshot --mode cells` already reflect.
     let _spawn = round_trip(
         &cfg,
         Command::Spawn {
             argv: vec!["/bin/sh".into(), "-c".into(), "sleep 2".into()],
             cwd: None,
-            size: Some((40, 4)),
+            size: Some((80, 24)),
             stdin: agent_tui_protocol::request::StdinMode::default(),
             env: Vec::new(),
         },
     )
     .await;
 
+    // Pre-resize: list agrees with the spawn-time size.
+    let before = round_trip(&cfg, Command::List { all: false }).await;
+    let before = before.response.data.unwrap();
+    assert_eq!(before["panes"][0]["cols"], 80, "spawn-time cols");
+    assert_eq!(before["panes"][0]["rows"], 24, "spawn-time rows");
+
     let r = round_trip(
         &cfg,
         Command::Resize {
             pane: None,
-            cols: 132,
-            rows: 40,
+            cols: 100,
+            rows: 30,
         },
     )
     .await;
     assert!(r.response.success, "resize failed: {r:?}");
 
-    // Engine geometry change should be observable via the cells mode path,
-    // but for P0b we only have outline mode. Round-trip a list and confirm
-    // the pane's recorded dims are still the spawn-time ones (we don't
-    // propagate to PaneSummary in v0.1.0 — recorded as a learning).
+    // Post-resize: list must report the current geometry, not the stale one.
     let list = round_trip(&cfg, Command::List { all: false }).await;
     let panes = list.response.data.unwrap();
     assert_eq!(
-        panes["panes"][0]["cols"], 40,
-        "summary still shows spawn-time cols"
+        panes["panes"][0]["cols"], 100,
+        "list must report live (post-resize) cols, not spawn-time 80"
+    );
+    assert_eq!(
+        panes["panes"][0]["rows"], 30,
+        "list must report live (post-resize) rows, not spawn-time 24"
     );
 
     let _ = round_trip(
