@@ -12,14 +12,15 @@ use agent_tui_engine::{Cell, EngineSnapshot};
 use agent_tui_protocol::request::SnapshotMode;
 use agent_tui_protocol::snapshot::CellGridRle;
 use agent_tui_protocol::{
-    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, Ref, RefBinding, Response, Selector,
-    Snapshot, Warning, format_selector_parse_error, outline_all_refs,
+    ErrorBody, ErrorCode, Outline, OutlineNode, PaneId, PngInfo, Ref, RefBinding, Response,
+    Selector, Snapshot, Warning, format_selector_parse_error, outline_all_refs,
 };
 use base64::Engine as _;
 
 use crate::classifier;
 use crate::hash_window::HashWindow;
 use crate::pane::{Pane, Registry, resolve_focused};
+use crate::render::{self, Annotate};
 
 /// Per-session generation counters keyed by pane id.
 ///
@@ -60,6 +61,12 @@ pub struct SnapshotParams {
     pub all: bool,
     /// With text/hybrid, reconstruct per-cell SGR instead of stripping.
     pub keep_color: bool,
+    /// If set, rasterize the grid to a PNG at this path.
+    pub png: Option<String>,
+    /// With `png`, overlay ref boxes/labels. `Some(sel)` filters to refs
+    /// matching `sel`; `Some("")` annotates all; `None` disables. Rejected
+    /// without `png`.
+    pub annotate: Option<String>,
 }
 
 /// Snapshot a pane in the requested mode.
@@ -75,7 +82,17 @@ pub async fn run(
         select,
         all,
         keep_color,
+        png,
+        annotate,
     } = params;
+    // `--annotate` overlays the PNG; it's meaningless on its own.
+    if annotate.is_some() && png.is_none() {
+        return Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            "--annotate requires --png",
+            "pass --png <path> to write the annotated image",
+        ));
+    }
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -113,15 +130,30 @@ pub async fn run(
         .await;
     let adapter = pane_arc.adapter().await;
 
+    // Compute the full outline once: it feeds the snapshot body *and* the
+    // `--annotate` overlay (which annotates the unfiltered outline, independent
+    // of any `--select` filter applied to the returned payload).
+    let full_outline = compute_outline(&adapter, &engine_snap).await;
+
     let mut snapshot = build_snapshot(
         &pane_arc,
-        &adapter,
         &engine_snap,
         generation,
         effective_mode,
         keep_color,
-    )
-    .await;
+        full_outline.clone(),
+    );
+
+    // `--png`: rasterize the grid (optionally overlaying ref annotations) and
+    // write it to disk. Done before the snapshot is serialized so the response
+    // can report the path + dims.
+    if let Some(path) = png.as_ref() {
+        match render_png_artifact(&engine_snap, &full_outline, path, annotate.as_deref()).await {
+            Ok(info) => snapshot.png = Some(info),
+            Err(resp) => return resp,
+        }
+    }
+
     // Carry forward `select` so we can attach a "no-match" warning
     // with the available refs below.
     let mut select_miss_refs: Option<Vec<String>> = None;
@@ -181,26 +213,82 @@ fn filter_outline(outline: Outline, sel: &Selector, all: bool) -> Outline {
     }
 }
 
-async fn build_snapshot(
-    pane: &Pane,
+/// Rasterize `engine_snap` to a PNG at `path`, optionally overlaying ref
+/// annotations from `full_outline`. `annotate`: `None` = no overlay,
+/// `Some("")` = annotate all refs, `Some(sel)` = annotate refs matching `sel`.
+/// On failure returns the [`Response`] error to surface to the caller.
+async fn render_png_artifact(
+    engine_snap: &EngineSnapshot,
+    full_outline: &Outline,
+    path: &str,
+    annotate: Option<&str>,
+) -> Result<PngInfo, Response> {
+    // Resolve the annotate selector: Some(None) = all, Some(Some) = filtered.
+    let annotate_selector: Option<Option<Selector>> = match annotate {
+        None => None,
+        Some(s) if s.trim().is_empty() => Some(None),
+        Some(s) => match Selector::parse(s) {
+            Ok(sel) => Some(Some(sel)),
+            Err(e) => {
+                return Err(Response::err(ErrorBody::new(
+                    ErrorCode::InvalidArgs,
+                    format_selector_parse_error(s, &e),
+                    "the --annotate selector follows the same grammar as --select",
+                )));
+            }
+        },
+    };
+    let annotate_arg = annotate_selector.as_ref().map(|inner| Annotate {
+        outline: full_outline,
+        selector: inner.as_ref(),
+    });
+    let rendered = render::render_png(engine_snap, annotate_arg).map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            format!("PNG rasterization failed: {e}"),
+            "report a bug",
+        ))
+    })?;
+    tokio::fs::write(path, &rendered.bytes).await.map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            format!("failed to write PNG to {path}: {e}"),
+            "check the path is writable",
+        ))
+    })?;
+    Ok(PngInfo {
+        path: path.to_string(),
+        width: rendered.width,
+        height: rendered.height,
+        annotated: rendered.annotated,
+    })
+}
+
+/// Resolve the pane's outline: the attached adapter's, or the generic
+/// heuristic when the adapter fails or returns nothing — so callers (and the
+/// `--annotate` overlay) never face a `null` outline.
+async fn compute_outline(
     adapter: &Arc<dyn agent_tui_adapter::Adapter>,
     engine_snap: &EngineSnapshot,
-    generation: u64,
-    mode: SnapshotMode,
-    keep_color: bool,
-) -> Snapshot {
-    let hash = engine_snap.canonical_hash();
-    let osc = pane.pty.last_osc133_marker();
-    let state = classifier::classify_with_osc133(engine_snap, osc);
-
-    // Outline comes from the attached adapter; if it fails or returns an empty
-    // node list, fall back to the generic heuristic so we never return nothing
-    // to agents.
+) -> Outline {
     let adapter_outline = match adapter.outline(engine_snap).await {
         Ok(o) if !o.nodes.is_empty() => Some(o),
         Ok(_) | Err(_) => None,
     };
-    let outline_for_mode = adapter_outline.unwrap_or_else(|| generic_outline(engine_snap));
+    adapter_outline.unwrap_or_else(|| generic_outline(engine_snap))
+}
+
+fn build_snapshot(
+    pane: &Pane,
+    engine_snap: &EngineSnapshot,
+    generation: u64,
+    mode: SnapshotMode,
+    keep_color: bool,
+    outline_for_mode: Outline,
+) -> Snapshot {
+    let hash = engine_snap.canonical_hash();
+    let osc = pane.pty.last_osc133_marker();
+    let state = classifier::classify_with_osc133(engine_snap, osc);
 
     let (outline, cells, text) = match mode {
         SnapshotMode::Outline | SnapshotMode::Adapter => (Some(outline_for_mode), None, None),
@@ -238,6 +326,7 @@ async fn build_snapshot(
         text,
         modes: engine_snap.modes.clone(),
         refs,
+        png: None,
     }
 }
 
@@ -428,6 +517,10 @@ fn generic_outline(snap: &EngineSnapshot) -> Outline {
             value: None,
             focused: true,
             anchor: Some((0, 0)),
+            // The buffer node covers the whole visible grid, so its cell-rect
+            // extent is exactly the grid geometry — a computable span the
+            // `--annotate` overlay can draw a box around.
+            extent: Some((snap.grid.cols, snap.grid.rows)),
             children: Vec::new(),
             ..OutlineNode::default()
         }],

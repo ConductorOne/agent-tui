@@ -133,6 +133,12 @@ pub struct OutlineNode {
     /// Row/column where this node anchors (display columns, width-aware).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<(u16, u16)>,
+    /// Cell-rect size of this node as `(cols, rows)`, anchored at `anchor`.
+    /// `None` when the span isn't computable. Used by `snapshot --png
+    /// --annotate` to draw the node's bounding box (anchor → anchor+extent);
+    /// where it's `None` the overlay falls back to a point marker at `anchor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<(u16, u16)>,
     /// Per-node pane state, when meaningful (e.g. a focused sub-pane
     /// inside a multiplexer). When unset, consult the snapshot-level
     /// `state` field instead. See `docs/addressing-rfc.md` §2.5.
@@ -229,4 +235,20 @@ pub struct Snapshot {
     /// Ref map. Keys are the ref handles (`@e1`, `@e3.4`, …).
     #[serde(default)]
     pub refs: BTreeMap<String, Ref>,
+    /// Present when `--png <path>` rasterized the grid to an image on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png: Option<PngInfo>,
+}
+
+/// Result of a `snapshot --png` rasterization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PngInfo {
+    /// On-disk path the PNG was written to.
+    pub path: String,
+    /// Image width in pixels (`cols * cell_width`).
+    pub width: u32,
+    /// Image height in pixels (`rows * cell_height`).
+    pub height: u32,
+    /// Whether ref bounding-box / label overlays were drawn (`--annotate`).
+    pub annotated: bool,
 }

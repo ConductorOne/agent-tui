@@ -144,12 +144,18 @@ pub enum Command {
         /// Snapshot mode.
         #[arg(long, value_enum, default_value_t = SnapshotMode::Outline)]
         mode: SnapshotMode,
-        /// Also rasterize to this PNG path.
+        /// Also rasterize the screen to this PNG path: a real image rendered
+        /// with an embedded monospace font (anti-aliased) + each cell's fg/bg
+        /// colors. Emoji and CJK ideographs the font lacks render a
+        /// placeholder box.
         #[arg(long, value_name = "PATH")]
         png: Option<PathBuf>,
-        /// With `--png`, overlay numbered ref labels.
-        #[arg(long)]
-        annotate: bool,
+        /// With `--png`, overlay ref bounding boxes + `@ref` labels. Pass a
+        /// selector to annotate only matching refs (e.g.
+        /// `--annotate '@vim.*'`); bare `--annotate` annotates all refs.
+        /// Requires `--png`.
+        #[arg(long, value_name = "SELECTOR", num_args = 0..=1, default_missing_value = "")]
+        annotate: Option<String>,
         /// Filter the outline by a CSS-subset selector (see
         /// `docs/addressing-rfc.md` §2.2). Example:
         /// `--select '[role=buffer][focused]'`.

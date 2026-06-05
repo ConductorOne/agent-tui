@@ -15,6 +15,9 @@ workspace = true
 base64 = "0.22"
 async-trait = "0.1"
 proptest = { workspace = true }
+# Decode `snapshot --png` output in the rasterization e2e to assert real,
+# correctly-dimensioned images (not stubs).
+png = "0.17"
 
 # Non-blocking `kill(pid, 0)` liveness probe for the orphan-reap e2e. A
 # blocking `std::process::Command("kill")` starves the current-thread tokio
@@ -45,6 +48,13 @@ async-trait = "0.1"
 hex = { workspace = true }
 rand = { workspace = true }
 interprocess = { workspace = true }
+# `snapshot --png` rasterization. `png` (MIT/Apache, pure-Rust deflate via
+# miniz_oxide — no system libs, cross-compiles cleanly) encodes the RGB
+# framebuffer; `fontdue` (MIT/Apache, pure-Rust TrueType rasterizer) renders
+# anti-aliased glyphs from the embedded JetBrains Mono TTF (see assets/).
+# Both are lean and avoid the full `image` codec stack.
+png = "0.17"
+fontdue = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

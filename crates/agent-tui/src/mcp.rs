@@ -204,10 +204,13 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
             let mode = obj.get("mode").and_then(Value::as_str).unwrap_or("outline");
             let mode = mode_from_str(mode)?;
             let png = obj.get("png").and_then(Value::as_str).map(str::to_string);
-            let annotate = obj
-                .get("annotate")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            // `annotate` accepts a boolean (true = annotate all refs) or a
+            // selector string (annotate only matching refs); absent = off.
+            let annotate = match obj.get("annotate") {
+                Some(Value::Bool(true)) => Some(String::new()),
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            };
             let select = obj
                 .get("select")
                 .and_then(Value::as_str)
@@ -369,8 +372,8 @@ fn tool_schemas() -> Vec<Value> {
                         "type": "string",
                         "enum": ["outline", "text", "cells", "adapter", "hybrid"]
                     },
-                    "png": { "type": "string", "description": "Path to write a PNG render alongside the response." },
-                    "annotate": { "type": "boolean" },
+                    "png": { "type": "string", "description": "Path to write a real PNG render of the screen (monospace glyphs + cell colors)." },
+                    "annotate": { "type": ["boolean", "string"], "description": "With `png`, overlay ref bounding boxes + labels. `true` annotates all refs; a selector string annotates only matching refs (e.g. `@vim.*`). Requires `png`." },
                     "select": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
                     "all": { "type": "boolean", "description": "With `select`, return every match instead of just the first." }
                 }

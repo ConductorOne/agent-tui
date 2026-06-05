@@ -23,6 +23,7 @@ pub mod osc133;
 pub mod pane;
 pub mod paths;
 pub mod pty;
+pub mod render;
 pub mod server;
 pub mod sidecar;
 

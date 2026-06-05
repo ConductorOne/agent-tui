@@ -886,6 +886,7 @@ mod tests {
             value: None,
             focused: false,
             anchor: None,
+            extent: None,
             state: None,
             durable: false,
             children: Vec::new(),

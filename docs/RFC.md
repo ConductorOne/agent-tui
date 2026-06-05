@@ -297,7 +297,7 @@ Identical surface to v2, with Rust-flavored implementation notes. Subcommands gr
 
 **Lifecycle:** `spawn`, `list`, `pane focus`, `pane reattach`, `split`, `die [--grace <ms>]` (group-aware teardown), `daemon shutdown [--force]`, `daemon status`.
 
-**Observation:** `snapshot [<id>] [--mode outline|cells|adapter|hybrid] [--scope active|all|<id>] [--json] [--png <path>] [--annotate]`, `get text @eN`, `get cell <row> <col>`, `scroll history [--from t] [--to t]`.
+**Observation:** `snapshot [<id>] [--mode outline|cells|adapter|hybrid] [--scope active|all|<id>] [--json] [--png <path>] [--annotate [<selector>]]`, `get text @eN`, `get cell <row> <col>`, `scroll history [--from t] [--to t]`.
 
 **Input:** `press`, `type`, `send_ansi`, `click`, `resize`, `signal`.
 
@@ -463,9 +463,11 @@ Refs into focused rows are first-class: `@e3.4` is "row 4 in the focused list."
 
 ### 7.3 PNG rasterization
 
-`snapshot --png <path>` writes a PNG of the cell grid rendered through an embedded monospace font (JetBrains Mono Regular). `--annotate` overlays `[N]` labels keyed to `@eN`. Opt-in; not the default.
+`snapshot --png <path>` writes a real PNG of the cell grid: one fixed-size cell per grid cell, anti-aliased glyphs rasterized by `fontdue` from an embedded monospace TTF (JetBrains Mono Regular, SIL OFL 1.1, vendored in `assets/`) using each cell's resolved fg/bg colors (the same packed-color encoding the `cells`/`text` modes expose; inverse-video honored, glyph coverage alpha-blended over the background). The cell size `cw × ch` is derived from the font's metrics at a fixed px-per-em; image dimensions are `cols*cw × rows*ch`; the response's `png` field reports the path + dimensions. Wide (CJK/`width==2`) cells span two columns and skip their continuation spacer; a per-render glyph cache rasterizes each character once. Opt-in; not the default. Implemented with the pure-Rust `png` encoder + `fontdue` — no system image libraries — so it cross-compiles cleanly. **Limitation:** screenshots render the embedded monospace font; glyphs it lacks (emoji, CJK ideographs) fall back to a placeholder box rather than the real character.
 
-With `wezterm-term` as the engine, the rasterizer also composites any Kitty graphics / Sixel content the TUI has emitted — meaningful for `ranger` image previews, `chafa` outputs, `mpv` thumbnails.
+`--annotate [<selector>]` (requires `--png`) overlays each ref's bounding box, drawn from the node's `anchor`→`anchor+extent` cell rect, plus a compact `@ref` label; refs whose `extent` is `None` fall back to a point marker at the anchor. An optional selector restricts the overlay to matching refs (e.g. `--annotate '@vim.*'`); bare `--annotate` overlays every ref. This is the terminal analog of `agent-browser`'s annotated screenshots. The generic outline builder populates `extent` for the whole-screen buffer node; per-program adapters can enrich element extents over time.
+
+With `wezterm-term` as the engine, the rasterizer can additionally composite any Kitty graphics / Sixel content the TUI has emitted — meaningful for `ranger` image previews, `chafa` outputs, `mpv` thumbnails (future work).
 
 ### 7.4 Scroll history
 

@@ -27,7 +27,7 @@ pub use selector::{
     format_parse_error as format_selector_parse_error,
 };
 pub use snapshot::{
-    Cell, CellGrid, ModeFlags, Outline, OutlineNode, PaneState, Ref, RefBinding, Snapshot,
+    Cell, CellGrid, ModeFlags, Outline, OutlineNode, PaneState, PngInfo, Ref, RefBinding, Snapshot,
 };
 
 /// Current wire-protocol version. Bumped on incompatible changes.

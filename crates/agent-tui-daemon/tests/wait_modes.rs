@@ -92,7 +92,7 @@ async fn snap_sequence(cfg: &DaemonConfig) -> u64 {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,

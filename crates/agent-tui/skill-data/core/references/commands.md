@@ -77,7 +77,7 @@ size after any `resize`, not the spawn-time dimensions.
 
 ```
 agent-tui snapshot [--pane <id>] [--mode outline|text|cells|adapter|hybrid]
-                   [--png <path>] [--annotate] [--keep-color]
+                   [--png <path>] [--annotate [<selector>]] [--keep-color]
 ```
 
 Snapshot the focused pane (or a specific one with `--pane`).
@@ -90,8 +90,20 @@ Snapshot the focused pane (or a specific one with `--pane`).
 | `adapter` | Adapter-specific tree (vim's mode + filename, shell's state, …) |
 | `hybrid` | All three concatenated |
 
-`--png <path>` rasterizes the pane into a PNG (e.g. for inspection).
-`--annotate` overlays numeric labels keyed to `@eN` refs.
+`--png <path>` rasterizes the screen to a real PNG: one fixed-size cell
+per grid cell, anti-aliased glyphs from an embedded monospace font
+(JetBrains Mono) drawn with each cell's resolved fg/bg colors (wide CJK
+cells span two columns). The response's `png` field reports the path and
+dimensions (`cols*cw × rows*ch`). Glyphs the embedded font lacks (emoji,
+CJK ideographs) render a placeholder box — it's a monospace screenshot,
+not a full Unicode/emoji renderer.
+
+`--annotate [<selector>]` (requires `--png`) overlays each ref's bounding
+box (drawn from its `anchor`→`anchor+extent` cell rect) plus an `@ref`
+label; refs without a computable extent get a point marker instead. Pass a
+selector (e.g. `--annotate '@vim.*'`) to overlay only matching refs; bare
+`--annotate` overlays all. This is the terminal analog of an annotated
+browser screenshot.
 
 `--keep-color` (with `--mode text` or `hybrid`) reconstructs per-cell
 SGR escape sequences from each cell's color/attributes instead of
