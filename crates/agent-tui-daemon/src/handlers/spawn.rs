@@ -97,8 +97,6 @@ pub async fn run(
         id: id.clone(),
         argv: argv.clone(),
         spawned_at: Utc::now(),
-        cols,
-        rows,
         engine,
         pty,
         adapter: tokio::sync::RwLock::new(adapter),

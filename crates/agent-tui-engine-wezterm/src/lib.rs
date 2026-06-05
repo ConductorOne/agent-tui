@@ -98,6 +98,11 @@ impl Engine for PlaceholderEngine {
         Self::make_snapshot(&s)
     }
 
+    fn dimensions(&self) -> (u16, u16) {
+        let s = self.state.lock().expect("engine state lock poisoned");
+        (s.cols, s.rows)
+    }
+
     fn resize(&self, cols: u16, rows: u16) -> Result<(), EngineError> {
         let mut s = self
             .state

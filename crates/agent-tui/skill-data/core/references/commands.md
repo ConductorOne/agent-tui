@@ -69,7 +69,9 @@ checks. `--stdin closed` ties stdin to `/dev/null`. `--cwd` /
 agent-tui list
 ```
 
-List the panes in the current session.
+List the panes in the current session. Each entry reports the pane id,
+argv, spawn time, and its **current** geometry (`cols`/`rows`) — the live
+size after any `resize`, not the spawn-time dimensions.
 
 ### `snapshot`
 

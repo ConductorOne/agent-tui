@@ -111,6 +111,14 @@ pub trait Engine: Send + Sync {
     /// Take an atomic, owned snapshot of the current grid + cursor + modes.
     fn snapshot(&self) -> EngineSnapshot;
 
+    /// The engine's current grid geometry as `(cols, rows)`.
+    ///
+    /// Reflects the live size — the latest [`Engine::resize`] — and is the
+    /// same dimensions a `snapshot` exposes via its grid, but without cloning
+    /// the cell buffer. `list` uses this so it agrees with reality after a
+    /// resize instead of reporting the spawn-time geometry.
+    fn dimensions(&self) -> (u16, u16);
+
     /// Apply a resize.
     ///
     /// # Errors

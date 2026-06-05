@@ -219,6 +219,11 @@ impl Engine for AlacrittyEngine {
         Self::build_snapshot(&s)
     }
 
+    fn dimensions(&self) -> (u16, u16) {
+        let s = self.state.lock().expect("engine state lock poisoned");
+        (s.cols, s.rows)
+    }
+
     fn resize(&self, cols: u16, rows: u16) -> Result<(), EngineError> {
         let cols = cols.max(2);
         let rows = rows.max(1);
