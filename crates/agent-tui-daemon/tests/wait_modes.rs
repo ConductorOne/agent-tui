@@ -128,6 +128,7 @@ async fn wait_since_returns_on_next_mutation() {
             pane: None,
             keys: "x".into(),
             to: None,
+            lease: None,
         },
     )
     .await;

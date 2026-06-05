@@ -297,7 +297,7 @@ Identical surface to v2, with Rust-flavored implementation notes. Subcommands gr
 
 **Lifecycle:** `spawn`, `list`, `pane focus`, `pane reattach`, `split`, `die [--grace <ms>]` (group-aware teardown), `daemon shutdown [--force]`, `daemon status`.
 
-**Observation:** `snapshot [<id>] [--mode outline|cells|adapter|hybrid] [--scope active|all|<id>] [--json] [--png <path>] [--annotate [<selector>]]`, `get text @eN`, `get cell <row> <col>`, `scroll history [--from t] [--to t]`.
+**Observation:** `snapshot [<id>] [--mode outline|cells|adapter|hybrid] [--scope active|all|<id>] [--json] [--png <path>] [--annotate [<selector>]]`, `attach [--prelude rendered|raw|none] [--mode text|cells] [--write-lease]` (atomic rendered-prelude + byte-follow; the many-live-viewers primitive, §7.5), `get text @eN`, `get cell <row> <col>`, `scroll history [--from t] [--to t]`.
 
 **Input:** `press`, `type`, `send_ansi`, `click`, `resize`, `signal`.
 
@@ -472,6 +472,14 @@ With `wezterm-term` as the engine, the rasterizer can additionally composite any
 ### 7.4 Scroll history
 
 Replays the asciicast log into a fresh engine instance and returns the cell grid at the requested point. `--from`/`--to` accept ISO-8601 timestamps, integer sequence numbers, or named markers.
+
+### 7.5 Attach — the many-live-viewers primitive
+
+`snapshot` and `tail` live in two coordinate systems with no shared cursor: `tail` is keyed on a cumulative byte offset; `snapshot` returns a rendered frame carrying no offset. So a late joiner to an alt-screen TUI has only wrong options — `tail --since 0` replays up to a megabyte of raw redraw bytes, or `snapshot` then `tail` from "now" loses every byte that arrives between the two RPCs (a TOCTOU gap) with no way to align the frame to an offset.
+
+`attach` closes this. It is a streaming verb that emits a **prelude** (the rendered current frame *and* the follow byte-offset `since`, captured **under one hold of the pane capture-lock** — the reader can't feed+push a chunk between them), then raw byte **chunks** from exactly `since`, then a terminal **eof**. The correctness contract: `since` is the offset of the first byte not yet reflected in `frame`, so a consumer paints `frame` then applies chunks from `since` with **no gap and no double-paint**. This makes `attach` the right primitive for fanning one wrapped task-PTY out to many concurrent browsers — each new viewer gets an atomic, seam-correct starting point. `--prelude raw` generalizes `tail --since`; `--prelude none` follows from the current high-water mark.
+
+**Write arbitration.** `attach --write-lease` requests an opt-in single-writer lease (`Pane.write_owner`): granted if free (prelude carries the token), else the attacher is read-only and sees `held_by`. While held, `type`/`press`/`send-ansi`/`stdin` from non-holders are rejected EBUSY-style (pass the token via `--lease`); the lease auto-releases on disconnect, and a `lease` envelope is pushed to attachers on change. `resize` stays non-arbitrated. With no lease outstanding the historical free-for-all is unchanged, so single-driver users are unaffected. `--steal` is a deferred non-goal.
 
 ---
 

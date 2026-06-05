@@ -100,6 +100,7 @@ pub async fn run(
         engine,
         pty,
         adapter: tokio::sync::RwLock::new(adapter),
+        lease: std::sync::Mutex::new(None),
     };
     let pane_arc = registry.insert(pane).await;
     spawn_redetect_task(pane_arc, adapters.clone(), argv.clone());

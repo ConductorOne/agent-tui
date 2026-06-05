@@ -339,7 +339,7 @@ fn build_snapshot(
 /// style changes — consecutive identical-style cells share one escape —
 /// then the row is reset (`ESC[0m`) at its last styled cell. Without it,
 /// the output is plain UTF-8 with no escapes.
-fn grid_to_text(snap: &EngineSnapshot, keep_color: bool) -> String {
+pub(crate) fn grid_to_text(snap: &EngineSnapshot, keep_color: bool) -> String {
     let cols = usize::from(snap.grid.cols);
     let rows = usize::from(snap.grid.rows);
     let mut lines: Vec<String> = Vec::with_capacity(rows);
@@ -435,7 +435,7 @@ fn color_param(color: u32, base: u32) -> Option<String> {
 /// Each row encodes as a JSON array of `[count, "ch", width, fg, bg, attrs]`
 /// runs — a balance between wire size and tooling friendliness (consumers can
 /// decode + parse without a custom binary reader).
-fn rle_grid(snap: &EngineSnapshot) -> CellGridRle {
+pub(crate) fn rle_grid(snap: &EngineSnapshot) -> CellGridRle {
     let cols = usize::from(snap.grid.cols);
     let rows = usize::from(snap.grid.rows);
     let mut rows_b64 = Vec::with_capacity(rows);

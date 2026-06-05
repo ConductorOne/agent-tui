@@ -236,6 +236,7 @@ async fn press_round_trip_through_pty() {
             pane: None,
             keys: "hello<cr>".into(),
             to: None,
+            lease: None,
         },
     )
     .await;
@@ -298,6 +299,7 @@ async fn quiesce_barrier_advances_sequence() {
             pane: None,
             keys: "x".into(),
             to: None,
+            lease: None,
         },
     )
     .await;
@@ -1315,6 +1317,252 @@ async fn snapshot_png_annotate_overlays_refs() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+// ---- attach (G4) -------------------------------------------------------
+
+/// Open an `attach` streaming connection, read its prelude envelope, and return
+/// `(prelude_data, live_lines)`. Holding `live_lines` keeps the connection open
+/// (so the write-lease stays held); dropping it disconnects.
+async fn attach_open(
+    cfg: &DaemonConfig,
+    command: Command,
+) -> (serde_json::Value, tokio::io::Lines<BufReader<Stream>>) {
+    let name = agent_tui_daemon::paths::socket_name(&cfg.layout).expect("name");
+    let mut stream = Stream::connect(name).await.expect("connect");
+    let req = Request {
+        id: Uuid::new_v4(),
+        protocol: PROTOCOL_VERSION,
+        command,
+    };
+    let mut bytes = serde_json::to_vec(&req).expect("encode");
+    bytes.push(b'\n');
+    stream.write_all(&bytes).await.expect("write");
+    let mut lines = BufReader::new(stream).lines();
+    loop {
+        let line = timeout(Duration::from_secs(10), lines.next_line())
+            .await
+            .expect("prelude timeout")
+            .expect("read err")
+            .expect("eof before prelude");
+        let env: ResponseEnvelope = serde_json::from_str(&line).expect("decode");
+        let data = env.response.data.clone().unwrap_or(serde_json::Value::Null);
+        if data.get("type").and_then(|t| t.as_str()) == Some("prelude") {
+            return (data, lines);
+        }
+        assert!(env.response.success, "pre-prelude error: {env:?}");
+    }
+}
+
+/// Drain follow `chunk` envelopes from an attach connection until `eof`,
+/// returning the concatenated raw follow bytes.
+async fn drain_follow(mut lines: tokio::io::Lines<BufReader<Stream>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let line = timeout(Duration::from_secs(15), lines.next_line())
+            .await
+            .expect("follow timeout")
+            .expect("read err");
+        let Some(line) = line else { break };
+        let env: ResponseEnvelope = serde_json::from_str(&line).expect("decode");
+        let data = env.response.data.unwrap_or(serde_json::Value::Null);
+        match data.get("type").and_then(|t| t.as_str()) {
+            Some("chunk") => {
+                if let Some(b64) = data.get("bytes_b64").and_then(|b| b.as_str()) {
+                    out.extend(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .expect("b64"),
+                    );
+                }
+            }
+            Some("eof") => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Value of the last line wholly within `full[..since]` (or -1 if none).
+fn last_line_value(full: &[u8], since: usize) -> i64 {
+    std::str::from_utf8(&full[..since])
+        .unwrap()
+        .lines()
+        .last()
+        .and_then(|l| l.trim().parse::<i64>().ok())
+        .unwrap_or(-1)
+}
+
+fn attach_text_cmd() -> Command {
+    Command::Attach {
+        pane: None,
+        prelude: agent_tui_protocol::request::PreludeKind::Rendered,
+        mode: SnapshotMode::Text,
+        since: 0,
+        write_lease: false,
+        strip_ansi: false,
+    }
+}
+
+/// THE point of G4: an atomic rendered-prelude + offset fused to a byte-follow.
+/// Two concurrent attachers plus a mid-flight late joiner each reconstruct the
+/// full ordered stream with **no gap and no overlap** at the prelude→follow
+/// seam, AND each prelude frame reflects *exactly* `since` bytes. The frame⇄since
+/// check is what fails against a naive snapshot-then-tail (TOCTOU) impl: there
+/// the frame (older) would not match the later follow offset.
+#[tokio::test]
+async fn attach_seam_no_gap_no_overlap_concurrent_and_late() {
+    let (cfg, _h) = boot_daemon().await;
+    let n: u32 = 80;
+    // Deterministic ordered stream: 0..n, one per line, steady cadence. Each
+    // `echo` is one PTY write, so the capture offset always lands on a line
+    // boundary.
+    let script = format!("i=0; while [ $i -lt {n} ]; do echo $i; i=$((i+1)); sleep 0.02; done");
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), script],
+            cwd: None,
+            size: Some((40, 20)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // The PTY line discipline translates LF→CRLF on output (ONLCR), so the
+    // ring holds "i\r\n" per line.
+    let full: Vec<u8> = (0..n)
+        .flat_map(|i| format!("{i}\r\n").into_bytes())
+        .collect();
+
+    // Two concurrent early attachers.
+    let a = attach_open(&cfg, attach_text_cmd()).await;
+    let b = attach_open(&cfg, attach_text_cmd()).await;
+    // Late joiner: attach after the stream is well underway.
+    assert!(wait_for_text(&cfg, "30").await, "stream never reached 30");
+    let c = attach_open(&cfg, attach_text_cmd()).await;
+
+    for (label, (prelude, lines)) in [("A", a), ("B", b), ("C", c)] {
+        let since = usize::try_from(prelude["since"].as_u64().expect("since")).unwrap();
+        let frame_text = prelude["frame"]["text"].as_str().unwrap_or("");
+        let frame_max = frame_text
+            .lines()
+            .filter_map(|l| l.trim().parse::<i64>().ok())
+            .max()
+            .unwrap_or(-1);
+
+        let follow = drain_follow(lines).await;
+
+        // (1) No gap / no overlap: follow is exactly the stream from `since`.
+        assert_eq!(
+            follow,
+            &full[since..],
+            "{label}: follow must equal full[since..] — no gap, no overlap at the seam"
+        );
+        // (2) Atomicity: the rendered frame reflects exactly `since` bytes. This
+        // FAILS for a TOCTOU snapshot-then-tail (frame older than the offset).
+        assert_eq!(
+            frame_max,
+            last_line_value(&full, since),
+            "{label}: frame must reflect exactly the `since` bytes (atomic capture)"
+        );
+    }
+}
+
+/// Write-lease: holder can write, non-holders get EBUSY, lease auto-releases on
+/// disconnect so the next attacher can acquire it.
+#[tokio::test]
+async fn attach_write_lease_arbitration() {
+    let (cfg, _h) = boot_daemon().await;
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((40, 10)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    let lease_cmd = || Command::Attach {
+        pane: None,
+        prelude: agent_tui_protocol::request::PreludeKind::None,
+        mode: SnapshotMode::Cells,
+        since: 0,
+        write_lease: true,
+        strip_ansi: false,
+    };
+
+    // A acquires the lease.
+    let (prelude_a, lines_a) = attach_open(&cfg, lease_cmd()).await;
+    assert_eq!(prelude_a["lease"]["granted"], true, "A should be granted");
+    let token = prelude_a["lease"]["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+
+    // A (with token) can write.
+    let typed_ok = round_trip(
+        &cfg,
+        Command::Type {
+            pane: None,
+            text: "x".into(),
+            to: None,
+            lease: Some(uuid::Uuid::parse_str(&token).unwrap()),
+        },
+    )
+    .await;
+    assert!(
+        typed_ok.response.success,
+        "A's leased type must succeed: {typed_ok:?}"
+    );
+
+    // B (no token) is denied with an EBUSY-style error.
+    let typed_busy = round_trip(
+        &cfg,
+        Command::Type {
+            pane: None,
+            text: "y".into(),
+            to: None,
+            lease: None,
+        },
+    )
+    .await;
+    assert!(
+        !typed_busy.response.success,
+        "non-holder write must be rejected while a lease is held: {typed_busy:?}"
+    );
+
+    // A disconnects → lease auto-releases.
+    drop(lines_a);
+
+    // B can now acquire the lease (poll briefly for the release to land).
+    let mut acquired = false;
+    for _ in 0..50 {
+        let (prelude_b, lines_b) = attach_open(&cfg, lease_cmd()).await;
+        if prelude_b["lease"]["granted"] == serde_json::Value::Bool(true) {
+            acquired = true;
+            drop(lines_b);
+            break;
+        }
+        drop(lines_b);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(acquired, "B should acquire the lease after A disconnects");
+
     let _ = round_trip(
         &cfg,
         Command::Die {

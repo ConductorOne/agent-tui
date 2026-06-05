@@ -227,26 +227,56 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
                 if line.trim().is_empty() {
                     continue;
                 }
-                // Detect streaming requests early so we can branch
-                // to the multi-envelope path. Currently only
-                // `Tail { follow: true }` streams.
+                // Detect streaming requests early so we can branch to the
+                // multi-envelope path: `tail --follow` and `attach`.
                 let parsed_for_branch: Result<Request, _> = serde_json::from_str(&line);
-                let is_streaming = matches!(
-                    &parsed_for_branch,
-                    Ok(req)
-                        if matches!(
-                            &req.command,
-                            agent_tui_protocol::Command::Tail { follow: true, .. }
-                        )
-                );
-                if is_streaming {
-                    if let Err(e) =
-                        handle_streaming_tail(&state, parsed_for_branch.unwrap(), &mut writer).await
-                    {
-                        debug!(error = %e, "streaming tail aborted");
-                        return;
+                let stream_kind = match &parsed_for_branch {
+                    Ok(req) => match &req.command {
+                        agent_tui_protocol::Command::Tail { follow: true, .. } => StreamKind::Tail,
+                        agent_tui_protocol::Command::Attach { .. } => StreamKind::Attach,
+                        _ => StreamKind::None,
+                    },
+                    Err(_) => StreamKind::None,
+                };
+                if !matches!(stream_kind, StreamKind::None) {
+                    let req = parsed_for_branch.unwrap();
+                    // A streaming connection is terminal (one request → many
+                    // envelopes). Hand the read half to a watcher that flips
+                    // `disconnected` on EOF, so an idle pane's stream notices
+                    // the client leaving (and the write-lease auto-releases)
+                    // even with no output to write.
+                    let disconnected =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let watcher_flag = disconnected.clone();
+                    let read_half = lines.into_inner().into_inner();
+                    let watcher = tokio::spawn(async move {
+                        use tokio::io::AsyncReadExt as _;
+                        let mut r = read_half;
+                        let mut buf = [0u8; 64];
+                        loop {
+                            match r.read(&mut buf).await {
+                                Ok(0) | Err(_) => {
+                                    watcher_flag.store(true, std::sync::atomic::Ordering::Release);
+                                    break;
+                                }
+                                Ok(_) => {}
+                            }
+                        }
+                    });
+                    let res = match stream_kind {
+                        StreamKind::Tail => {
+                            handle_streaming_tail(&state, req, &mut writer, &disconnected).await
+                        }
+                        StreamKind::Attach => {
+                            handle_streaming_attach(&state, req, &mut writer, &disconnected).await
+                        }
+                        StreamKind::None => Ok(()),
+                    };
+                    watcher.abort();
+                    if let Err(e) = res {
+                        debug!(error = %e, "streaming connection aborted");
                     }
-                    continue;
+                    return;
                 }
                 let response = dispatch(&state, &line).await;
                 let bytes = match serde_json::to_vec(&response) {
@@ -286,12 +316,19 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
 /// elegant, but for `tail` we want byte-level deltas (which are
 /// upstream of engine mutations), so a polling loop on the output
 /// ring is the right primitive.
+/// Which multi-envelope streaming path a connection takes (if any).
+enum StreamKind {
+    None,
+    Tail,
+    Attach,
+}
+
 async fn handle_streaming_tail(
     state: &DaemonState,
     req: Request,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    disconnected: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<()> {
-    use agent_tui_protocol::Command;
     let agent_tui_protocol::request::Command::Tail {
         pane,
         since,
@@ -302,11 +339,50 @@ async fn handle_streaming_tail(
         // Already guarded; defensive bail.
         return Ok(());
     };
-    let _ = Command::Tail {
-        pane: pane.clone(),
+    state.touch_activity();
+    let pane_arc = match crate::pane::resolve_focused(&state.registry, pane.clone()).await {
+        Ok(p) => p,
+        Err(resp) => {
+            let env = wrap_envelope(state, req.id, resp);
+            return write_envelope(writer, &env).await;
+        }
+    };
+    stream_follow(
+        state,
+        &pane_arc,
+        req.id,
+        writer,
         since,
         strip_ansi,
-        follow: false,
+        false,
+        disconnected,
+    )
+    .await
+}
+
+/// `attach`: emit an atomic prelude (rendered frame + follow offset captured
+/// under one lock, or a raw/none variant) then delegate to the shared follow
+/// loop. Acquires + auto-releases the write-lease when `--write-lease` is set.
+#[allow(clippy::too_many_lines)]
+async fn handle_streaming_attach(
+    state: &DaemonState,
+    req: Request,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    disconnected: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
+    use base64::Engine as _;
+
+    use agent_tui_protocol::request::{Command, PreludeKind, SnapshotMode};
+    let Command::Attach {
+        pane,
+        prelude,
+        mode,
+        since,
+        write_lease,
+        strip_ansi,
+    } = req.command
+    else {
+        return Ok(());
     };
     state.touch_activity();
     let pane_arc = match crate::pane::resolve_focused(&state.registry, pane.clone()).await {
@@ -317,71 +393,187 @@ async fn handle_streaming_tail(
         }
     };
 
-    let mut cursor: u64 = since;
+    // Write-lease: opt-in single-writer arbitration. Granted if free.
+    let my_token = uuid::Uuid::new_v4();
+    let (granted, held_by) = if write_lease {
+        match pane_arc.acquire_lease(my_token) {
+            Ok(()) => (true, Some(my_token)),
+            Err(holder) => (false, Some(holder)),
+        }
+    } else {
+        (false, pane_arc.lease_holder())
+    };
+    let lease_json = serde_json::json!({
+        "requested": write_lease,
+        "granted": granted,
+        "token": granted.then_some(my_token),
+        "held_by": held_by,
+    });
+
+    // The follow offset is the cumulative byte count NOT yet reflected in the
+    // prelude. For a rendered prelude it's captured atomically with the frame.
+    let follow_cursor = match prelude {
+        PreludeKind::Rendered => {
+            let (frame, offset) = pane_arc.pty.capture(|| {
+                let snap = pane_arc.engine.snapshot();
+                if matches!(mode, SnapshotMode::Text) {
+                    serde_json::json!({
+                        "text": crate::handlers::snapshot::grid_to_text(&snap, false)
+                    })
+                } else {
+                    serde_json::to_value(crate::handlers::snapshot::rle_grid(&snap))
+                        .unwrap_or(serde_json::Value::Null)
+                }
+            });
+            let mode_str = if matches!(mode, SnapshotMode::Text) {
+                "text"
+            } else {
+                "cells"
+            };
+            let payload = serde_json::json!({
+                "type": "prelude",
+                "prelude": "rendered",
+                "pane": pane_arc.id,
+                "mode": mode_str,
+                "frame": frame,
+                "since": offset,
+                "lease": lease_json,
+            });
+            write_envelope(writer, &wrap_envelope(state, req.id, Response::ok(payload))).await?;
+            offset
+        }
+        PreludeKind::Raw => {
+            let read = pane_arc.pty.tail(since);
+            let payload = serde_json::json!({
+                "type": "prelude",
+                "prelude": "raw",
+                "pane": pane_arc.id,
+                "since": since,
+                "bytes_b64": base64::engine::general_purpose::STANDARD.encode(&read.bytes),
+                "lost_bytes": read.lost_bytes,
+                "next_since": read.total,
+                "lease": lease_json,
+            });
+            write_envelope(writer, &wrap_envelope(state, req.id, Response::ok(payload))).await?;
+            read.total
+        }
+        PreludeKind::None => {
+            let ((), offset) = pane_arc.pty.capture(|| ());
+            let payload = serde_json::json!({
+                "type": "prelude",
+                "prelude": "none",
+                "pane": pane_arc.id,
+                "since": offset,
+                "lease": lease_json,
+            });
+            write_envelope(writer, &wrap_envelope(state, req.id, Response::ok(payload))).await?;
+            offset
+        }
+    };
+
+    let result = stream_follow(
+        state,
+        &pane_arc,
+        req.id,
+        writer,
+        follow_cursor,
+        strip_ansi,
+        true,
+        disconnected,
+    )
+    .await;
+    // Lease auto-releases on disconnect (or eof).
+    if granted {
+        pane_arc.release_lease(my_token);
+    }
+    result
+}
+
+/// Build a chunk envelope payload (shared by `tail` + `attach`).
+fn chunk_payload(
+    pane: &agent_tui_protocol::PaneId,
+    read: &crate::pty::TailRead,
+    strip_ansi: bool,
+) -> serde_json::Value {
+    if strip_ansi {
+        serde_json::json!({
+            "type": "chunk",
+            "pane": pane,
+            "text": strip_ansi_for_streaming(&read.bytes),
+            "next_since": read.total,
+            "lost_bytes": read.lost_bytes,
+        })
+    } else {
+        use base64::Engine as _;
+        serde_json::json!({
+            "type": "chunk",
+            "pane": pane,
+            "bytes_b64": base64::engine::general_purpose::STANDARD.encode(&read.bytes),
+            "next_since": read.total,
+            "lost_bytes": read.lost_bytes,
+        })
+    }
+}
+
+/// Shared follow loop for `tail --follow` and `attach`: poll the output ring
+/// from `cursor`, emit a `chunk` envelope per new delta, and a terminal `eof`
+/// once the child has exited AND the reader has drained. When `emit_lease` is
+/// set (attach), also push a `lease` envelope whenever the holder changes.
+#[allow(clippy::too_many_arguments)]
+async fn stream_follow(
+    state: &DaemonState,
+    pane_arc: &Arc<crate::pane::Pane>,
+    req_id: uuid::Uuid,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    mut cursor: u64,
+    strip_ansi: bool,
+    emit_lease: bool,
+    disconnected: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
     let poll_interval = tokio::time::Duration::from_millis(50);
+    let mut last_lease = pane_arc.lease_holder();
     loop {
-        // Mark activity each tick — a live `tail --follow` shouldn't
-        // count as idle.
+        // Client gone (read half hit EOF) → stop so the caller can release any
+        // write-lease, even if this idle pane had nothing to write.
+        if disconnected.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        // A live follower shouldn't count as idle.
         state.touch_activity();
         let read = pane_arc.pty.tail(cursor);
         if !read.bytes.is_empty() {
-            let payload = if strip_ansi {
-                let text = strip_ansi_for_streaming(&read.bytes);
-                serde_json::json!({
-                    "type": "chunk",
-                    "pane": pane_arc.id,
-                    "text": text,
-                    "next_since": read.total,
-                    "lost_bytes": read.lost_bytes,
-                })
-            } else {
-                use base64::Engine as _;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&read.bytes);
-                serde_json::json!({
-                    "type": "chunk",
-                    "pane": pane_arc.id,
-                    "bytes_b64": encoded,
-                    "next_since": read.total,
-                    "lost_bytes": read.lost_bytes,
-                })
-            };
-            let env = wrap_envelope(state, req.id, Response::ok(payload));
+            let env = wrap_envelope(
+                state,
+                req_id,
+                Response::ok(chunk_payload(&pane_arc.id, &read, strip_ansi)),
+            );
             write_envelope(writer, &env).await?;
             cursor = read.total;
         }
-        // Check child exit AFTER reading any final bytes the child wrote
-        // on its way out. The child can be reaped (`try_wait` → exited) a
-        // beat before the reader thread flushes its last bytes into the
-        // ring, so we only emit `eof` once the reader has actually drained
-        // the PTY (`reader_finished`). Until then we keep polling so the
-        // next iteration streams those trailing bytes — otherwise a
-        // fast-exiting `watch`/`tail --follow` child loses its output.
+        if emit_lease {
+            let now = pane_arc.lease_holder();
+            if now != last_lease {
+                last_lease = now;
+                let payload = serde_json::json!({
+                    "type": "lease",
+                    "pane": pane_arc.id,
+                    "held_by": now,
+                });
+                write_envelope(writer, &wrap_envelope(state, req_id, Response::ok(payload)))
+                    .await?;
+            }
+        }
+        // Emit `eof` only once the child exited AND the reader drained the PTY
+        // (the child can be reaped a beat before its last bytes land in the
+        // ring), so a fast-exiting child's final output isn't lost.
         if pane_arc.pty.try_exit_code().ok().flatten().is_some() && pane_arc.pty.reader_finished() {
-            // Final drain: emit anything the reader flushed since the last
-            // read before the terminal envelope.
             let tail = pane_arc.pty.tail(cursor);
             if !tail.bytes.is_empty() {
-                let payload = if strip_ansi {
-                    let text = strip_ansi_for_streaming(&tail.bytes);
-                    serde_json::json!({
-                        "type": "chunk",
-                        "pane": pane_arc.id,
-                        "text": text,
-                        "next_since": tail.total,
-                        "lost_bytes": tail.lost_bytes,
-                    })
-                } else {
-                    use base64::Engine as _;
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(&tail.bytes);
-                    serde_json::json!({
-                        "type": "chunk",
-                        "pane": pane_arc.id,
-                        "bytes_b64": encoded,
-                        "next_since": tail.total,
-                        "lost_bytes": tail.lost_bytes,
-                    })
-                };
-                let env = wrap_envelope(state, req.id, Response::ok(payload));
+                let env = wrap_envelope(
+                    state,
+                    req_id,
+                    Response::ok(chunk_payload(&pane_arc.id, &tail, strip_ansi)),
+                );
                 write_envelope(writer, &env).await?;
                 cursor = tail.total;
             }
@@ -391,7 +583,7 @@ async fn handle_streaming_tail(
                 "next_since": cursor,
                 "exit_code": pane_arc.pty.try_exit_code().ok().flatten(),
             });
-            let env = wrap_envelope(state, req.id, Response::ok(payload));
+            let env = wrap_envelope(state, req_id, Response::ok(payload));
             return write_envelope(writer, &env).await;
         }
         tokio::time::sleep(poll_interval).await;
@@ -543,6 +735,7 @@ fn op_name_of(cmd: &agent_tui_protocol::Command) -> &'static str {
         Command::Stdin { .. } => "stdin",
         Command::CloseStdin { .. } => "close_stdin",
         Command::Tail { .. } => "tail",
+        Command::Attach { .. } => "attach",
         Command::Resize { .. } => "resize",
         Command::Signal { .. } => "signal",
         Command::Die { .. } => "die",
@@ -592,6 +785,7 @@ async fn dispatch_snapshot(
     .await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
     match cmd {
@@ -641,18 +835,40 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             condition,
             timeout,
         } => handlers::wait::run(&state.registry, &state.hashes, pane, condition, timeout).await,
-        Command::Press { pane, keys, to } => {
-            handlers::input::press(&state.registry, &state.governance, pane, keys, to).await
+        Command::Press {
+            pane,
+            keys,
+            to,
+            lease,
+        } => {
+            handlers::input::press(&state.registry, &state.governance, pane, keys, to, lease).await
         }
-        Command::Type { pane, text, to } => {
-            handlers::input::type_text(&state.registry, &state.governance, pane, text, to).await
+        Command::Type {
+            pane,
+            text,
+            to,
+            lease,
+        } => {
+            handlers::input::type_text(&state.registry, &state.governance, pane, text, to, lease)
+                .await
         }
-        Command::SendAnsi { pane, bytes_hex } => {
-            handlers::raw::send_ansi(&state.registry, pane, bytes_hex).await
-        }
-        Command::Stdin { pane, bytes_hex } => {
-            handlers::raw::stdin(&state.registry, pane, bytes_hex).await
-        }
+        Command::SendAnsi {
+            pane,
+            bytes_hex,
+            lease,
+        } => handlers::raw::send_ansi(&state.registry, pane, bytes_hex, lease).await,
+        Command::Stdin {
+            pane,
+            bytes_hex,
+            lease,
+        } => handlers::raw::stdin(&state.registry, pane, bytes_hex, lease).await,
+        // `attach` is a streaming verb handled in `handle_conn` before
+        // dispatch; reaching here means a non-streaming caller used it.
+        Command::Attach { .. } => Response::err(agent_tui_protocol::ErrorBody::new(
+            agent_tui_protocol::ErrorCode::InvalidArgs,
+            "attach is a streaming verb",
+            "use a streaming client (the CLI does this automatically)",
+        )),
         Command::CloseStdin { pane } => handlers::raw::close_stdin(&state.registry, pane).await,
         Command::Tail {
             pane,

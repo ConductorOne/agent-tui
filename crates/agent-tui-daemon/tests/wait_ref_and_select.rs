@@ -227,6 +227,7 @@ async fn press_to_no_match_lists_available_refs_in_hint() {
             pane: None,
             keys: "x".into(),
             to: Some("@nonexistent.adapter".into()),
+            lease: None,
         },
     )
     .await;
@@ -326,6 +327,7 @@ async fn press_with_to_identity_routing_writes_keys_to_pty() {
             pane: None,
             keys: "x".into(),
             to: Some("@shell.prompt".into()),
+            lease: None,
         },
     )
     .await;
@@ -355,6 +357,7 @@ async fn press_with_to_unmatched_selector_returns_routing_unsupported() {
             pane: None,
             keys: "x".into(),
             to: Some("@nonexistent.adapter[%999]".into()),
+            lease: None,
         },
     )
     .await;
@@ -383,6 +386,7 @@ async fn press_with_to_bad_selector_returns_invalid_args() {
             pane: None,
             keys: "x".into(),
             to: Some("[unclosed".into()),
+            lease: None,
         },
     )
     .await;

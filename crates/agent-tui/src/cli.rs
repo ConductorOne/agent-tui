@@ -182,6 +182,10 @@ pub enum Command {
         /// Example: `--to '@tmux.pane[%2]'`.
         #[arg(long, value_name = "SELECTOR")]
         to: Option<String>,
+        /// Write-lease token from an `attach --write-lease` prelude. Required
+        /// to write while another client holds the pane's lease.
+        #[arg(long, value_name = "UUID")]
+        lease: Option<String>,
         /// Key-token string. See `skills/core/references/keymap.md`.
         keys: String,
     },
@@ -193,6 +197,9 @@ pub enum Command {
         /// Selector identifying the target node. See `Press.to`.
         #[arg(long, value_name = "SELECTOR")]
         to: Option<String>,
+        /// Write-lease token; see `press --lease`.
+        #[arg(long, value_name = "UUID")]
+        lease: Option<String>,
         /// Literal UTF-8 text.
         text: String,
     },
@@ -201,6 +208,9 @@ pub enum Command {
         /// Pane id.
         #[arg(long)]
         pane: Option<String>,
+        /// Write-lease token; see `press --lease`.
+        #[arg(long, value_name = "UUID")]
+        lease: Option<String>,
         /// Hex-encoded byte string.
         bytes_hex: String,
     },
@@ -215,6 +225,9 @@ pub enum Command {
         /// Hex-encoded bytes to push to stdin. Mutually exclusive with `--text`.
         #[arg(long)]
         bytes_hex: Option<String>,
+        /// Write-lease token; see `press --lease`.
+        #[arg(long, value_name = "UUID")]
+        lease: Option<String>,
     },
     /// Close the child's stdin pipe (EOF). No-op for non-pipe panes.
     CloseStdin {
@@ -343,6 +356,32 @@ pub enum Command {
         /// when the child exits.
         #[arg(long)]
         follow: bool,
+    },
+    /// Attach to a pane as a live viewer: streams an atomic prelude (rendered
+    /// current frame + the exact follow offset, captured under one lock) then
+    /// raw byte chunks from that offset, then `eof`. Lets many late joiners fan
+    /// out from one PTY with no gap/overlap at the seam (unlike snapshot+tail).
+    Attach {
+        /// Pane id; defaults to focused.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Prelude shape. `rendered` (default) seeds the current screen;
+        /// `raw` replays ring bytes from `--since`; `none` skips to follow.
+        #[arg(long, value_enum, default_value = "rendered")]
+        prelude: PreludeArg,
+        /// Rendered-prelude format (`text` or `cells`). Default `cells`.
+        #[arg(long, value_enum, default_value = "cells")]
+        mode: AttachMode,
+        /// Raw-prelude start offset (with `--prelude raw`).
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Request the single-writer lease for this pane (opt-in). Granted if
+        /// free; otherwise you attach read-only and the prelude names the holder.
+        #[arg(long)]
+        write_lease: bool,
+        /// Strip ANSI/CSI escapes from follow chunks (and a raw prelude).
+        #[arg(long)]
+        strip_ansi: bool,
     },
     /// Resize the focused pane.
     Resize {
@@ -612,6 +651,45 @@ impl From<SnapshotMode> for agent_tui_protocol::request::SnapshotMode {
             SnapshotMode::Adapter => Self::Adapter,
             SnapshotMode::Text => Self::Text,
             SnapshotMode::Hybrid => Self::Hybrid,
+        }
+    }
+}
+
+/// `attach --prelude` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PreludeArg {
+    /// Rendered current-screen frame + atomic follow offset (default).
+    Rendered,
+    /// Raw ring bytes from `--since`.
+    Raw,
+    /// No prelude; follow from the current high-water mark.
+    None,
+}
+
+impl From<PreludeArg> for agent_tui_protocol::request::PreludeKind {
+    fn from(p: PreludeArg) -> Self {
+        match p {
+            PreludeArg::Rendered => Self::Rendered,
+            PreludeArg::Raw => Self::Raw,
+            PreludeArg::None => Self::None,
+        }
+    }
+}
+
+/// `attach --mode`: rendered-prelude format (subset of snapshot modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AttachMode {
+    /// RLE-compressed cell grid (default).
+    Cells,
+    /// Visible cells flattened to a plain UTF-8 string.
+    Text,
+}
+
+impl From<AttachMode> for agent_tui_protocol::request::SnapshotMode {
+    fn from(m: AttachMode) -> Self {
+        match m {
+            AttachMode::Cells => Self::Cells,
+            AttachMode::Text => Self::Text,
         }
     }
 }

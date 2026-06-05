@@ -34,6 +34,11 @@ pub struct Pane {
     /// first-bytes re-detection pass can upgrade `generic` → real adapter
     /// once the child has emitted enough output.
     pub adapter: tokio::sync::RwLock<Arc<dyn Adapter>>,
+    /// Single-writer lease. `Some(token)` → only that token may write
+    /// (`type`/`press`/`send-ansi`/`stdin`); `None` → free-for-all (the
+    /// historical default, so single-driver users are unaffected). Acquired by
+    /// `attach --write-lease`, auto-released when that attacher disconnects.
+    pub(crate) lease: std::sync::Mutex<Option<uuid::Uuid>>,
 }
 
 impl Pane {
@@ -47,6 +52,44 @@ impl Pane {
     pub async fn set_adapter(&self, adapter: Arc<dyn Adapter>) -> Arc<dyn Adapter> {
         let mut guard = self.adapter.write().await;
         std::mem::replace(&mut *guard, adapter)
+    }
+
+    /// Try to acquire the write-lease for `token`. Returns `Ok(())` if granted
+    /// (lease was free, or `token` already holds it); `Err(holder)` if another
+    /// token holds it.
+    pub fn acquire_lease(&self, token: uuid::Uuid) -> Result<(), uuid::Uuid> {
+        let mut g = self.lease.lock().expect("lease poisoned");
+        match *g {
+            Some(held) if held != token => Err(held),
+            _ => {
+                *g = Some(token);
+                Ok(())
+            }
+        }
+    }
+
+    /// Release the write-lease if `token` holds it (no-op otherwise).
+    pub fn release_lease(&self, token: uuid::Uuid) {
+        let mut g = self.lease.lock().expect("lease poisoned");
+        if *g == Some(token) {
+            *g = None;
+        }
+    }
+
+    /// Current lease holder, if any.
+    #[must_use]
+    pub fn lease_holder(&self) -> Option<uuid::Uuid> {
+        *self.lease.lock().expect("lease poisoned")
+    }
+
+    /// Whether a write from `who` is permitted: allowed when the lease is free,
+    /// or when `who` is the current holder.
+    #[must_use]
+    pub fn write_allowed(&self, who: Option<uuid::Uuid>) -> bool {
+        match self.lease_holder() {
+            None => true,
+            Some(holder) => who == Some(holder),
+        }
     }
 }
 
