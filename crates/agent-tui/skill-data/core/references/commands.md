@@ -91,9 +91,12 @@ Snapshot the focused pane (or a specific one with `--pane`).
 | `hybrid` | All three concatenated |
 
 `--png <path>` rasterizes the screen to a real PNG: one fixed-size cell
-per grid cell, monospace glyphs drawn with each cell's resolved fg/bg
-colors. The response's `png` field reports the path and dimensions
-(`cols*cw × rows*ch`).
+per grid cell, anti-aliased glyphs from an embedded monospace font
+(JetBrains Mono) drawn with each cell's resolved fg/bg colors (wide CJK
+cells span two columns). The response's `png` field reports the path and
+dimensions (`cols*cw × rows*ch`). Glyphs the embedded font lacks (emoji,
+CJK ideographs) render a placeholder box — it's a monospace screenshot,
+not a full Unicode/emoji renderer.
 
 `--annotate [<selector>]` (requires `--png`) overlays each ref's bounding
 box (drawn from its `anchor`→`anchor+extent` cell rect) plus an `@ref`

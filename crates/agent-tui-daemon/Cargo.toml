@@ -50,10 +50,11 @@ rand = { workspace = true }
 interprocess = { workspace = true }
 # `snapshot --png` rasterization. `png` (MIT/Apache, pure-Rust deflate via
 # miniz_oxide — no system libs, cross-compiles cleanly) encodes the RGB
-# framebuffer; `font8x8` (MIT, pure const bitmap data) supplies glyphs. Both
-# are lean and avoid pulling in the full `image` codec stack.
+# framebuffer; `fontdue` (MIT/Apache, pure-Rust TrueType rasterizer) renders
+# anti-aliased glyphs from the embedded JetBrains Mono TTF (see assets/).
+# Both are lean and avoid the full `image` codec stack.
 png = "0.17"
-font8x8 = "0.3"
+fontdue = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

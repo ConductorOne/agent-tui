@@ -1126,6 +1126,37 @@ fn decode_png(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
     (info.width, info.height, buf)
 }
 
+/// Poll a text snapshot until the screen contains `needle` (bounded). Avoids
+/// racing the child's process start before its output is on screen.
+async fn wait_for_text(cfg: &DaemonConfig, needle: &str) -> bool {
+    for _ in 0..200 {
+        let t = round_trip(
+            cfg,
+            Command::Snapshot {
+                pane: None,
+                mode: SnapshotMode::Text,
+                png: None,
+                annotate: None,
+                select: None,
+                all: false,
+                keep_color: false,
+            },
+        )
+        .await;
+        let text = t
+            .response
+            .data
+            .as_ref()
+            .and_then(|d| d["text"].as_str())
+            .unwrap_or_default();
+        if text.contains(needle) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 /// `snapshot --png` writes a real, correctly-dimensioned PNG (cols*cw × rows*ch).
 #[tokio::test]
 async fn snapshot_png_writes_valid_image() {
@@ -1150,6 +1181,12 @@ async fn snapshot_png_writes_valid_image() {
     std::fs::create_dir_all(&dir).expect("mkdir png dir");
     let path = dir.join("shot.png");
 
+    // Wait for the child's output so a glyph is actually on screen to render.
+    assert!(
+        wait_for_text(&cfg, "hello").await,
+        "pane never displayed 'hello'"
+    );
+
     let snap = round_trip(
         &cfg,
         Command::Snapshot {
@@ -1165,18 +1202,26 @@ async fn snapshot_png_writes_valid_image() {
     .await;
     assert!(snap.response.success, "snapshot failed: {snap:?}");
     let data = snap.response.data.expect("snapshot data");
-    // cell metrics are 8×8, so a 40×4 grid → 320×32 px.
-    assert_eq!(data["png"]["width"], 40 * 8, "png width = cols*cw");
-    assert_eq!(data["png"]["height"], 4 * 8, "png height = rows*ch");
+    // Dims are derived from the embedded font's cell metrics: cols*cw × rows*ch.
+    let (cw, ch) = agent_tui_daemon::render::cell_size();
+    let (exp_w, exp_h) = (40 * cw, 4 * ch);
+    assert_eq!(data["png"]["width"], exp_w, "png width = cols*cw");
+    assert_eq!(data["png"]["height"], exp_h, "png height = rows*ch");
     assert_eq!(data["png"]["annotated"], false, "no overlay requested");
 
     // Decode it from disk: a valid image of exactly the reported size.
     let (w, h, pixels) = decode_png(&path);
-    assert_eq!((w, h), (320, 32), "decoded PNG dims");
+    assert_eq!((w, h), (exp_w, exp_h), "decoded PNG dims");
     assert_eq!(
         pixels.len(),
         (w * h * 3) as usize,
         "RGB buffer is fully populated"
+    );
+    // A real glyph was rendered: the image is not a uniform background fill.
+    let first_px = &pixels[0..3];
+    assert!(
+        pixels.chunks_exact(3).any(|p| p != first_px),
+        "expected rendered glyph pixels, not a uniform image"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1217,37 +1262,13 @@ async fn snapshot_png_annotate_overlays_refs() {
     let plain = dir.join("plain.png");
     let annot = dir.join("annot.png");
 
-    // Wait (bounded) until the child's output is on screen. Until the grid has
-    // content the adapter outline has no anchored node to annotate, so the
-    // overlay would be a no-op — a race on slow process start (seen on macOS).
-    let mut shown = false;
-    for _ in 0..200 {
-        let t = round_trip(
-            &cfg,
-            Command::Snapshot {
-                pane: None,
-                mode: SnapshotMode::Text,
-                png: None,
-                annotate: None,
-                select: None,
-                all: false,
-                keep_color: false,
-            },
-        )
-        .await;
-        let text = t
-            .response
-            .data
-            .as_ref()
-            .and_then(|d| d["text"].as_str())
-            .unwrap_or_default();
-        if text.contains("hello") {
-            shown = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(shown, "pane never displayed 'hello' within the wait window");
+    // Until the grid has content the adapter outline has no anchored node to
+    // annotate, so the overlay would be a no-op — a race on slow process start
+    // (seen on macOS). Wait for the output to land first.
+    assert!(
+        wait_for_text(&cfg, "hello").await,
+        "pane never displayed 'hello' within the wait window"
+    );
 
     let mk = |path: &std::path::Path, annotate: Option<String>| Command::Snapshot {
         pane: None,

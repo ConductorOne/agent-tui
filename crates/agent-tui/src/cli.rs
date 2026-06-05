@@ -144,8 +144,10 @@ pub enum Command {
         /// Snapshot mode.
         #[arg(long, value_enum, default_value_t = SnapshotMode::Outline)]
         mode: SnapshotMode,
-        /// Also rasterize the screen to this PNG path (real image:
-        /// monospace glyphs + cell fg/bg colors).
+        /// Also rasterize the screen to this PNG path: a real image rendered
+        /// with an embedded monospace font (anti-aliased) + each cell's fg/bg
+        /// colors. Emoji and CJK ideographs the font lacks render a
+        /// placeholder box.
         #[arg(long, value_name = "PATH")]
         png: Option<PathBuf>,
         /// With `--png`, overlay ref bounding boxes + `@ref` labels. Pass a
