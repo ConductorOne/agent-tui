@@ -16,6 +16,7 @@ pub async fn send_ansi(
     registry: &Arc<Registry>,
     pane: Option<PaneId>,
     bytes_hex: String,
+    lease: Option<uuid::Uuid>,
 ) -> Response {
     let bytes = match hex_decode(&bytes_hex) {
         Ok(b) => b,
@@ -31,6 +32,9 @@ pub async fn send_ansi(
         Ok(p) => p,
         Err(resp) => return resp,
     };
+    if let Some(resp) = super::lease_denied(&pane_arc, lease) {
+        return resp;
+    }
     if let Err(e) = pane_arc.pty.write_input(&bytes) {
         return Response::err(ErrorBody::new(
             ErrorCode::Internal,
@@ -84,7 +88,12 @@ pub async fn resize(
 }
 
 /// `stdin` — write bytes to the child's stdin pipe (Pipe-mode panes).
-pub async fn stdin(registry: &Arc<Registry>, pane: Option<PaneId>, bytes_hex: String) -> Response {
+pub async fn stdin(
+    registry: &Arc<Registry>,
+    pane: Option<PaneId>,
+    bytes_hex: String,
+    lease: Option<uuid::Uuid>,
+) -> Response {
     let bytes = match hex_decode(&bytes_hex) {
         Ok(b) => b,
         Err(reason) => {
@@ -99,6 +108,9 @@ pub async fn stdin(registry: &Arc<Registry>, pane: Option<PaneId>, bytes_hex: St
         Ok(p) => p,
         Err(resp) => return resp,
     };
+    if let Some(resp) = super::lease_denied(&pane_arc, lease) {
+        return resp;
+    }
     if let Err(e) = pane_arc.pty.write_stdin_pipe(&bytes) {
         return Response::err(ErrorBody::new(
             ErrorCode::InvalidArgs,

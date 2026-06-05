@@ -41,6 +41,12 @@ pub struct PtyChild {
     /// ever observed in `output_total` so callers using byte offsets
     /// know whether they missed any data past the buffer's tail edge.
     output_buf: Arc<Mutex<OutputRing>>,
+    /// Serializes each reader chunk's `engine.feed` + `ring.push` against an
+    /// `attach` capture, so a rendered frame and the ring high-water mark can
+    /// be read with **no byte falling between them** (the prelude→follow seam
+    /// atomicity contract). Held briefly per chunk by the reader and once per
+    /// `capture()` by an attacher.
+    capture_lock: Arc<Mutex<()>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// Reader task handle; kept so callers can abort/await on drop.
@@ -271,6 +277,8 @@ impl PtyChild {
         let reader_osc133 = last_osc133.clone();
         let output_buf = Arc::new(Mutex::new(OutputRing::default()));
         let reader_output_buf = output_buf.clone();
+        let capture_lock = Arc::new(Mutex::new(()));
+        let reader_capture_lock = capture_lock.clone();
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_done_signal = reader_done.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
@@ -281,6 +289,7 @@ impl PtyChild {
                 &reader_first_bytes,
                 &reader_osc133,
                 &reader_output_buf,
+                &reader_capture_lock,
             );
             // Reader saw EOF/error and is exiting: every byte the child
             // wrote is now in the output ring. Publish *after* the loop so
@@ -295,6 +304,7 @@ impl PtyChild {
             stdin_pipe: Mutex::new(stdin_pipe),
             stdin_mode,
             output_buf,
+            capture_lock,
             child: Mutex::new(child),
             killer: Mutex::new(killer),
             reader: Mutex::new(Some(reader_handle)),
@@ -312,6 +322,19 @@ impl PtyChild {
     pub fn tail(&self, since: u64) -> TailRead {
         let g = self.output_buf.lock().expect("output_buf poisoned");
         g.since(since)
+    }
+
+    /// Atomically capture some derived value `f()` (e.g. an engine snapshot)
+    /// **together with** the ring's current high-water mark, holding the
+    /// capture lock so the reader can't feed+push a chunk in between. Returns
+    /// `(f_result, high_water)`: `high_water` is the offset of the first byte
+    /// NOT yet reflected in `f_result`, so an attacher can follow from exactly
+    /// there with no gap and no double-paint.
+    pub fn capture<R>(&self, f: impl FnOnce() -> R) -> (R, u64) {
+        let _cap = self.capture_lock.lock().expect("capture_lock poisoned");
+        let value = f();
+        let total = self.output_buf.lock().expect("output_buf poisoned").total;
+        (value, total)
     }
 
     /// Write bytes to the child's stdin **pipe** (when spawned with
@@ -728,6 +751,7 @@ fn pty_reader_loop(
     first_bytes: &Arc<Mutex<FirstBytes>>,
     last_osc133: &Arc<Mutex<Option<crate::osc133::Marker>>>,
     output_buf: &Arc<Mutex<OutputRing>>,
+    capture_lock: &Arc<Mutex<()>>,
 ) {
     let mut buf = [0u8; 8192];
     let mut osc_scanner = crate::osc133::Scanner::new();
@@ -740,15 +764,27 @@ fn pty_reader_loop(
                 break;
             }
             Ok(n) => {
-                if let Err(e) = engine.feed(&buf[..n]) {
+                // Feed the engine and push to the ring as one unit under the
+                // capture lock, so an `attach` capture observes a consistent
+                // (rendered frame, high-water) pair — no byte falls between.
+                let feed_result = {
+                    let Ok(_cap) = capture_lock.lock() else {
+                        break;
+                    };
+                    let r = engine.feed(&buf[..n]);
+                    if r.is_ok()
+                        && let Ok(mut ring) = output_buf.lock()
+                    {
+                        ring.push(&buf[..n]);
+                    }
+                    r
+                };
+                if let Err(e) = feed_result {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
                     break;
                 }
                 if let Some(rec) = recorder {
                     rec.push_output(&buf[..n]);
-                }
-                if let Ok(mut ring) = output_buf.lock() {
-                    ring.push(&buf[..n]);
                 }
                 // OSC 133 scanning is independent of the engine — we look at
                 // raw bytes so missing shell-prompt support in the VT parser

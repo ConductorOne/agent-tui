@@ -241,6 +241,7 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 pane: pane_id,
                 keys,
                 to,
+                lease: None,
             })
         }
         "type" => {
@@ -254,6 +255,7 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 pane: pane_id,
                 text,
                 to,
+                lease: None,
             })
         }
         "wait" => {

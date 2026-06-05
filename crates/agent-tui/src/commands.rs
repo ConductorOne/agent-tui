@@ -86,6 +86,25 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             strip_ansi,
             follow: true,
         } => tail_follow(&cli.globals, pane, since, strip_ansi).await,
+        CliCmd::Attach {
+            pane,
+            prelude,
+            mode,
+            since,
+            write_lease,
+            strip_ansi,
+        } => {
+            attach_stream(
+                &cli.globals,
+                pane,
+                prelude.into(),
+                mode.into(),
+                since,
+                write_lease,
+                strip_ansi,
+            )
+            .await
+        }
         // Everything else is a one-shot client RPC. The daemon currently
         // returns a friendly INTERNAL error for unwired ops; the CLI surfaces
         // that as a non-zero exit so callers can branch.
@@ -208,6 +227,7 @@ async fn run_orchestrate(
             Command::Stdin {
                 pane: pane.clone(),
                 bytes_hex: hex::encode(bytes),
+                lease: None,
             },
         )
         .await?;
@@ -385,6 +405,70 @@ async fn tail_follow(
             }
             Some("eof") => return Ok(false),
             _ => {}
+        }
+        Ok(true)
+    })
+    .await
+}
+
+/// Parse an optional `--lease` token string into a `Uuid`.
+fn parse_lease(s: Option<String>) -> Result<Option<uuid::Uuid>> {
+    s.map(|t| uuid::Uuid::parse_str(t.trim()))
+        .transpose()
+        .map_err(|e| anyhow!("invalid --lease token: {e}"))
+}
+
+/// Drive `attach` — stream the atomic prelude then live chunks from the
+/// daemon. Under `--json`, prints every envelope (prelude / chunk / lease /
+/// eof) as NDJSON; otherwise writes the raw follow bytes to stdout (and a raw
+/// prelude's bytes), exiting on `eof`.
+async fn attach_stream(
+    g: &crate::cli::GlobalArgs,
+    pane: Option<String>,
+    prelude: agent_tui_protocol::request::PreludeKind,
+    mode: agent_tui_protocol::request::SnapshotMode,
+    since: u64,
+    write_lease: bool,
+    strip_ansi: bool,
+) -> Result<()> {
+    use base64::Engine as _;
+    use std::io::Write;
+    let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+    let cmd = Command::Attach {
+        pane: pane.map(agent_tui_protocol::PaneId),
+        prelude,
+        mode,
+        since,
+        write_lease,
+        strip_ansi,
+    };
+    let mut stdout = std::io::stdout().lock();
+    client::stream(&layout, cmd, |env| {
+        if env.response.is_failure() {
+            writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
+            return Ok(false);
+        }
+        if g.json {
+            writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
+        }
+        let Some(data) = env.response.data.as_ref() else {
+            return Ok(true);
+        };
+        let ty = data.get("type").and_then(serde_json::Value::as_str);
+        if matches!(ty, Some("eof")) {
+            return Ok(false);
+        }
+        // Non-JSON: emit the raw follow bytes (chunks, and a raw prelude).
+        if !g.json && matches!(ty, Some("chunk" | "prelude")) {
+            if let Some(text) = data.get("text").and_then(serde_json::Value::as_str) {
+                stdout.write_all(text.as_bytes()).ok();
+                stdout.flush().ok();
+            } else if let Some(b64) = data.get("bytes_b64").and_then(serde_json::Value::as_str)
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64)
+            {
+                stdout.write_all(&bytes).ok();
+                stdout.flush().ok();
+            }
         }
         Ok(true)
     })
@@ -680,6 +764,7 @@ async fn run_capture(
             Command::Stdin {
                 pane: pane.clone(),
                 bytes_hex: hex::encode(bytes),
+                lease: None,
             },
         )
         .await?;
@@ -889,24 +974,42 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             all,
             keep_color,
         }),
-        CliCmd::Press { pane, keys, to } => Ok(Command::Press {
+        CliCmd::Press {
+            pane,
+            keys,
+            to,
+            lease,
+        } => Ok(Command::Press {
             pane: pane.map(agent_tui_protocol::PaneId),
             keys,
             to,
+            lease: parse_lease(lease)?,
         }),
-        CliCmd::Type { pane, text, to } => Ok(Command::Type {
+        CliCmd::Type {
+            pane,
+            text,
+            to,
+            lease,
+        } => Ok(Command::Type {
             pane: pane.map(agent_tui_protocol::PaneId),
             text,
             to,
+            lease: parse_lease(lease)?,
         }),
-        CliCmd::SendAnsi { pane, bytes_hex } => Ok(Command::SendAnsi {
+        CliCmd::SendAnsi {
+            pane,
+            bytes_hex,
+            lease,
+        } => Ok(Command::SendAnsi {
             pane: pane.map(agent_tui_protocol::PaneId),
             bytes_hex,
+            lease: parse_lease(lease)?,
         }),
         CliCmd::Stdin {
             pane,
             text,
             bytes_hex,
+            lease,
         } => {
             let bytes_hex = match (text, bytes_hex) {
                 (Some(t), None) => hex::encode(t.as_bytes()),
@@ -919,6 +1022,7 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             Ok(Command::Stdin {
                 pane: pane.map(agent_tui_protocol::PaneId),
                 bytes_hex,
+                lease: parse_lease(lease)?,
             })
         }
         CliCmd::CloseStdin { pane } => Ok(Command::CloseStdin {

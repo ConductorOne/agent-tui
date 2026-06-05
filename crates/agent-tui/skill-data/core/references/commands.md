@@ -172,6 +172,44 @@ returns only bytes after the Nth observed byte (cumulative).
 plain UTF-8 text. Response includes `next_since` so callers can
 poll for new bytes between snapshots.
 
+### `attach`
+
+```
+agent-tui attach [--pane <id>]
+    [--prelude rendered|raw|none]   # default: rendered
+    [--mode text|cells]             # rendered-prelude format; default: cells
+    [--since <N>]                   # raw-prelude start offset (with --prelude raw)
+    [--write-lease]                 # request the single-writer token (opt-in)
+    [--strip-ansi]
+```
+
+Attach to a pane as a **live viewer** — the primitive for fanning one PTY out
+to many concurrent browsers/agents. A streaming (NDJSON) connection that emits,
+in order:
+
+1. one **prelude** envelope — `{"type":"prelude","prelude":"rendered","mode":"cells","frame":{…},"since":N,"lease":{…}}`.
+   The rendered current-screen `frame` AND the byte offset `since` are captured
+   **under one pane-lock hold**, so `since` is exactly the offset of the first
+   byte not yet reflected in `frame` — no TOCTOU gap;
+2. **chunk** envelopes — `{"type":"chunk","bytes_b64":"…","next_since":N,"lost_bytes":0}`,
+   raw PTY bytes from `since` onward (identical to `tail --follow`);
+3. a terminal **eof** envelope — `{"type":"eof","next_since":N,"exit_code":…}`.
+
+A consumer paints `frame`, then applies chunks from `since`: **no byte lost, no
+byte double-painted** at the seam. Unlike `snapshot` + `tail` (two RPCs in two
+coordinate systems), the frame and offset are atomic. `--prelude raw` replays
+ring bytes from `--since` (generalizes `tail --since`); `--prelude none` skips
+straight to follow from the current high-water mark.
+
+**Write-lease.** `--write-lease` requests single-writer arbitration: granted if
+free (the prelude `lease` carries a `token`), else you attach read-only and
+`lease.held_by` names the holder. While a lease is held, `type` / `press` /
+`send-ansi` / `stdin` from non-holders are rejected (EBUSY-style) — pass the
+token via `--lease <UUID>` to write as the holder. The lease **auto-releases**
+when the holding attacher disconnects, and a `{"type":"lease",…}` envelope is
+pushed to attachers when the holder changes. `resize` is not arbitrated. With no
+outstanding lease, writes are unrestricted (the historical default).
+
 ### `resize`
 
 ```

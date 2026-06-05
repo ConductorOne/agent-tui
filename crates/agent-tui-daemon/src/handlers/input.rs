@@ -30,6 +30,7 @@ pub async fn press(
     pane: Option<PaneId>,
     keys: String,
     to: Option<String>,
+    lease: Option<uuid::Uuid>,
 ) -> Response {
     let tokens = match keymap::parse(&keys) {
         Ok(t) => t,
@@ -43,7 +44,7 @@ pub async fn press(
     };
     let bytes = keymap::serialize(&tokens);
     let key_tokens = Some(tokens.iter().map(|t| format!("{t:?}")).collect());
-    deliver(registry, governance, pane, &bytes, key_tokens, to).await
+    deliver(registry, governance, pane, &bytes, key_tokens, to, lease).await
 }
 
 /// `type` — write literal UTF-8 text to the pane (no key interpretation).
@@ -53,8 +54,9 @@ pub async fn type_text(
     pane: Option<PaneId>,
     text: String,
     to: Option<String>,
+    lease: Option<uuid::Uuid>,
 ) -> Response {
-    deliver(registry, governance, pane, text.as_bytes(), None, to).await
+    deliver(registry, governance, pane, text.as_bytes(), None, to, lease).await
 }
 
 async fn deliver(
@@ -64,11 +66,16 @@ async fn deliver(
     bytes: &[u8],
     key_tokens: Option<Vec<String>>,
     to: Option<String>,
+    lease: Option<uuid::Uuid>,
 ) -> Response {
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
+
+    if let Some(resp) = crate::handlers::lease_denied(&pane_arc, lease) {
+        return resp;
+    }
 
     let decision = governance
         .check(build::input(pane_arc.id.clone(), bytes, key_tokens))

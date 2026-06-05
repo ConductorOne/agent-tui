@@ -116,6 +116,21 @@ pub enum SnapshotMode {
     Hybrid,
 }
 
+/// `attach` prelude shape: how the consumer's initial screen is seeded before
+/// the live byte-follow takes over.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PreludeKind {
+    /// A rendered current-screen frame (text/cells) captured atomically with
+    /// the follow offset. Default — the right answer for an alt-screen TUI.
+    #[default]
+    Rendered,
+    /// Raw ring bytes from `since` (generalizes `tail --since`).
+    Raw,
+    /// No prelude; skip straight to follow from the current high-water mark.
+    None,
+}
+
 /// The set of commands the daemon accepts. Each enum variant maps 1:1 to a
 /// CLI subcommand.
 ///
@@ -198,6 +213,10 @@ pub enum Command {
         /// the keys go straight to the PTY (identity routing).
         #[serde(default)]
         to: Option<String>,
+        /// Write-lease token (from an `attach --write-lease` prelude). When a
+        /// pane has an outstanding lease, only the holder's token may write.
+        #[serde(default)]
+        lease: Option<Uuid>,
     },
     /// Type literal text at the focused pane (no key interpretation).
     Type {
@@ -209,6 +228,9 @@ pub enum Command {
         /// Optional selector identifying the target node. See `Press.to`.
         #[serde(default)]
         to: Option<String>,
+        /// Write-lease token; see [`Command::Press`].
+        #[serde(default)]
+        lease: Option<Uuid>,
     },
     /// Send raw bytes (ANSI escape sequences, mouse events, OSC, DCS).
     SendAnsi {
@@ -217,6 +239,9 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Hex-encoded raw bytes.
         bytes_hex: String,
+        /// Write-lease token; see [`Command::Press`].
+        #[serde(default)]
+        lease: Option<Uuid>,
     },
     /// Write bytes to the child's stdin **pipe**. Only works for panes
     /// spawned with `stdin: Pipe`; returns an error otherwise. For
@@ -228,6 +253,9 @@ pub enum Command {
         pane: Option<PaneId>,
         /// Hex-encoded raw bytes to push to the pipe.
         bytes_hex: String,
+        /// Write-lease token; see [`Command::Press`].
+        #[serde(default)]
+        lease: Option<Uuid>,
     },
     /// Close the child's stdin pipe (EOF). Only meaningful for panes
     /// spawned with `stdin: Pipe`; no-op otherwise.
@@ -263,6 +291,31 @@ pub enum Command {
         /// envelope per chunk plus a final `{type:"eof"}` envelope.
         #[serde(default)]
         follow: bool,
+    },
+    /// Attach to a pane as a live viewer: a streaming connection that emits an
+    /// atomic **prelude** (rendered current frame + the follow offset captured
+    /// under one lock) followed by raw byte **chunks** from that exact offset,
+    /// then a terminal **eof**. Closes the `snapshot`/`tail` coordinate-system
+    /// gap (no TOCTOU) so many late joiners can fan out from one PTY.
+    Attach {
+        /// Pane id; `None` = focused.
+        #[serde(default)]
+        pane: Option<PaneId>,
+        /// Prelude shape (rendered / raw / none).
+        #[serde(default)]
+        prelude: PreludeKind,
+        /// Rendered-prelude format (`text` or `cells`). Ignored for raw/none.
+        #[serde(default)]
+        mode: SnapshotMode,
+        /// Raw-prelude start offset (with `prelude == raw`).
+        #[serde(default)]
+        since: u64,
+        /// Request the single-writer lease for this pane (opt-in).
+        #[serde(default)]
+        write_lease: bool,
+        /// Strip ANSI/CSI escapes from follow chunks (and a raw prelude).
+        #[serde(default)]
+        strip_ansi: bool,
     },
     /// Resize a pane.
     Resize {
