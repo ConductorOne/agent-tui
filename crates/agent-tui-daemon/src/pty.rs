@@ -16,7 +16,7 @@ use agent_tui_engine::Engine;
 use agent_tui_protocol::request::StdinMode;
 use agent_tui_recorder::Recorder;
 use anyhow::{Context, Result, anyhow};
-use portable_pty::{Child, ChildKiller, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::task::JoinHandle;
 
 /// A spawned PTY child, paired with the engine that consumes its output.
@@ -148,7 +148,7 @@ impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
     /// reader task piping output into `engine.feed`. `recorder`, when
     /// supplied, gets a tee of every byte chunk read from the PTY.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
@@ -210,20 +210,13 @@ impl PtyChild {
 
         let (child, stdin_pipe): (Box<dyn Child + Send + Sync>, Option<std::fs::File>) =
             match stdin_mode {
-                // Unix: route EVERY stdin mode through our own std::process
-                // spawn (slave PTY on all three FDs for `Pty`). This gives a
-                // `std::process::Child` whose wait status we map via `map_exit`
-                // (signal death → 128+sig), so the exit code is shell-faithful
-                // (SIGTERM→143, SIGKILL→137) — portable-pty's own child would
-                // collapse any signal death to code 1.
-                #[cfg(unix)]
                 StdinMode::Pty => {
-                    spawn_with_custom_stdin(argv, cwd, &env_overrides, &*pair.master, stdin_mode)?
-                }
-                // Non-unix: portable-pty spawn, slave PTY on all three FDs.
-                #[cfg(not(unix))]
-                StdinMode::Pty => {
-                    let mut cmd = portable_pty::CommandBuilder::new(&argv[0]);
+                    // portable-pty spawn, slave PTY on all three FDs. We keep
+                    // its robust slave-fd handling (no re-open by `ptsname`,
+                    // which is fragile under remounted `/dev/pts` in sandboxes);
+                    // signal-death exit codes are recovered faithfully in
+                    // `shell_exit_code` from the child's reported `.signal()`.
+                    let mut cmd = CommandBuilder::new(&argv[0]);
                     for arg in &argv[1..] {
                         cmd.arg(arg);
                     }
@@ -431,7 +424,7 @@ impl PtyChild {
             .child
             .lock()
             .map_err(|e| anyhow!("child poisoned: {e}"))?;
-        Ok(c.try_wait()?.map(|s| s.exit_code()))
+        Ok(c.try_wait()?.map(|s| shell_exit_code(&s)))
     }
 
     /// Forcibly terminate the child via the killer handle.
@@ -577,14 +570,7 @@ fn spawn_with_custom_stdin(
             )
         }
         StdinMode::Closed => (None, Stdio::null()),
-        // PTY stdin: the slave on fd 0 too (a third dup), so the child reads
-        // input from the same PTY it writes to — the classic interactive setup.
-        StdinMode::Pty => {
-            let slave_in = dup_owned(&slave_owned)?;
-            #[allow(unsafe_code)]
-            let stdio = unsafe { Stdio::from_raw_fd(slave_in.into_raw_fd()) };
-            (None, stdio)
-        }
+        StdinMode::Pty => unreachable!("Pty stdin doesn't use the custom path"),
     };
 
     let mut cmd = std::process::Command::new(&argv[0]);
@@ -759,6 +745,47 @@ fn map_exit(status: std::process::ExitStatus) -> portable_pty::ExitStatus {
     } else {
         portable_pty::ExitStatus::with_exit_code(1)
     }
+}
+
+/// Map a portable-pty `ExitStatus` to a **shell-style** code: a normal exit
+/// keeps its code; a signal death becomes 128 + signal. portable-pty's own unix
+/// child reports a signal death via `.signal()` (a `strsignal` *name*) while
+/// collapsing `.exit_code()` to 1, so we reverse the name to a number using the
+/// same `strsignal` table (locale-independent: it round-trips whatever the
+/// platform produced). The `StdChildShim` path already encodes 128+sig in
+/// `exit_code()` with no signal name, so it falls through unchanged. This is the
+/// one place `try_exit_code` derives the faithful code for every spawn path.
+fn shell_exit_code(status: &portable_pty::ExitStatus) -> u32 {
+    if let Some(name) = status.signal()
+        && let Some(sig) = signal_name_to_num(name)
+    {
+        return 128 + sig;
+    }
+    status.exit_code()
+}
+
+/// Reverse a `strsignal` name to its signal number via the same table that
+/// produced it. Returns `None` for an unknown name (or on non-unix).
+#[cfg(unix)]
+fn signal_name_to_num(name: &str) -> Option<u32> {
+    for sig in 1..=31i32 {
+        #[allow(unsafe_code)]
+        let ptr = unsafe { libc::strsignal(sig) };
+        if ptr.is_null() {
+            continue;
+        }
+        #[allow(unsafe_code)]
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
+        if s == name {
+            return u32::try_from(sig).ok();
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn signal_name_to_num(_name: &str) -> Option<u32> {
+    None
 }
 
 fn pty_reader_loop(
