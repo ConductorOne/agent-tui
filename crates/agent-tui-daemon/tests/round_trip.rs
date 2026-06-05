@@ -1704,7 +1704,7 @@ async fn retained_pane_does_not_break_implicit_resolution() {
         env: Vec::new(),
     };
     // Turn 1: spawn, then die (pane is retained, not removed).
-    let _ = round_trip(&cfg, spawn("printf FIRST_TURN; sleep 2")).await;
+    let _ = round_trip(&cfg, spawn("printf FIRST_TURN")).await;
     let _ = round_trip(
         &cfg,
         Command::Die {
@@ -1713,8 +1713,10 @@ async fn retained_pane_does_not_break_implicit_resolution() {
         },
     )
     .await;
-    // Turn 2: a fresh pane. No `--pane` is given — exactly like the harness.
-    let _ = round_trip(&cfg, spawn("printf SECOND_TURN_Z9; sleep 2")).await;
+    // Turn 2: a fresh, FAST-EXITING pane (mirrors `pi --print`, which prints
+    // then exits — so by resolve time BOTH panes are terminal). No `--pane` is
+    // given, exactly like the harness.
+    let _ = round_trip(&cfg, spawn("printf SECOND_TURN_Z9")).await;
     // Poll the no-pane snapshot until the turn-2 output renders (bounded).
     let mut ok = false;
     for _ in 0..100 {

@@ -305,13 +305,17 @@ pub async fn resolve_focused(
     drop(state);
 
     // Implicit (no-`--pane`) resolution. Terminal-retained panes (G5) linger in
-    // the registry for late observers + `list`, but must NOT make implicit
-    // resolution ambiguous: prefer the single LIVE pane. A lone retained pane
-    // still resolves (so a late `tail`/`attach` reads its remembered outcome).
+    // the registry for late observers + `list`, but must NOT hijack implicit
+    // resolution. Rules:
+    //  - 0 panes → error.
+    //  - exactly 1 live pane → it (the common single-driver case).
+    //  - >1 live pane → genuinely ambiguous → require `--pane`.
+    //  - 0 live panes (all terminal-retained) → the **most-recently-spawned**
+    //    pane. This is the multi-turn flow (`spawn; die; spawn; …`, all
+    //    no-`--pane`) where a turn's short-lived child (e.g. `pi --print`) has
+    //    already exited by the time we resolve: target the *current* (latest)
+    //    pane, whose final frame is retained, not the stale earlier one.
     let all = registry.all_panes().await;
-    if all.len() == 1 {
-        return Ok(all.into_iter().next().expect("len checked"));
-    }
     if all.is_empty() {
         return Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
@@ -319,19 +323,18 @@ pub async fn resolve_focused(
             "spawn a pane first",
         )));
     }
-    let mut live = all.into_iter().filter(|p| !p.is_terminal());
+    let mut live = all.iter().filter(|p| !p.is_terminal());
     match (live.next(), live.next()) {
-        (Some(p), None) => Ok(p),
-        (None, _) => Err(Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            "no live panes (only terminal-retained); --pane required",
-            "pass --pane p<N> to target a finished pane, or spawn a new one",
-        ))),
+        (Some(p), None) => Ok(p.clone()),
         (Some(_), Some(_)) => Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
             "multiple live panes; --pane or `pane focus <id>` required",
             "pass --pane p<N> or call `agent-tui pane focus <id>`",
         ))),
+        (None, _) => Ok(all
+            .into_iter()
+            .max_by_key(|p| p.spawned_at)
+            .expect("registry non-empty")),
     }
 }
 
