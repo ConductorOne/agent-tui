@@ -361,6 +361,12 @@ pub enum Command {
         /// Pane id; defaults to focused.
         #[arg(long)]
         pane: Option<String>,
+        /// Graceful teardown: SIGTERM the child's process group, wait up to
+        /// `<ms>` for it to exit, then SIGKILL the group if still alive.
+        /// Without this flag, `die` sends a single SIGTERM to the group and
+        /// returns immediately. Given without a value, defaults to 3000 ms.
+        #[arg(long, value_name = "ms", num_args = 0..=1, default_missing_value = "3000")]
+        grace: Option<u64>,
     },
     /// Pane focus management (`pane focus <id>`).
     Pane(PaneArgs),

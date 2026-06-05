@@ -45,14 +45,48 @@ enum DeliverErr {
 
 #[cfg(unix)]
 fn deliver(pane: &Pane, signal: &str) -> Result<(), DeliverErr> {
+    let sig = parse_unix_signal(signal).map_err(DeliverErr::InvalidArgs)?;
+    signal_group(pane, sig).map_err(DeliverErr::Internal)
+}
+
+/// Deliver `sig` to the pane's foreground process group via `killpg`.
+///
+/// Both the `signal` handler and the group-aware `die` teardown go through
+/// the `killpg` helpers below so the process-group reach is identical (and
+/// `die` no longer orphans the harness's forked subprocesses the way a
+/// child-PID-only kill did). Returns a human-readable reason on failure.
+#[cfg(unix)]
+pub(crate) fn signal_group(pane: &Pane, sig: nix::sys::signal::Signal) -> Result<(), String> {
+    let pgid = pane
+        .pty
+        .pgid()
+        .ok_or_else(|| "pane has no process group (child may have exited)".to_string())?;
+    killpg_pgid(pgid, sig)
+}
+
+/// Deliver `sig` to process group `pgid` via `killpg`. Used by the `die`
+/// teardown, which captures `pgid` once up front (the tty's foreground-pgrp
+/// query becomes unreliable after the group leader exits, but the captured
+/// id stays valid for `killpg` while any group member lives).
+#[cfg(unix)]
+pub(crate) fn killpg_pgid(pgid: i32, sig: nix::sys::signal::Signal) -> Result<(), String> {
     use nix::sys::signal::killpg;
     use nix::unistd::Pid;
-    let sig = parse_unix_signal(signal).map_err(DeliverErr::InvalidArgs)?;
-    let pgid = pane.pty.pgid().ok_or_else(|| {
-        DeliverErr::Internal("pane has no process group (child may have exited)".into())
-    })?;
-    killpg(Pid::from_raw(pgid), sig)
-        .map_err(|e| DeliverErr::Internal(format!("killpg failed: {e}")))
+    killpg(Pid::from_raw(pgid), sig).map_err(|e| format!("killpg failed: {e}"))
+}
+
+/// Whether process group `pgid` still has at least one live member, probed
+/// with signal 0 (`killpg(pgid, None)` — an existence/permission check that
+/// delivers nothing). `EPERM` still implies the group exists, so only `ESRCH`
+/// counts as empty.
+#[cfg(unix)]
+pub(crate) fn group_alive(pgid: i32) -> bool {
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+    !matches!(
+        killpg(Pid::from_raw(pgid), None),
+        Err(nix::errno::Errno::ESRCH)
+    )
 }
 
 #[cfg(unix)]

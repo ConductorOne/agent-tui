@@ -566,7 +566,7 @@ fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol:
         | Command::Tail { pane, .. }
         | Command::Resize { pane, .. }
         | Command::Signal { pane, .. }
-        | Command::Die { pane }
+        | Command::Die { pane, .. }
         | Command::Wait { pane, .. }
         | Command::Eval { pane, .. } => pane.clone(),
         // Spawn fires after the pane id is allocated; the spawn handler itself
@@ -598,7 +598,7 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             )
             .await
         }
-        Command::Die { pane } => handlers::die::run(&state.registry, pane).await,
+        Command::Die { pane, grace } => handlers::die::run(&state.registry, pane, grace).await,
         Command::List { all } => handlers::list::run(&state.registry, all).await,
         Command::Snapshot {
             pane,

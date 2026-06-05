@@ -140,7 +140,14 @@ async fn wait_since_returns_on_next_mutation() {
         "post-wait seq {seq} must exceed baseline {baseline}"
     );
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -160,7 +167,14 @@ async fn wait_idle_returns_after_quiet_period() {
         env.response.success,
         "idle wait should succeed on a quiet pane: {env:?}"
     );
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -192,7 +206,14 @@ async fn wait_text_matches_when_pattern_appears() {
         env.response.success,
         "text-wait should match 'hello-world': {env:?}"
     );
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -227,7 +248,14 @@ async fn wait_alt_screen_returns_on_toggle() {
     .await;
     assert!(env.response.success, "alt-screen wait: {env:?}");
     assert_eq!(env.response.data.unwrap()["alt_screen"], true);
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -248,7 +276,14 @@ async fn wait_hash_unknown_returns_error() {
     assert!(!env.response.success);
     let err = env.response.error.expect("error");
     assert_eq!(err.code.to_string(), "WAIT_HASH_UNKNOWN");
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -270,5 +305,12 @@ async fn wait_timeout_returns_wait_timeout() {
         env.response.error.expect("error").code.to_string(),
         "WAIT_TIMEOUT"
     );
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }

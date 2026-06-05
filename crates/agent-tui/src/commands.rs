@@ -213,7 +213,14 @@ async fn run_orchestrate(
         .await?;
         if write_env.response.is_failure() {
             // Best-effort cleanup before surfacing.
-            let _ = client::one_shot(&layout, Command::Die { pane: pane.clone() }).await;
+            let _ = client::one_shot(
+                &layout,
+                Command::Die {
+                    pane: pane.clone(),
+                    grace: None,
+                },
+            )
+            .await;
             println!("{}", serde_json::to_string(&write_env)?);
             std::process::exit(2);
         }
@@ -267,7 +274,14 @@ async fn run_orchestrate(
     };
 
     // 5. Cleanup: best-effort die on the pane.
-    let _ = client::one_shot(&layout, Command::Die { pane: pane.clone() }).await;
+    let _ = client::one_shot(
+        &layout,
+        Command::Die {
+            pane: pane.clone(),
+            grace: None,
+        },
+    )
+    .await;
 
     // 6. We considered auto-shutting the daemon down here, but it
     //    races with back-to-back `run` calls: while the shutdown
@@ -698,7 +712,7 @@ async fn run_capture(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let _ = client::one_shot(&layout, Command::Die { pane }).await;
+    let _ = client::one_shot(&layout, Command::Die { pane, grace: None }).await;
     Ok(text)
 }
 
@@ -758,6 +772,7 @@ async fn watch_sugar(g: &crate::cli::GlobalArgs, argv: Vec<String>) -> Result<()
         &layout,
         Command::Die {
             pane: pane.map(agent_tui_protocol::PaneId),
+            grace: None,
         },
     )
     .await;
@@ -929,8 +944,9 @@ fn cli_command_to_protocol(cmd: CliCmd) -> Result<Command> {
             pane: pane.map(agent_tui_protocol::PaneId),
             signal,
         }),
-        CliCmd::Die { pane } => Ok(Command::Die {
+        CliCmd::Die { pane, grace } => Ok(Command::Die {
             pane: pane.map(agent_tui_protocol::PaneId),
+            grace: grace.map(std::time::Duration::from_millis),
         }),
         CliCmd::Pane(p) => match p.action {
             PaneAction::Focus { pane } => Ok(Command::Focus {

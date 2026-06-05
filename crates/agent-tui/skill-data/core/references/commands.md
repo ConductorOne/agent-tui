@@ -179,11 +179,19 @@ Send a signal to the pane's child process group. Common values:
 ### `die`
 
 ```
-agent-tui die [--pane <id>]
+agent-tui die [--pane <id>] [--grace [<ms>]]
 ```
 
-Close the focused pane (or the named one). Sends SIGTERM, waits a
-bounded grace period, then SIGKILL if needed.
+Close the focused pane (or the named one) with **group-aware** teardown:
+the signal goes to the child's process group, not just the child PID, so
+a harness's forked MCP servers / tool subprocesses are reaped instead of
+orphaned.
+
+- Plain `die` sends a single SIGTERM to the group and returns immediately
+  (no wait).
+- `die --grace <ms>` sends SIGTERM to the group, polls for exit up to
+  `<ms>`, then SIGKILL the group if anything is still alive. Given without
+  a value (`--grace`), the window defaults to 3000 ms.
 
 ### `pane`
 

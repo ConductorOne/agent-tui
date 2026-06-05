@@ -122,7 +122,14 @@ async fn snapshot_select_filters_outline_to_matching_nodes() {
     assert_eq!(nodes[0]["role"].as_str().unwrap(), "prompt");
     assert_eq!(nodes[0]["ref"].as_str().unwrap(), "@shell.prompt");
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -158,7 +165,14 @@ async fn snapshot_select_invalid_returns_invalid_args() {
         err.message
     );
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -192,7 +206,14 @@ async fn snapshot_select_no_match_attaches_available_refs_warning() {
         warning.message
     );
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -218,7 +239,14 @@ async fn press_to_no_match_lists_available_refs_in_hint() {
         err.hint
     );
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -242,7 +270,14 @@ async fn wait_ref_fires_when_selector_matches_existing_node() {
     .await;
     assert!(env.response.success, "wait --ref failed: {env:?}");
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -265,7 +300,14 @@ async fn wait_ref_gone_fires_when_no_node_matches() {
     .await;
     assert!(env.response.success, "wait --ref --gone failed: {env:?}");
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -292,7 +334,14 @@ async fn press_with_to_identity_routing_writes_keys_to_pty() {
     assert!(data["routed"].as_bool().unwrap_or(false));
     assert!(data["bytes_written"].as_u64().unwrap() >= 1);
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -313,7 +362,14 @@ async fn press_with_to_unmatched_selector_returns_routing_unsupported() {
     let err = env.response.error.unwrap();
     assert_eq!(err.code, agent_tui_protocol::ErrorCode::RoutingUnsupported);
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -334,7 +390,14 @@ async fn press_with_to_bad_selector_returns_invalid_args() {
     let err = env.response.error.unwrap();
     assert_eq!(err.code, agent_tui_protocol::ErrorCode::InvalidArgs);
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -358,5 +421,12 @@ async fn wait_ref_with_bad_selector_returns_invalid_args() {
     let err = env.response.error.unwrap();
     assert_eq!(err.code, agent_tui_protocol::ErrorCode::InvalidArgs);
 
-    let _ = rt(&cfg, Command::Die { pane: None }).await;
+    let _ = rt(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }

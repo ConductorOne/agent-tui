@@ -99,7 +99,14 @@ async fn windows_spawn_cmd_echoes() {
     .await;
     assert!(snap.response.success, "snapshot: {snap:?}");
 
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
