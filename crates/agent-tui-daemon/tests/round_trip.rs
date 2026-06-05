@@ -958,12 +958,21 @@ async fn die_grace_reaps_orphaned_grandchild() {
     let pidfile = dir.join("gc.pid");
 
     // Outer sh = the pane child (a setsid session/group leader). It backgrounds
-    // an inner sh (the grandchild) that traps-and-ignores SIGTERM and loops
-    // forever, then `wait`s. The grandchild shares the outer sh's process
-    // group, so a `killpg` reaches it, but killing the outer sh's PID alone
-    // does not.
+    // an inner sh (the grandchild) that ignores BOTH SIGTERM and SIGHUP, then
+    // loops forever; the outer sh `wait`s. The grandchild shares the outer sh's
+    // process group, so a group `killpg` reaches it but killing the outer sh's
+    // PID alone does not.
+    //
+    // Why `trap "" TERM HUP` and not just TERM: dropping the pane closes the
+    // PTY master, and the kernel delivers SIGHUP to the session on hangup. A
+    // grandchild that only ignored TERM would be reaped *incidentally* by that
+    // SIGHUP even under the old child-PID-only teardown — making the test pass
+    // for the wrong reason (non-discriminating). Ignoring HUP too means only a
+    // genuine group signal — here the `--grace` SIGKILL escalation — can reap
+    // it, so the test FAILS against a child-PID-only teardown and PASSES only
+    // for the group-aware fix. (Discrimination matrix recorded in pr-g1.md.)
     let script = format!(
-        "sh -c 'trap \"\" TERM; echo $$ > {pf}; while :; do sleep 1; done' & wait",
+        "sh -c 'trap \"\" TERM HUP; echo $$ > {pf}; while :; do sleep 1; done' & wait",
         pf = pidfile.display()
     );
     let env = round_trip(
@@ -1004,22 +1013,30 @@ async fn die_grace_reaps_orphaned_grandchild() {
         },
     )
     .await;
-    assert!(die.response.success, "die failed: {die:?}");
-    let data = die.response.data.expect("die data");
-    assert_eq!(
-        data["escalated"], true,
-        "expected SIGKILL escalation (grandchild ignores TERM): {data}"
-    );
+    let data = die.response.data.clone().expect("die data");
+    let escalated = data["escalated"].as_bool().unwrap_or(false);
 
     // The grandchild must be gone within the grace + escalation window. The
     // pre-fix child-PID-only teardown would leave it running here: it never
     // received any signal at its own PID, only the pane child did.
+    let reaped = gone_within(gc_pid, Duration::from_secs(3)).await;
+
+    // Best-effort: SIGKILL the grandchild's whole process group BEFORE we
+    // assert. On a regression the orphan survives and would keep the pane PTY
+    // open, blocking daemon teardown and hanging the test on unwind — reaping
+    // it here makes the failure fast and deterministic instead.
+    reap_group_of(gc_pid);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(die.response.success, "die failed: {die:?}");
     assert!(
-        gone_within(gc_pid, Duration::from_secs(3)).await,
+        escalated,
+        "expected SIGKILL escalation (grandchild ignores TERM): {data}"
+    );
+    assert!(
+        reaped,
         "grandchild {gc_pid} survived `die --grace` — orphaned"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Poll `path` until it holds a positive integer PID or `max` elapses.
@@ -1039,15 +1056,37 @@ async fn read_pid_within(path: &std::path::Path, max: Duration) -> Option<i32> {
     }
 }
 
-/// Probe whether `pid` still exists via `kill -0` (delivers no signal).
+/// Probe whether `pid` still exists via `kill(pid, 0)` — delivers no signal,
+/// just an existence/permission check. Direct libc (not a spawned `kill`
+/// process): a blocking `Command::status()` polled in a loop starves the
+/// current-thread tokio runtime, whereas this returns instantly so the
+/// orphan assertion fails *fast* on a regression instead of hanging.
 fn pid_alive(pid: i32) -> bool {
-    std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    // SAFETY: `kill(pid, 0)` performs no memory access and delivers no signal;
+    // it returns 0 if the process exists (or EPERM — still alive), -1/ESRCH if
+    // gone. No invariants to uphold.
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM means the process exists but we may not signal it → still alive.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Best-effort: SIGKILL the entire process group `pid` belongs to. Used by the
+/// orphan-reap test to tear down a *surviving* orphan (the regression case) so
+/// it can't keep the pane PTY open and block daemon teardown.
+fn reap_group_of(pid: i32) {
+    // SAFETY: plain syscalls, no memory access; signaling a (possibly already
+    // dead) process group is harmless.
+    #[allow(unsafe_code)]
+    unsafe {
+        let group = libc::getpgid(pid);
+        if group > 0 {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    }
 }
 
 /// Poll until `pid` is gone or `max` elapses.
