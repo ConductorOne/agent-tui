@@ -154,7 +154,14 @@ async fn pty_echo_round_trip() {
     );
 
     // Clean up.
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -178,7 +185,14 @@ async fn spawn_list_die_lifecycle() {
     let panes = list1.response.data.expect("list data");
     assert_eq!(panes["panes"].as_array().expect("array").len(), 1);
 
-    let _die = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _die = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 
     let list2 = round_trip(&cfg, Command::List { all: false }).await;
     let panes_after = list2.response.data.expect("list data");
@@ -252,7 +266,14 @@ async fn press_round_trip_through_pty() {
         "cat should have echoed 'hello'; got outline: {all_names:?}"
     );
 
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -289,7 +310,14 @@ async fn quiesce_barrier_advances_sequence() {
     );
     assert_eq!(data["barrier_observed"], true);
 
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -317,7 +345,14 @@ async fn signal_term_kills_child() {
     assert!(sig.response.success, "SIGTERM failed: {sig:?}");
     // We don't assert on `list` going empty — die is the path that removes
     // the registry entry. Signal only delivers the signal.
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -345,7 +380,14 @@ async fn signal_bogus_name_rejected() {
     assert!(!sig.response.success);
     let err = sig.response.error.expect("error body");
     assert_eq!(err.code.to_string(), "INVALID_ARGS");
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -385,7 +427,14 @@ async fn resize_updates_engine_geometry() {
         "summary still shows spawn-time cols"
     );
 
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -405,7 +454,14 @@ async fn spawn_attaches_shell_adapter_for_bash() {
     assert!(env.response.success);
     let data = env.response.data.unwrap();
     assert_eq!(data["adapter"], "shell");
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -442,7 +498,14 @@ async fn snapshot_uses_attached_adapter_outline() {
     .await;
     let data = snap.response.data.unwrap();
     assert_eq!(data["outline"]["adapter"], "shell");
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -483,7 +546,14 @@ async fn snapshot_response_carries_nonced_delimiter() {
         .trim_end_matches(">>>");
     assert_eq!(nonce.len(), 8, "8 hex chars of nonce");
     assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -535,7 +605,14 @@ async fn osc133_marker_upgrades_state_to_shell() {
         data["state"], "shell",
         "OSC 133 A should classify as shell, got: {data:?}"
     );
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -612,6 +689,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
         &cfg,
         Command::Die {
             pane: Some(agent_tui_protocol::PaneId("p1".into())),
+            grace: None,
         },
     )
     .await;
@@ -619,6 +697,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
         &cfg,
         Command::Die {
             pane: Some(agent_tui_protocol::PaneId("p2".into())),
+            grace: None,
         },
     )
     .await;
@@ -661,6 +740,7 @@ async fn focus_cleared_when_focused_pane_dies() {
         &cfg,
         Command::Die {
             pane: Some(agent_tui_protocol::PaneId("p1".into())),
+            grace: None,
         },
     )
     .await;
@@ -683,6 +763,7 @@ async fn focus_cleared_when_focused_pane_dies() {
         &cfg,
         Command::Die {
             pane: Some(agent_tui_protocol::PaneId("p2".into())),
+            grace: None,
         },
     )
     .await;
@@ -737,7 +818,14 @@ async fn snapshot_cells_mode_returns_rle_grid() {
         "row payload must be a JSON array of runs"
     );
 
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -771,7 +859,14 @@ async fn snapshot_hybrid_mode_carries_both() {
     let data = snap.response.data.unwrap();
     assert!(data["outline"].is_object(), "hybrid must carry outline");
     assert!(data["cells"].is_object(), "hybrid must carry cells");
-    let _ = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -833,5 +928,177 @@ async fn snapshot_hash_changes_after_output() {
         }
     }
 
-    let _die = round_trip(&cfg, Command::Die { pane: None }).await;
+    let _die = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// Real-system orphan-reap proof for `die --grace` (the defect this fixes).
+///
+/// A pane child forks a grandchild that (a) lives in the pane child's
+/// process group and (b) ignores `SIGTERM` and never exits on its own. Such
+/// a grandchild survives both a plain group `SIGTERM` *and* the pre-fix
+/// child-PID-only teardown (portable-pty `ChildKiller::kill` on the pane
+/// child alone — it never touches the grandchild's PID, orphaning it to
+/// init). `die --grace` must `SIGTERM` the *group*, observe the grandchild
+/// outlive the grace window, then escalate to a group `SIGKILL`, reaping it.
+#[tokio::test]
+async fn die_grace_reaps_orphaned_grandchild() {
+    let (cfg, _h) = boot_daemon().await;
+
+    // The grandchild publishes its own PID here so the test doesn't have to
+    // scrape it out of terminal output.
+    let dir = short_temp_root("at-orphan");
+    std::fs::create_dir_all(&dir).expect("mkdir orphan dir");
+    let pidfile = dir.join("gc.pid");
+
+    // Outer sh = the pane child (a setsid session/group leader). It backgrounds
+    // an inner sh (the grandchild) that ignores BOTH SIGTERM and SIGHUP, then
+    // loops forever; the outer sh `wait`s. The grandchild shares the outer sh's
+    // process group, so a group `killpg` reaches it but killing the outer sh's
+    // PID alone does not.
+    //
+    // Why `trap "" TERM HUP` and not just TERM: dropping the pane closes the
+    // PTY master, and the kernel delivers SIGHUP to the session on hangup. A
+    // grandchild that only ignored TERM would be reaped *incidentally* by that
+    // SIGHUP even under the old child-PID-only teardown — making the test pass
+    // for the wrong reason (non-discriminating). Ignoring HUP too means only a
+    // genuine group signal — here the `--grace` SIGKILL escalation — can reap
+    // it, so the test FAILS against a child-PID-only teardown and PASSES only
+    // for the group-aware fix. (Discrimination matrix recorded in pr-g1.md.)
+    let script = format!(
+        "sh -c 'trap \"\" TERM HUP; echo $$ > {pf}; while :; do sleep 1; done' & wait",
+        pf = pidfile.display()
+    );
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), script],
+            cwd: None,
+            size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+    let pane = env.response.data.expect("spawn data")["pane"]
+        .as_str()
+        .expect("pane id")
+        .to_string();
+
+    // Wait (bounded) for the grandchild to publish its PID.
+    let gc_pid = read_pid_within(&pidfile, Duration::from_secs(5))
+        .await
+        .expect("grandchild never published its PID");
+
+    // Sanity: the grandchild is alive before teardown.
+    assert!(
+        pid_alive(gc_pid),
+        "grandchild {gc_pid} should be alive pre-die"
+    );
+
+    // Group-aware graceful teardown: SIGTERM the group, then — since the
+    // grandchild ignores TERM — escalate to a group SIGKILL after 1s.
+    let die = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId(pane)),
+            grace: Some(Duration::from_secs(1)),
+        },
+    )
+    .await;
+    let data = die.response.data.clone().expect("die data");
+    let escalated = data["escalated"].as_bool().unwrap_or(false);
+
+    // The grandchild must be gone within the grace + escalation window. The
+    // pre-fix child-PID-only teardown would leave it running here: it never
+    // received any signal at its own PID, only the pane child did.
+    let reaped = gone_within(gc_pid, Duration::from_secs(3)).await;
+
+    // Best-effort: SIGKILL the grandchild's whole process group BEFORE we
+    // assert. On a regression the orphan survives and would keep the pane PTY
+    // open, blocking daemon teardown and hanging the test on unwind — reaping
+    // it here makes the failure fast and deterministic instead.
+    reap_group_of(gc_pid);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(die.response.success, "die failed: {die:?}");
+    assert!(
+        escalated,
+        "expected SIGKILL escalation (grandchild ignores TERM): {data}"
+    );
+    assert!(
+        reaped,
+        "grandchild {gc_pid} survived `die --grace` — orphaned"
+    );
+}
+
+/// Poll `path` until it holds a positive integer PID or `max` elapses.
+async fn read_pid_within(path: &std::path::Path, max: Duration) -> Option<i32> {
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        if let Ok(s) = std::fs::read_to_string(path)
+            && let Ok(pid) = s.trim().parse::<i32>()
+            && pid > 0
+        {
+            return Some(pid);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Probe whether `pid` still exists via `kill(pid, 0)` — delivers no signal,
+/// just an existence/permission check. Direct libc (not a spawned `kill`
+/// process): a blocking `Command::status()` polled in a loop starves the
+/// current-thread tokio runtime, whereas this returns instantly so the
+/// orphan assertion fails *fast* on a regression instead of hanging.
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: `kill(pid, 0)` performs no memory access and delivers no signal;
+    // it returns 0 if the process exists (or EPERM — still alive), -1/ESRCH if
+    // gone. No invariants to uphold.
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM means the process exists but we may not signal it → still alive.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Best-effort: SIGKILL the entire process group `pid` belongs to. Used by the
+/// orphan-reap test to tear down a *surviving* orphan (the regression case) so
+/// it can't keep the pane PTY open and block daemon teardown.
+fn reap_group_of(pid: i32) {
+    // SAFETY: plain syscalls, no memory access; signaling a (possibly already
+    // dead) process group is harmless.
+    #[allow(unsafe_code)]
+    unsafe {
+        let group = libc::getpgid(pid);
+        if group > 0 {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    }
+}
+
+/// Poll until `pid` is gone or `max` elapses.
+async fn gone_within(pid: i32, max: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        if !pid_alive(pid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }

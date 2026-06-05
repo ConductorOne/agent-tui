@@ -279,11 +279,17 @@ pub enum Command {
         /// Signal name (`SIGINT`, `SIGTERM`, ...) or number.
         signal: String,
     },
-    /// Close a pane (graceful → SIGKILL after `--timeout`).
+    /// Close a pane. Group-aware teardown so the harness's forked
+    /// subprocesses don't get orphaned. With `grace`, SIGTERM the process
+    /// group, poll for exit up to `grace`, then SIGKILL the group if still
+    /// alive. Without `grace`, SIGTERM the group immediately (no wait).
     Die {
         /// Pane id; `None` = focused.
         #[serde(default)]
         pane: Option<PaneId>,
+        /// Graceful teardown window. `None` = immediate group SIGTERM.
+        #[serde(default, with = "opt_duration_ms")]
+        grace: Option<Duration>,
     },
     /// Wait for a state-change condition.
     Wait {
@@ -349,5 +355,35 @@ mod duration_ms {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Duration, D::Error> {
         let ms = u64::deserialize(de)?;
         Ok(Duration::from_millis(ms))
+    }
+}
+
+/// Like [`duration_ms`] but for an optional window: serializes to a JSON
+/// number of milliseconds when present, `null`/absent when `None`. Used by
+/// `die`'s `grace` field.
+mod opt_duration_ms {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    // serde's `with` adaptor dictates the `&Option<_>` receiver shape.
+    #[allow(clippy::ref_option)]
+    pub(super) fn serialize<S: Serializer>(
+        d: &Option<Duration>,
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
+        match d {
+            Some(d) => {
+                let ms = u64::try_from(d.as_millis()).map_err(serde::ser::Error::custom)?;
+                ser.serialize_some(&ms)
+            }
+            None => ser.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        de: D,
+    ) -> Result<Option<Duration>, D::Error> {
+        let opt = Option::<u64>::deserialize(de)?;
+        Ok(opt.map(Duration::from_millis))
     }
 }

@@ -16,6 +16,12 @@ base64 = "0.22"
 async-trait = "0.1"
 proptest = { workspace = true }
 
+# Non-blocking `kill(pid, 0)` liveness probe for the orphan-reap e2e. A
+# blocking `std::process::Command("kill")` starves the current-thread tokio
+# runtime when polled in a loop, so we probe directly via libc instead.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [dependencies]
 agent-tui-protocol = { workspace = true }
 agent-tui-engine = { workspace = true }

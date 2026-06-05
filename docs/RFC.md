@@ -279,6 +279,7 @@ Bounded by the per-command `--timeout` (default 200 ms); a child that does not e
 - Idle-timeout is socket-idle, gated on no-non-shell-panes. The daemon will not enter idle-shutdown while any pane has state in {`alt_screen_tui`, `editor`, `repl`, `pager`, `running`, `password_prompt`, `confirm`, `selection`}. A separate `--pane-idle-timeout-ms` (default 24 h) is the eventual cleanup.
 - In-flight RPCs (including long `wait`s) hold the idle counter at zero.
 - `state save` is the migration tool. `state load` re-spawns equivalent PTY children with saved argv/cwd/env and re-attaches adapters. In-memory program state is not preserved.
+- `die [--grace <ms>]` is **group-aware**: it signals the pane child's *process group*, not just the child PID. Plain `die` sends one immediate SIGTERM to the group; `die --grace <ms>` (default 3000 ms) waits up to that window for the group to drain, then escalates to a group SIGKILL. This replaces the prior best-effort single signal to the child PID alone, which left the harness's forked children (MCP servers, tool subprocesses) running as orphans.
 
 **Version upgrade:** CLI checks `.version` sidecar.
 - Versions match → proceed.
@@ -294,7 +295,7 @@ Bounded by the per-command `--timeout` (default 200 ms); a child that does not e
 
 Identical surface to v2, with Rust-flavored implementation notes. Subcommands grouped:
 
-**Lifecycle:** `spawn`, `list`, `pane focus`, `pane reattach`, `split`, `die`, `daemon shutdown [--force]`, `daemon status`.
+**Lifecycle:** `spawn`, `list`, `pane focus`, `pane reattach`, `split`, `die [--grace <ms>]` (group-aware teardown), `daemon shutdown [--force]`, `daemon status`.
 
 **Observation:** `snapshot [<id>] [--mode outline|cells|adapter|hybrid] [--scope active|all|<id>] [--json] [--png <path>] [--annotate]`, `get text @eN`, `get cell <row> <col>`, `scroll history [--from t] [--to t]`.
 

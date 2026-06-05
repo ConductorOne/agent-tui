@@ -291,7 +291,16 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 timeout: std::time::Duration::from_millis(max),
             })
         }
-        "die" => Ok(Command::Die { pane: pane_id }),
+        "die" => {
+            let grace = obj
+                .get("grace")
+                .and_then(Value::as_u64)
+                .map(std::time::Duration::from_millis);
+            Ok(Command::Die {
+                pane: pane_id,
+                grace,
+            })
+        }
         "focus" => {
             let target = obj
                 .get("pane")
@@ -415,10 +424,13 @@ fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "die",
-            "description": "Close a pane (graceful SIGTERM, then SIGKILL after timeout).",
+            "description": "Close a pane with group-aware teardown (so the harness's forked subprocesses aren't orphaned). With `grace`, SIGTERM the process group, wait up to `grace` ms, then SIGKILL the group; without it, send a single immediate SIGTERM to the group.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "pane": { "type": "string" } }
+                "properties": {
+                    "pane": { "type": "string" },
+                    "grace": { "type": "integer", "description": "Graceful teardown window in ms: SIGTERM group → wait → SIGKILL group. Omit for an immediate group SIGTERM." }
+                }
             }
         }),
         json!({

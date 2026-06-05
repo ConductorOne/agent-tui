@@ -180,6 +180,12 @@ const WAIT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
 fn read_timeout_for(command: &Command) -> Duration {
     match command {
         Command::Wait { timeout, .. } => timeout.saturating_add(WAIT_TIMEOUT_MARGIN),
+        // `die --grace` blocks the daemon for up to the grace window while it
+        // polls for group exit before escalating to SIGKILL; give the reply
+        // room past that deadline.
+        Command::Die {
+            grace: Some(grace), ..
+        } => grace.saturating_add(WAIT_TIMEOUT_MARGIN),
         _ => BASE_READ_TIMEOUT,
     }
 }
@@ -255,12 +261,29 @@ mod tests {
     #[test]
     fn non_wait_commands_use_base_timeout() {
         assert_eq!(
-            read_timeout_for(&Command::Die { pane: None }),
+            read_timeout_for(&Command::Die {
+                pane: None,
+                grace: None
+            }),
             BASE_READ_TIMEOUT
         );
         assert_eq!(
             read_timeout_for(&Command::List { all: false }),
             BASE_READ_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn die_grace_extends_read_timeout() {
+        // A graceful teardown blocks the daemon for up to the grace window;
+        // the client read timeout must outlive it (mirrors the `wait` rule).
+        let grace = Duration::from_secs(30);
+        assert_eq!(
+            read_timeout_for(&Command::Die {
+                pane: None,
+                grace: Some(grace),
+            }),
+            grace + WAIT_TIMEOUT_MARGIN
         );
     }
 
