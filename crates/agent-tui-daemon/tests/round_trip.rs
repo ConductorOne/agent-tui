@@ -131,7 +131,7 @@ async fn pty_echo_round_trip() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -247,7 +247,7 @@ async fn press_round_trip_through_pty() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -500,7 +500,7 @@ async fn snapshot_uses_attached_adapter_outline() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -540,7 +540,7 @@ async fn snapshot_response_carries_nonced_delimiter() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -604,7 +604,7 @@ async fn osc133_marker_upgrades_state_to_shell() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -659,7 +659,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -686,7 +686,7 @@ async fn focus_resolves_no_pane_commands_under_multi_pane() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -762,7 +762,7 @@ async fn focus_cleared_when_focused_pane_dies() {
             pane: None,
             mode: SnapshotMode::Outline,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -801,7 +801,7 @@ async fn snapshot_cells_mode_returns_rle_grid() {
             pane: None,
             mode: SnapshotMode::Cells,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -860,7 +860,7 @@ async fn snapshot_hybrid_mode_carries_both() {
             pane: None,
             mode: SnapshotMode::Hybrid,
             png: None,
-            annotate: false,
+            annotate: None,
             select: None,
             all: false,
             keep_color: false,
@@ -905,7 +905,7 @@ async fn snapshot_hash_changes_after_output() {
                 pane: None,
                 mode: SnapshotMode::Outline,
                 png: None,
-                annotate: false,
+                annotate: None,
                 select: None,
                 all: false,
                 keep_color: false,
@@ -923,7 +923,7 @@ async fn snapshot_hash_changes_after_output() {
                     pane: None,
                     mode: SnapshotMode::Outline,
                     png: None,
-                    annotate: false,
+                    annotate: None,
                     select: None,
                     all: false,
                     keep_color: false,
@@ -1112,4 +1112,162 @@ async fn gone_within(pid: i32, max: Duration) -> bool {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// Decode a PNG file from disk into `(width, height, rgb_bytes)`. Proves the
+/// `--png` output is a real, decodable image rather than a stub.
+fn decode_png(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
+    let f = std::fs::File::open(path).expect("open png");
+    let decoder = png::Decoder::new(f);
+    let mut reader = decoder.read_info().expect("png read_info");
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).expect("png next_frame");
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, buf)
+}
+
+/// `snapshot --png` writes a real, correctly-dimensioned PNG (cols*cw × rows*ch).
+#[tokio::test]
+async fn snapshot_png_writes_valid_image() {
+    let (cfg, _h) = boot_daemon().await;
+    let _ = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf hello; sleep 5".into(),
+            ],
+            cwd: None,
+            size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+
+    let dir = short_temp_root("at-png");
+    std::fs::create_dir_all(&dir).expect("mkdir png dir");
+    let path = dir.join("shot.png");
+
+    let snap = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: Some(path.to_string_lossy().into_owned()),
+            annotate: None,
+            select: None,
+            all: false,
+            keep_color: false,
+        },
+    )
+    .await;
+    assert!(snap.response.success, "snapshot failed: {snap:?}");
+    let data = snap.response.data.expect("snapshot data");
+    // cell metrics are 8×8, so a 40×4 grid → 320×32 px.
+    assert_eq!(data["png"]["width"], 40 * 8, "png width = cols*cw");
+    assert_eq!(data["png"]["height"], 4 * 8, "png height = rows*ch");
+    assert_eq!(data["png"]["annotated"], false, "no overlay requested");
+
+    // Decode it from disk: a valid image of exactly the reported size.
+    let (w, h, pixels) = decode_png(&path);
+    assert_eq!((w, h), (320, 32), "decoded PNG dims");
+    assert_eq!(
+        pixels.len(),
+        (w * h * 3) as usize,
+        "RGB buffer is fully populated"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// `snapshot --png --annotate` overlays ref boxes: the annotated image is a
+/// valid PNG, differs from the un-annotated one, and contains the overlay
+/// color (the generic buffer node's bounding box) that the plain image lacks.
+#[tokio::test]
+async fn snapshot_png_annotate_overlays_refs() {
+    let (cfg, _h) = boot_daemon().await;
+    let _ = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf hello; sleep 5".into(),
+            ],
+            cwd: None,
+            size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+
+    let dir = short_temp_root("at-png-an");
+    std::fs::create_dir_all(&dir).expect("mkdir png dir");
+    let plain = dir.join("plain.png");
+    let annot = dir.join("annot.png");
+
+    let mk = |path: &std::path::Path, annotate: Option<String>| Command::Snapshot {
+        pane: None,
+        mode: SnapshotMode::Outline,
+        png: Some(path.to_string_lossy().into_owned()),
+        annotate,
+        select: None,
+        all: false,
+        keep_color: false,
+    };
+
+    let p = round_trip(&cfg, mk(&plain, None)).await;
+    assert!(p.response.success, "plain snapshot failed: {p:?}");
+    // `annotate: Some(String::new())` = annotate all refs.
+    let a = round_trip(&cfg, mk(&annot, Some(String::new()))).await;
+    assert!(a.response.success, "annotated snapshot failed: {a:?}");
+    assert_eq!(
+        a.response.data.expect("data")["png"]["annotated"],
+        true,
+        "annotated flag must be set"
+    );
+
+    // The two files differ (overlay drawn).
+    let plain_bytes = std::fs::read(&plain).expect("read plain");
+    let annot_bytes = std::fs::read(&annot).expect("read annot");
+    assert_ne!(plain_bytes, annot_bytes, "annotation must change the image");
+
+    // The overlay color appears in the annotated image (the buffer node's box)
+    // and not in the plain one — proof the overlay is genuinely rendered.
+    let ov = agent_tui_daemon::render::OVERLAY;
+    let has_overlay = |px: &[u8]| {
+        px.chunks_exact(3)
+            .any(|c| c[0] == ov[0] && c[1] == ov[1] && c[2] == ov[2])
+    };
+    let (_, _, plain_px) = decode_png(&plain);
+    let (_, _, annot_px) = decode_png(&annot);
+    assert!(
+        !has_overlay(&plain_px),
+        "plain image must not contain the overlay color"
+    );
+    assert!(
+        has_overlay(&annot_px),
+        "annotated image must contain overlay box pixels"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }

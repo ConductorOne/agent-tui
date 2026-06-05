@@ -162,9 +162,12 @@ pub enum Command {
         /// If true, also rasterize to PNG and return the on-disk path.
         #[serde(default)]
         png: Option<String>,
-        /// If true (with `png`), overlay numbered ref labels.
+        /// With `png`, overlay ref bounding boxes + labels. `Some(sel)`
+        /// restricts the overlay to refs matching selector `sel`; `Some("")`
+        /// annotates every ref; `None` disables annotation. Meaningless
+        /// without `png` (the handler rejects it).
         #[serde(default)]
-        annotate: bool,
+        annotate: Option<String>,
         /// Optional selector to filter the outline (RFC §2.2). When
         /// present, the response's `outline.nodes` is restricted to
         /// matching nodes; non-matching parents are pruned. Forces

@@ -575,6 +575,23 @@ fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol:
     }
 }
 
+/// Run a `snapshot` against the pane registry. Extracted from
+/// [`dispatch_command`] to keep that match arm compact.
+async fn dispatch_snapshot(
+    state: &DaemonState,
+    pane: Option<agent_tui_protocol::PaneId>,
+    params: handlers::snapshot::SnapshotParams,
+) -> Response {
+    handlers::snapshot::run(
+        &state.registry,
+        &state.generations,
+        &state.hashes,
+        pane,
+        params,
+    )
+    .await
+}
+
 async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
     match cmd {
@@ -606,21 +623,18 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             select,
             all,
             keep_color,
-            ..
+            png,
+            annotate,
         } => {
-            handlers::snapshot::run(
-                &state.registry,
-                &state.generations,
-                &state.hashes,
-                pane,
-                handlers::snapshot::SnapshotParams {
-                    mode,
-                    select,
-                    all,
-                    keep_color,
-                },
-            )
-            .await
+            let params = handlers::snapshot::SnapshotParams {
+                mode,
+                select,
+                all,
+                keep_color,
+                png,
+                annotate,
+            };
+            dispatch_snapshot(state, pane, params).await
         }
         Command::Wait {
             pane,
