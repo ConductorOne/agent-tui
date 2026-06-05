@@ -1217,6 +1217,38 @@ async fn snapshot_png_annotate_overlays_refs() {
     let plain = dir.join("plain.png");
     let annot = dir.join("annot.png");
 
+    // Wait (bounded) until the child's output is on screen. Until the grid has
+    // content the adapter outline has no anchored node to annotate, so the
+    // overlay would be a no-op — a race on slow process start (seen on macOS).
+    let mut shown = false;
+    for _ in 0..200 {
+        let t = round_trip(
+            &cfg,
+            Command::Snapshot {
+                pane: None,
+                mode: SnapshotMode::Text,
+                png: None,
+                annotate: None,
+                select: None,
+                all: false,
+                keep_color: false,
+            },
+        )
+        .await;
+        let text = t
+            .response
+            .data
+            .as_ref()
+            .and_then(|d| d["text"].as_str())
+            .unwrap_or_default();
+        if text.contains("hello") {
+            shown = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(shown, "pane never displayed 'hello' within the wait window");
+
     let mk = |path: &std::path::Path, annotate: Option<String>| Command::Snapshot {
         pane: None,
         mode: SnapshotMode::Outline,
