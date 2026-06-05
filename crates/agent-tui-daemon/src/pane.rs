@@ -213,9 +213,14 @@ impl Registry {
             .collect()
     }
 
-    /// Number of live panes.
+    /// Number of panes (live + terminal-retained).
     pub async fn count(&self) -> usize {
         self.panes.read().await.len()
+    }
+
+    /// Snapshot of every pane `Arc` (live + terminal-retained).
+    pub async fn all_panes(&self) -> Vec<Arc<Pane>> {
+        self.panes.read().await.values().cloned().collect()
     }
 
     /// Currently-focused pane id, if any (Focused state only).
@@ -299,23 +304,32 @@ pub async fn resolve_focused(
     }
     drop(state);
 
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
+    // Implicit (no-`--pane`) resolution. Terminal-retained panes (G5) linger in
+    // the registry for late observers + `list`, but must NOT make implicit
+    // resolution ambiguous: prefer the single LIVE pane. A lone retained pane
+    // still resolves (so a late `tail`/`attach` reads its remembered outcome).
+    let all = registry.all_panes().await;
+    if all.len() == 1 {
+        return Ok(all.into_iter().next().expect("len checked"));
+    }
+    if all.is_empty() {
+        return Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
             "no panes",
             "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
+        )));
+    }
+    let mut live = all.into_iter().filter(|p| !p.is_terminal());
+    match (live.next(), live.next()) {
+        (Some(p), None) => Ok(p),
+        (None, _) => Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
-            "multiple panes; --pane or `pane focus <id>` required",
+            "no live panes (only terminal-retained); --pane required",
+            "pass --pane p<N> to target a finished pane, or spawn a new one",
+        ))),
+        (Some(_), Some(_)) => Err(Response::err(ErrorBody::new(
+            ErrorCode::NoActivePane,
+            "multiple live panes; --pane or `pane focus <id>` required",
             "pass --pane p<N> or call `agent-tui pane focus <id>`",
         ))),
     }

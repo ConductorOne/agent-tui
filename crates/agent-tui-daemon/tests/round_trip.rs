@@ -1687,3 +1687,65 @@ async fn exit_lifecycle_faithful_eof_late_observer_and_list() {
         "list surfaces the remembered exit code"
     );
 }
+
+/// Regression (G5): a terminal-RETAINED pane must not break implicit no-`--pane`
+/// resolution for a later live pane — the multi-turn flow (`spawn; die; spawn;
+/// snapshot`) the bwrap pi e2e exercises. Before the fix, turn 2's no-pane
+/// snapshot failed with "multiple panes" because the retained turn-1 pane
+/// counted toward resolution.
+#[tokio::test]
+async fn retained_pane_does_not_break_implicit_resolution() {
+    let (cfg, _h) = boot_daemon().await;
+    let spawn = |cmd: &str| Command::Spawn {
+        argv: vec!["/bin/sh".into(), "-c".into(), cmd.into()],
+        cwd: None,
+        size: Some((40, 10)),
+        stdin: agent_tui_protocol::request::StdinMode::default(),
+        env: Vec::new(),
+    };
+    // Turn 1: spawn, then die (pane is retained, not removed).
+    let _ = round_trip(&cfg, spawn("printf FIRST_TURN; sleep 2")).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+    // Turn 2: a fresh pane. No `--pane` is given — exactly like the harness.
+    let _ = round_trip(&cfg, spawn("printf SECOND_TURN_Z9; sleep 2")).await;
+    // Poll the no-pane snapshot until the turn-2 output renders (bounded).
+    let mut ok = false;
+    for _ in 0..100 {
+        let snap = round_trip(
+            &cfg,
+            Command::Snapshot {
+                pane: None,
+                mode: SnapshotMode::Text,
+                png: None,
+                annotate: None,
+                select: None,
+                all: false,
+                keep_color: false,
+            },
+        )
+        .await;
+        if snap.response.success
+            && snap
+                .response
+                .data
+                .as_ref()
+                .and_then(|d| d["text"].as_str())
+                .is_some_and(|t| t.contains("SECOND_TURN_Z9"))
+        {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        ok,
+        "no-pane snapshot must resolve to the live turn-2 pane despite the retained turn-1 pane"
+    );
+}
