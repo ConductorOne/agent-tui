@@ -1,0 +1,6 @@
+# Keep the build context lean: the build stage runs a fresh `cargo build`, so
+# host build outputs and VCS metadata are irrelevant (and slow to transfer /
+# bust the layer cache).
+target
+.git
+**/target
