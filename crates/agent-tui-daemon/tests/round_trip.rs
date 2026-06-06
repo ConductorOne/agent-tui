@@ -2466,3 +2466,275 @@ async fn write_lease_gate_uniform_across_all_write_verbs() {
     )
     .await;
 }
+
+// ---- attach/tail-follow under CONCURRENT load (cov-8, Squire-critical) ------
+
+/// Per-follower accounting collected by draining a follow stream to `eof`:
+/// total follow bytes received, the largest single-chunk `lost_bytes`, the
+/// final high-water (`next_since`), and whether the stream stayed monotonic,
+/// stayed per-read consistent (`next_since - prev == lost_bytes + delivered`),
+/// and terminated on `eof`.
+#[derive(Default)]
+struct FollowStats {
+    total_bytes: u64,
+    max_lost: u64,
+    final_next_since: u64,
+    saw_eof: bool,
+    monotonic: bool,
+    consistent: bool,
+}
+
+/// Drain a follower's stream to `eof`. `start_cursor` is the follow's initial
+/// offset (0 for a `since: 0` follow; the prelude offset for a late joiner) so
+/// the per-read invariant can be checked from the first chunk. Decodes
+/// `bytes_b64` chunks (attach with `strip_ansi: false`).
+async fn drain_follow_accounting(
+    mut lines: tokio::io::Lines<BufReader<Stream>>,
+    start_cursor: u64,
+) -> FollowStats {
+    let mut stats = FollowStats {
+        monotonic: true,
+        consistent: true,
+        ..FollowStats::default()
+    };
+    let mut prev = start_cursor;
+    loop {
+        let line = timeout(Duration::from_secs(25), lines.next_line())
+            .await
+            .expect("follow timeout")
+            .expect("read err");
+        let Some(line) = line else { break };
+        let env: ResponseEnvelope = serde_json::from_str(&line).expect("decode");
+        let data = env.response.data.unwrap_or(serde_json::Value::Null);
+        match data.get("type").and_then(|t| t.as_str()) {
+            Some("chunk") => {
+                let lost = data["lost_bytes"].as_u64().unwrap_or(0);
+                let next = data["next_since"].as_u64().unwrap_or(0);
+                let blen = data
+                    .get("bytes_b64")
+                    .and_then(|v| v.as_str())
+                    .map_or(0, |b64| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .expect("b64")
+                            .len() as u64
+                    });
+                // The cursor must advance by exactly (lost + delivered) — the
+                // ring's accounting identity. Holds even across an eviction:
+                // next - prev == (tail_offset - prev) + retained.
+                if next.checked_sub(prev) != Some(lost + blen) {
+                    stats.consistent = false;
+                }
+                if next < prev {
+                    stats.monotonic = false;
+                }
+                prev = next;
+                stats.max_lost = stats.max_lost.max(lost);
+                stats.total_bytes += blen;
+            }
+            Some("eof") => {
+                stats.saw_eof = true;
+                stats.final_next_since = data["next_since"].as_u64().unwrap_or(prev);
+                break;
+            }
+            _ => {}
+        }
+    }
+    stats
+}
+
+/// cov-8 (Squire-critical): the many-viewer fan-out. Fan one task-PTY out to
+/// several concurrent followers — two FAST (drain promptly) and one SLOW (held
+/// unread so it falls behind the 1 MiB ring horizon) — plus a LATE JOINER that
+/// attaches mid-stream with a rendered prelude. Asserts:
+///   * fast followers receive the full ordered stream with ZERO `lost_bytes`,
+///     gap-free (`bytes received == high-water`);
+///   * the slow follower, once past the horizon, is FLAGGED `lost_bytes > 0`
+///     (never silently corrupted, never panicking the daemon), stays monotone +
+///     per-read consistent, and still terminates on `eof`;
+///   * per-follower cursor INDEPENDENCE — the slow follower's eviction does not
+///     perturb the fast followers (no shared-cursor coupling), the core
+///     many-viewer safety property;
+///   * the late joiner re-preludes at a mid-stream offset and follows seamlessly
+///     to `eof` (the G4 seam, now under concurrent load past the horizon).
+///
+/// Determinism: a shell `printf` loop produces well under ~20 MB/s, so a
+/// promptly-draining follower can never fall behind the daemon's 50 ms poll
+/// window (a poll advances its cursor to `total`, and < 1 MiB is produced per
+/// window) — fast-follower-no-loss is guaranteed, not a timing gamble. Every
+/// wait polls a real condition (high-water past the cap; stream `eof`); no
+/// blind sleeps (the cov-3 macOS lesson).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn concurrent_followers_slow_one_late_joiner_and_cursor_independence() {
+    // Feed shape: 96 × 256 KiB ≈ 24 MiB total (≫ any plausible socket buffer, so
+    // the unread slow follower's cursor stalls and the ring evicts past it), at
+    // a paced ~14 MB/s (< the ~20 MB/s no-loss ceiling for prompt followers).
+    const BLOCK: usize = 256 * 1024;
+    const ROUNDS: u32 = 96;
+
+    let (cfg, _h) = boot_daemon().await;
+
+    // Producer: a real `cat` whose stdin is a pipe and whose stdout is the PTY.
+    // The TEST feeds it in paced blocks, so the production rate is controlled by
+    // wall-clock here (not by how fast a shell loop happens to run). At 256 KiB
+    // every 18 ms (~14 MB/s) the per-50ms-poll delta (~710 KiB) stays under the
+    // 1 MiB ring cap, so a promptly-draining follower provably never falls behind
+    // — fast-follower-no-loss is deterministic, not a timing gamble. The total
+    // (24 MiB) far exceeds any plausible socket buffer, so the UNREAD slow
+    // follower's writer eventually blocks, its cursor stalls, and the ring evicts
+    // past it (the eviction we want to flag). Bytes are a run of `x` (hex 78)
+    // with no newline, so the PTY adds no CR/LF translation and the ring bytes
+    // equal the fed bytes (clean accounting).
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((80, 24)),
+            stdin: agent_tui_protocol::request::StdinMode::Pipe,
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // Two FAST followers (drained concurrently from the start) + one SLOW
+    // follower (connection held, NOT read until the very end → its socket buffer
+    // fills, the daemon's per-follower writer blocks, its cursor stalls, and the
+    // ring evicts past it).
+    // A `None`-prelude attach follows from the offset captured at attach time
+    // (the prelude's `since`), NOT from 0 — so each follower's start cursor is
+    // its own prelude offset.
+    let (pa, lines_a) = attach_open(&cfg, attach_follow_cmd()).await;
+    let (pb, lines_b) = attach_open(&cfg, attach_follow_cmd()).await;
+    let (ps, lines_slow) = attach_open(&cfg, attach_follow_cmd()).await;
+    let start_a = pa["since"].as_u64().expect("prelude since");
+    let start_b = pb["since"].as_u64().expect("prelude since");
+    let start_slow = ps["since"].as_u64().expect("prelude since");
+    let fast_a = tokio::spawn(drain_follow_accounting(lines_a, start_a));
+    let fast_b = tokio::spawn(drain_follow_accounting(lines_b, start_b));
+    // lines_slow is intentionally left unread for now.
+
+    // Feed ~128 × 32 KiB ≈ 4 MiB (≈4× the ring cap), paced. Partway through —
+    // once well past the eviction horizon — attach a LATE JOINER mid-stream with
+    // a rendered prelude (captures the current screen + an atomic follow offset;
+    // the follow must continue seamlessly from there).
+    let block_hex = "78".repeat(BLOCK);
+    let mut late_pair: Option<(u64, tokio::task::JoinHandle<FollowStats>)> = None;
+    for round in 0..ROUNDS {
+        let fed = round_trip(
+            &cfg,
+            Command::Stdin {
+                pane: None,
+                bytes_hex: block_hex.clone(),
+                lease: None,
+            },
+        )
+        .await;
+        assert!(fed.response.success, "feed round {round} failed: {fed:?}");
+        if late_pair.is_none() && round == ROUNDS / 2 {
+            let (prelude_late, lines_late) = attach_open(
+                &cfg,
+                Command::Attach {
+                    pane: None,
+                    prelude: agent_tui_protocol::request::PreludeKind::Rendered,
+                    mode: SnapshotMode::Cells,
+                    since: 0,
+                    write_lease: false,
+                    strip_ansi: false,
+                },
+            )
+            .await;
+            let off = prelude_late["since"]
+                .as_u64()
+                .expect("rendered prelude carries a `since` follow offset");
+            assert!(
+                off > RING_CAP,
+                "late joiner's prelude offset must reflect its mid-stream (past-horizon) position, got {off}"
+            );
+            late_pair = Some((off, tokio::spawn(drain_follow_accounting(lines_late, off))));
+        }
+        tokio::time::sleep(Duration::from_millis(18)).await;
+    }
+    let (_late_offset, late) = late_pair.expect("late joiner attached mid-feed");
+
+    // Close cat's stdin → cat sees EOF → exits 0 → every follower gets `eof`.
+    let _ = round_trip(&cfg, Command::CloseStdin { pane: None }).await;
+
+    // Now drain the SLOW follower — everything has flooded well past the horizon.
+    let slow = drain_follow_accounting(lines_slow, start_slow).await;
+
+    let a = fast_a.await.expect("fast A task");
+    let b = fast_b.await.expect("fast B task");
+    let l = late.await.expect("late joiner task");
+
+    // (1) FAST followers: full ordered stream from their attach point, ZERO
+    //     loss, gap-free, consistent.
+    for (name, s, start) in [("A", &a, start_a), ("B", &b, start_b)] {
+        assert!(s.saw_eof, "fast {name} must terminate on eof");
+        assert!(s.monotonic, "fast {name} next_since must be monotonic");
+        assert!(s.consistent, "fast {name} per-read accounting must hold");
+        assert_eq!(
+            s.max_lost, 0,
+            "fast {name} must NOT lose bytes (stayed current); max_lost={}",
+            s.max_lost
+        );
+        assert_eq!(
+            s.total_bytes,
+            s.final_next_since - start,
+            "fast {name} received bytes ({}) must equal everything since its attach offset ({} .. {}) — no gap/overlap",
+            s.total_bytes,
+            start,
+            s.final_next_since
+        );
+        assert!(
+            s.final_next_since > RING_CAP,
+            "the flood must have exceeded the ring cap (got {})",
+            s.final_next_since
+        );
+    }
+
+    // (2) SLOW follower: crossed the horizon → flagged, never corrupted, still
+    //     monotone + per-read consistent, still terminates on eof.
+    assert!(slow.saw_eof, "slow follower must still terminate on eof");
+    assert!(slow.monotonic, "slow follower next_since must be monotonic");
+    assert!(
+        slow.consistent,
+        "slow follower per-read accounting (next - prev == lost + delivered) must hold across eviction"
+    );
+    assert!(
+        slow.max_lost > 0,
+        "slow follower crossed the eviction horizon → must be FLAGGED lost_bytes>0"
+    );
+    assert!(
+        slow.total_bytes < slow.final_next_since - start_slow,
+        "slow follower must have a real gap (received {} < its share {} .. {})",
+        slow.total_bytes,
+        start_slow,
+        slow.final_next_since
+    );
+
+    // (3) Per-follower cursor INDEPENDENCE: the slow follower crossing the
+    //     horizon did NOT perturb the fast followers — they each still saw the
+    //     complete, loss-free stream asserted in (1). Both converge on the same
+    //     high-water, and the late joiner streamed cleanly from its own offset.
+    assert_eq!(
+        a.final_next_since, b.final_next_since,
+        "fast followers must converge on the same high-water ({} vs {})",
+        a.final_next_since, b.final_next_since
+    );
+    assert!(
+        l.saw_eof && l.monotonic && l.consistent,
+        "late joiner must stream cleanly (monotone, consistent) to eof from its mid-stream offset"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
