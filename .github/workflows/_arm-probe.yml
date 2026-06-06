@@ -3,7 +3,8 @@ name: _arm-probe
 # THROWAWAY: probes whether the ConductorOne org has the `ubuntu-24.04-arm`
 # GitHub-hosted runner available (GHCR-A2 STEP 0 gate). Removed before merge.
 on:
-  workflow_dispatch:
+  push:
+    branches: [paul/ghcr-native-builders]
 
 permissions:
   contents: read
