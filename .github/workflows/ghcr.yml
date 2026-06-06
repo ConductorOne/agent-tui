@@ -1,13 +1,17 @@
 name: ghcr
 
 # Publish a multi-arch (linux/amd64 + linux/arm64) binary-only image to
-# ghcr.io/conductorone/agent-tui. KISS: ONE buildx job emits the multi-arch
-# manifest directly (QEMU-emulated arm64 — agent-tui is a lean Rust binary), not
-# a split-native-runner + digest-merge dance.
+# ghcr.io/conductorone/agent-tui, built on NATIVE per-arch runners (no QEMU):
+#   * `build` matrix  — each arch compiles on its own native runner
+#     (amd64=ubuntu-24.04, arm64=ubuntu-24.04-arm) and pushes BY DIGEST.
+#   * `merge`         — stitches the per-arch digests into one multi-arch
+#     manifest with `docker buildx imagetools create`.
+# Native compilation replaces GHCR-A's single QEMU job (the emulated arm64 build
+# was ~40 min); the resulting image / tags / binary path are unchanged.
 #
-# - push to main / v* tag / manual dispatch -> build AND push.
-# - pull_request -> build BOTH platforms but DO NOT push (rot-guard: proves the
-#   Dockerfile + multi-arch build stay green without writing to GHCR).
+# - push to main / v* tag / manual dispatch -> build (push-by-digest) + merge.
+# - pull_request -> both arches build NATIVELY but DO NOT push, merge skipped
+#   (rot-guard: proves the Dockerfile + both native builds stay green).
 
 on:
   push:
@@ -18,26 +22,32 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Lowercased GHCR path (the org is "ConductorOne"; GHCR requires lowercase).
+  # The merge step references this literally for `imagetools create`.
+  IMAGE_NAME: ghcr.io/conductorone/agent-tui
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  publish:
-    name: build + publish (multi-arch)
-    runs-on: ubuntu-latest
+  build:
+    name: build ${{ matrix.arch }} (native)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, runner: ubuntu-24.04, arch: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, arch: arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # No setup-qemu: each leg runs on its NATIVE arch.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Only authenticate when we intend to push (skipped on pull_request).
       - name: Log in to GHCR
         if: ${{ github.event_name != 'pull_request' }}
         uses: docker/login-action@v4
@@ -46,14 +56,69 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata (tags + labels)
+      - name: Docker metadata (labels)
         id: meta
         uses: docker/metadata-action@v6
         with:
-          # metadata-action lowercases the image name, so the mixed-case
-          # ${{ github.repository }} (ConductorOne/agent-tui) resolves to
-          # ghcr.io/conductorone/agent-tui.
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          images: ${{ env.IMAGE_NAME }}
+
+      - name: Build (push-by-digest on non-PR; build-only on PR)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # Export the pushed digest so the merge job can stitch the manifest.
+      - name: Export digest
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge multi-arch manifest
+    needs: [build]
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
           flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
@@ -62,14 +127,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build (push on non-PR; rot-guard build-only on PR)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create + push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
