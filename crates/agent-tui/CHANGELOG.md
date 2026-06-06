@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/ConductorOne/agent-tui/compare/v0.1.7...v0.1.8) - 2026-06-06
+
+### Added
+
+- *(ux)* selector errors include caret + available refs
+- *(adapter)* claude-code emits @ai-cli hierarchical durable refs ([#6](https://github.com/ConductorOne/agent-tui/pull/6))
+- DOM-lite addressing model (selectors + refs + routed writes) ([#5](https://github.com/ConductorOne/agent-tui/pull/5))
+
+### Other
+
+- *(agent-tui)* release v0.1.7 ([#84](https://github.com/ConductorOne/agent-tui/pull/84))
+- Merge pull request #83 from ConductorOne/release-plz-2026-06-06T18-27-46Z
+- *(agent-tui)* release v0.1.6
+- *(agent-tui)* release v0.1.5
+- *(agent-tui)* release v0.1.4
+- Merge pull request #42 from ConductorOne/release-plz-2026-06-03T23-54-03Z
+- *(agent-tui)* release v0.1.3
+- *(agent-tui)* release v0.1.2
+- *(agent-tui)* release v0.1.1
+- subprocess-as-data model + adapter manifests + skills system
+- layered child-process cleanup architecture (Layers 1/3/4)
+- server mode wired — agent-tui drives panes from Claude Desktop
+- swap tokio UnixListener/UnixStream for interprocess on all platforms
+- P3 core: typed Action governance + nonced delimiters + audit firehose
+- Pay down deferred work: focus, markers, checkpoints, first-bytes, OSC 133
+- wait subsystem, cells/hybrid snapshots, state classifier, recorder
+- P0 closure: wire doctor --quick to the daemon
+- real engine, PTY, registry, spawn/die/list/snapshot
+- initial scaffolding: workspace, RFC, daemon + CLI skeleton
+
 ## [0.1.7](https://github.com/ConductorOne/agent-tui/compare/v0.1.6...v0.1.7) - 2026-06-06
 
 ### Added
