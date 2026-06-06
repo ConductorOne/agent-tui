@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/ConductorOne/agent-tui/compare/v0.1.5...v0.1.6) - 2026-06-06
+
+### Added
+
+- *(lifecycle)* holistic exit-code lifecycle — remembered code + fate-fidelity ([#60](https://github.com/ConductorOne/agent-tui/pull/60))
+- *(attach)* atomic rendered-prelude + byte-follow + write-lease ([#58](https://github.com/ConductorOne/agent-tui/pull/58))
+- *(snapshot)* real --png rasterization + --annotate ref-overlay ([#56](https://github.com/ConductorOne/agent-tui/pull/56))
+- *(list)* report live pane size instead of stale spawn-time geometry ([#54](https://github.com/ConductorOne/agent-tui/pull/54))
+- *(die)* group-aware graceful teardown (`die --grace`) — fixes orphan hazard ([#52](https://github.com/ConductorOne/agent-tui/pull/52))
+
 ## [0.1.5](https://github.com/ConductorOne/agent-tui/compare/v0.1.4...v0.1.5) - 2026-06-04
 
 ### Other
