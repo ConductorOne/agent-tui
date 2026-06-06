@@ -304,3 +304,107 @@ fn follow_cli_exit_status_mirrors_third_party_die() {
         "tail --follow CLI must exit with the child's SIGTERM status 143"
     );
 }
+
+// ---- cov-6: streaming-verb exit-status MATRIX (gap #6, P1) -----------------
+//
+// The G5 mirroring property is that ALL THREE streaming CLI verbs
+// (`watch`, `attach`, `tail --follow`) exit with a status that mirrors the
+// child across the full code space — clean 0, non-zero N, SIGTERM→143,
+// SIGKILL→137 — because each captures the streamed `eof.exit_code` and
+// `process::exit`s with it (`commands.rs`: `tail_follow` / `attach_stream`
+// directly, `watch_sugar` by delegating to `tail_follow`). The existing
+// `follow_cli_exit_status_mirrors_third_party_die` pins only
+// `tail --follow × 143`; this matrix pins every verb × every outcome so a
+// regression in any cell (e.g. a verb that always exits 0, or drops the
+// signal→128+sig mapping) is caught.
+//
+// Determinism: the child reaches each outcome by ITSELF — `exit N` for the
+// clean/non-zero cells, `kill -<SIG> $$` for the signal cells — so the pane
+// is terminal-retained before the follower attaches and the eof carries the
+// remembered code with no timing race (the cov-3 macOS lesson: wait on the
+// real condition, never a fixed sleep). Every wait is bounded by `run_bounded`.
+
+/// (label, `/bin/sh -c` script the child runs, expected mirrored CLI exit).
+const EXIT_MATRIX: &[(&str, &str, i32)] = &[
+    ("clean-0", "exit 0", 0),
+    ("nonzero-7", "exit 7", 7),
+    ("sigterm-143", "kill -TERM $$", 143),
+    ("sigkill-137", "kill -KILL $$", 137),
+];
+
+/// Spawn a pane whose child reaches `script`'s outcome immediately (so the
+/// pane is terminal-retained), then run a follow-style `verb` against it and
+/// assert the verb's CLI process exits with `expected` — i.e. it mirrored the
+/// child's fate off the streamed `eof.exit_code`.
+fn assert_follow_mirrors(tag: &str, verb: &[&str], script: &str, expected: i32) {
+    let h = Harness::new(tag);
+    let spawn = h.run_bounded(
+        &["spawn", "--", "/bin/sh", "-c", script],
+        Duration::from_secs(20),
+    );
+    assert!(
+        spawn.status.success(),
+        "{tag}: spawn failed: {}",
+        String::from_utf8_lossy(&spawn.stderr)
+    );
+    let out = h.run_bounded(verb, Duration::from_secs(20));
+    assert_eq!(
+        out.status.code(),
+        Some(expected),
+        "{tag}: `{verb:?}` CLI must mirror the child's exit {expected}; got {:?}\nstdout={}\nstderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = h.cmd(&["die"]).output();
+}
+
+/// `watch -- <argv>` spawns the child itself then follows via `tail_follow`,
+/// so its CLI status must mirror the child across the whole matrix.
+#[test]
+fn watch_cli_exit_status_mirrors_child_matrix() {
+    for (label, script, expected) in EXIT_MATRIX {
+        let h = Harness::new(&format!("watch-{label}"));
+        let out = h.run_bounded(
+            &["watch", "--", "/bin/sh", "-c", script],
+            Duration::from_secs(20),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(*expected),
+            "watch × {label}: CLI must mirror the child's exit {expected}; got {:?}\nstderr={}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// `tail --follow` against an already-terminal pane must mirror the child's
+/// fate across the whole matrix (the existing G5 test covers only 143 via a
+/// 3rd-party die; this adds 0 / N / 137 and a self-inflicted 143).
+#[test]
+fn tail_follow_cli_exit_status_mirrors_child_matrix() {
+    for (label, script, expected) in EXIT_MATRIX {
+        assert_follow_mirrors(
+            &format!("tailf-{label}"),
+            &["tail", "--follow"],
+            script,
+            *expected,
+        );
+    }
+}
+
+/// `attach` shares the same `eof.exit_code` → `process::exit` path
+/// (`attach_stream`); pin that it mirrors the child across the whole matrix
+/// too, so a future de-sugar/divergence from `tail --follow` is caught.
+#[test]
+fn attach_cli_exit_status_mirrors_child_matrix() {
+    for (label, script, expected) in EXIT_MATRIX {
+        assert_follow_mirrors(
+            &format!("attach-{label}"),
+            &["attach", "--prelude", "none"],
+            script,
+            *expected,
+        );
+    }
+}
