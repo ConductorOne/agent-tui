@@ -39,6 +39,12 @@ pub struct Pane {
     /// historical default, so single-driver users are unaffected). Acquired by
     /// `attach --write-lease`, auto-released when that attacher disconnects.
     pub(crate) lease: std::sync::Mutex<Option<uuid::Uuid>>,
+    /// Remembered shell-style exit code once the child has terminated (signal
+    /// death → 128+sig, via `map_exit`). `None` while running. Set lazily the
+    /// first time the daemon observes the child exit (any follower poll, `die`,
+    /// or `list`), making a terminal pane **retained**: late observers and
+    /// `list` read the remembered outcome instead of "no such pane".
+    pub(crate) last_exit: std::sync::Mutex<Option<i32>>,
 }
 
 impl Pane {
@@ -46,6 +52,38 @@ impl Pane {
     /// hold the lock.
     pub async fn adapter(&self) -> Arc<dyn Adapter> {
         self.adapter.read().await.clone()
+    }
+
+    /// Observe the child's exit, memoizing the shell-style code the first time
+    /// it's seen. Returns the remembered code (or freshly-observed one), or
+    /// `None` while the child is still running. Idempotent and authoritative:
+    /// once set, it stands even after the OS child handle is reaped.
+    #[must_use]
+    pub fn poll_exit(&self) -> Option<i32> {
+        if let Some(code) = *self.last_exit.lock().expect("last_exit poisoned") {
+            return Some(code);
+        }
+        // try_exit_code returns the `map_exit`-mapped code (128+sig on signal
+        // death) for our std::process-backed children.
+        if let Ok(Some(code)) = self.pty.try_exit_code() {
+            let code = i32::try_from(code).unwrap_or(1);
+            *self.last_exit.lock().expect("last_exit poisoned") = Some(code);
+            return Some(code);
+        }
+        None
+    }
+
+    /// The remembered exit code without polling the OS (read-only).
+    #[must_use]
+    pub fn remembered_exit(&self) -> Option<i32> {
+        *self.last_exit.lock().expect("last_exit poisoned")
+    }
+
+    /// Whether this pane is terminal-retained (its child has exited and the
+    /// code is remembered).
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.poll_exit().is_some()
     }
 
     /// Swap in a new adapter; returns the previous one.
@@ -167,14 +205,22 @@ impl Registry {
                     spawned_at: p.spawned_at,
                     cols,
                     rows,
+                    // Surface the remembered exit code; `poll_exit` also lazily
+                    // records it the first time `list` observes a finished child.
+                    exit_code: p.poll_exit(),
                 }
             })
             .collect()
     }
 
-    /// Number of live panes.
+    /// Number of panes (live + terminal-retained).
     pub async fn count(&self) -> usize {
         self.panes.read().await.len()
+    }
+
+    /// Snapshot of every pane `Arc` (live + terminal-retained).
+    pub async fn all_panes(&self) -> Vec<Arc<Pane>> {
+        self.panes.read().await.values().cloned().collect()
     }
 
     /// Currently-focused pane id, if any (Focused state only).
@@ -258,25 +304,37 @@ pub async fn resolve_focused(
     }
     drop(state);
 
-    let list = registry.list().await;
-    match list.len() {
-        1 => registry.get(&list[0].id).await.ok_or_else(|| {
-            Response::err(ErrorBody::new(
-                ErrorCode::NoActivePane,
-                "pane disappeared",
-                "retry",
-            ))
-        }),
-        0 => Err(Response::err(ErrorBody::new(
+    // Implicit (no-`--pane`) resolution. Terminal-retained panes (G5) linger in
+    // the registry for late observers + `list`, but must NOT hijack implicit
+    // resolution. Rules:
+    //  - 0 panes → error.
+    //  - exactly 1 live pane → it (the common single-driver case).
+    //  - >1 live pane → genuinely ambiguous → require `--pane`.
+    //  - 0 live panes (all terminal-retained) → the **most-recently-spawned**
+    //    pane. This is the multi-turn flow (`spawn; die; spawn; …`, all
+    //    no-`--pane`) where a turn's short-lived child (e.g. `pi --print`) has
+    //    already exited by the time we resolve: target the *current* (latest)
+    //    pane, whose final frame is retained, not the stale earlier one.
+    let all = registry.all_panes().await;
+    if all.is_empty() {
+        return Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
             "no panes",
             "spawn a pane first",
-        ))),
-        _ => Err(Response::err(ErrorBody::new(
+        )));
+    }
+    let mut live = all.iter().filter(|p| !p.is_terminal());
+    match (live.next(), live.next()) {
+        (Some(p), None) => Ok(p.clone()),
+        (Some(_), Some(_)) => Err(Response::err(ErrorBody::new(
             ErrorCode::NoActivePane,
-            "multiple panes; --pane or `pane focus <id>` required",
+            "multiple live panes; --pane or `pane focus <id>` required",
             "pass --pane p<N> or call `agent-tui pane focus <id>`",
         ))),
+        (None, _) => Ok(all
+            .into_iter()
+            .max_by_key(|p| p.spawned_at)
+            .expect("registry non-empty")),
     }
 }
 
@@ -299,4 +357,8 @@ pub struct PaneSummary {
     pub cols: u16,
     /// Geometry — rows.
     pub rows: u16,
+    /// Remembered shell-style exit code for a terminal-retained pane
+    /// (signal death → 128+sig); `None` while the child is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }

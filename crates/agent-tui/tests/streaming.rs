@@ -249,3 +249,58 @@ fn tail_follow_replays_ring_then_eofs() {
 
     let _ = h.cmd(&["die"]).output();
 }
+
+/// G5: a `tail --follow` CLI process mirrors the child's fate as its own exit
+/// status — even when a THIRD client kills the pane. A supervising process can
+/// thus read 143 (SIGTERM → 128+15) straight off the wrapper's exit status.
+#[test]
+fn follow_cli_exit_status_mirrors_third_party_die() {
+    let h = Harness::new("exitcode");
+    // Spawn a SIGTERM-dying pane that persists in the daemon.
+    let spawn = h.run_bounded(
+        &["spawn", "--", "/bin/sleep", "1000"],
+        Duration::from_secs(20),
+    );
+    assert!(
+        spawn.status.success(),
+        "spawn failed: {}",
+        String::from_utf8_lossy(&spawn.stderr)
+    );
+
+    // Start a follower as a background subprocess.
+    let mut follower = h
+        .cmd(&["tail", "--follow"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn follower");
+    // Give it a moment to connect + start following before the kill.
+    std::thread::sleep(Duration::from_millis(400));
+
+    // A THIRD client kills the pane with grace → SIGTERM → 143.
+    let die = h.run_bounded(&["die", "--grace", "2000"], Duration::from_secs(20));
+    assert!(
+        die.status.success(),
+        "die failed: {}",
+        String::from_utf8_lossy(&die.stderr)
+    );
+
+    // The follower CLI must exit with the child's status (143), not its own 0.
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = follower.try_wait().expect("try_wait") {
+            break s;
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            let _ = follower.kill();
+            let _ = follower.wait();
+            panic!("follower did not exit after 3rd-party die");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "tail --follow CLI must exit with the child's SIGTERM status 143"
+    );
+}

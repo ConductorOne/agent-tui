@@ -71,7 +71,11 @@ agent-tui list
 
 List the panes in the current session. Each entry reports the pane id,
 argv, spawn time, and its **current** geometry (`cols`/`rows`) — the live
-size after any `resize`, not the spawn-time dimensions.
+size after any `resize`, not the spawn-time dimensions. A terminated pane is
+**terminal-retained** (kept, not removed) and carries an `exit_code`
+(shell-style: signal death → 128+signal, so SIGTERM→143, SIGKILL→137);
+still-running panes omit it. Retained panes persist for late observers
+until the session is GC'd / the daemon restarts.
 
 ### `snapshot`
 
@@ -200,6 +204,15 @@ byte double-painted** at the seam. Unlike `snapshot` + `tail` (two RPCs in two
 coordinate systems), the frame and offset are atomic. `--prelude raw` replays
 ring bytes from `--since` (generalizes `tail --since`); `--prelude none` skips
 straight to follow from the current high-water mark.
+
+**Fate-fidelity.** The terminal `eof.exit_code` is the pane's remembered,
+shell-style exit code (signal death → 128+signal), delivered faithfully to
+**every** follower — including when a *third* client runs `die`. A pane is
+terminal-**retained** after its child dies, so a **late** `attach` (after exit)
+still returns the final frame + the remembered code in its `eof` rather than
+"no such pane". The `attach` (and `watch` / `tail --follow`) **CLI process exit
+status mirrors the child** (e.g. 137/143), so a supervising process reads the
+wrapped task's true fate off the wrapper's own exit status.
 
 **Write-lease.** `--write-lease` requests single-writer arbitration: granted if
 free (the prelude `lease` carries a `token`), else you attach read-only and

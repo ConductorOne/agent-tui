@@ -211,8 +211,11 @@ impl PtyChild {
         let (child, stdin_pipe): (Box<dyn Child + Send + Sync>, Option<std::fs::File>) =
             match stdin_mode {
                 StdinMode::Pty => {
-                    // Existing behavior: portable-pty spawn, slave PTY on all
-                    // three FDs.
+                    // portable-pty spawn, slave PTY on all three FDs. We keep
+                    // its robust slave-fd handling (no re-open by `ptsname`,
+                    // which is fragile under remounted `/dev/pts` in sandboxes);
+                    // signal-death exit codes are recovered faithfully in
+                    // `shell_exit_code` from the child's reported `.signal()`.
                     let mut cmd = CommandBuilder::new(&argv[0]);
                     for arg in &argv[1..] {
                         cmd.arg(arg);
@@ -421,7 +424,7 @@ impl PtyChild {
             .child
             .lock()
             .map_err(|e| anyhow!("child poisoned: {e}"))?;
-        Ok(c.try_wait()?.map(|s| s.exit_code()))
+        Ok(c.try_wait()?.map(|s| shell_exit_code(&s)))
     }
 
     /// Forcibly terminate the child via the killer handle.
@@ -742,6 +745,47 @@ fn map_exit(status: std::process::ExitStatus) -> portable_pty::ExitStatus {
     } else {
         portable_pty::ExitStatus::with_exit_code(1)
     }
+}
+
+/// Map a portable-pty `ExitStatus` to a **shell-style** code: a normal exit
+/// keeps its code; a signal death becomes 128 + signal. portable-pty's own unix
+/// child reports a signal death via `.signal()` (a `strsignal` *name*) while
+/// collapsing `.exit_code()` to 1, so we reverse the name to a number using the
+/// same `strsignal` table (locale-independent: it round-trips whatever the
+/// platform produced). The `StdChildShim` path already encodes 128+sig in
+/// `exit_code()` with no signal name, so it falls through unchanged. This is the
+/// one place `try_exit_code` derives the faithful code for every spawn path.
+fn shell_exit_code(status: &portable_pty::ExitStatus) -> u32 {
+    if let Some(name) = status.signal()
+        && let Some(sig) = signal_name_to_num(name)
+    {
+        return 128 + sig;
+    }
+    status.exit_code()
+}
+
+/// Reverse a `strsignal` name to its signal number via the same table that
+/// produced it. Returns `None` for an unknown name (or on non-unix).
+#[cfg(unix)]
+fn signal_name_to_num(name: &str) -> Option<u32> {
+    for sig in 1..=31i32 {
+        #[allow(unsafe_code)]
+        let ptr = unsafe { libc::strsignal(sig) };
+        if ptr.is_null() {
+            continue;
+        }
+        #[allow(unsafe_code)]
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
+        if s == name {
+            return u32::try_from(sig).ok();
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn signal_name_to_num(_name: &str) -> Option<u32> {
+    None
 }
 
 fn pty_reader_loop(

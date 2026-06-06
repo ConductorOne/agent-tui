@@ -189,14 +189,22 @@ async fn spawn_list_die_lifecycle() {
         &cfg,
         Command::Die {
             pane: None,
-            grace: None,
+            grace: Some(Duration::from_secs(2)),
         },
     )
     .await;
 
+    // G5: a killed pane is terminal-RETAINED (not removed) so late observers
+    // and `list` can read its remembered exit code. The pane is still listed,
+    // now carrying an `exit_code` (SIGTERM → 143).
     let list2 = round_trip(&cfg, Command::List { all: false }).await;
     let panes_after = list2.response.data.expect("list data");
-    assert_eq!(panes_after["panes"].as_array().expect("array").len(), 0);
+    let arr = panes_after["panes"].as_array().expect("array");
+    assert_eq!(arr.len(), 1, "killed pane is retained, not removed");
+    assert_eq!(
+        arr[0]["exit_code"], 143,
+        "retained pane shows the remembered SIGTERM exit code"
+    );
 }
 
 #[tokio::test]
@@ -1571,4 +1579,175 @@ async fn attach_write_lease_arbitration() {
         },
     )
     .await;
+}
+
+// ---- exit-code lifecycle (G5) ------------------------------------------
+
+/// Drain an attach connection until its terminal `eof`, returning the
+/// `exit_code` it carried (or `None` if the stream closed without one).
+async fn drain_until_eof(mut lines: tokio::io::Lines<BufReader<Stream>>) -> Option<i64> {
+    loop {
+        let line = timeout(Duration::from_secs(15), lines.next_line())
+            .await
+            .expect("eof timeout")
+            .expect("read err");
+        let line = line?;
+        let env: ResponseEnvelope = serde_json::from_str(&line).expect("decode");
+        let data = env.response.data.unwrap_or(serde_json::Value::Null);
+        if data.get("type").and_then(|t| t.as_str()) == Some("eof") {
+            return data.get("exit_code").and_then(serde_json::Value::as_i64);
+        }
+    }
+}
+
+fn attach_follow_cmd() -> Command {
+    Command::Attach {
+        pane: None,
+        prelude: agent_tui_protocol::request::PreludeKind::None,
+        mode: SnapshotMode::Cells,
+        since: 0,
+        write_lease: false,
+        strip_ansi: false,
+    }
+}
+
+/// G5 fate-fidelity: two followers + a 3rd-client `die --grace` both receive a
+/// faithful `eof{143}` (SIGTERM → 128+15); a LATE attacher after death gets the
+/// remembered code (not "no such pane"); and `list` shows the terminal-retained
+/// pane with its `exit_code`. Fails if the pane is removed immediately or a
+/// 3rd-party die doesn't propagate the code.
+#[tokio::test]
+async fn exit_lifecycle_faithful_eof_late_observer_and_list() {
+    let (cfg, _h) = boot_daemon().await;
+    // `sleep` exits on SIGTERM (no trap) → shell-style 143.
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sleep".into(), "1000".into()],
+            cwd: None,
+            size: Some((40, 10)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // Two concurrent followers attached while the child is alive.
+    let (_pa, lines_a) = attach_open(&cfg, attach_follow_cmd()).await;
+    let (_pb, lines_b) = attach_open(&cfg, attach_follow_cmd()).await;
+
+    // A THIRD client kills the pane with grace → SIGTERM → 143.
+    let die = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: Some(Duration::from_secs(3)),
+        },
+    )
+    .await;
+    assert!(die.response.success, "die failed: {die:?}");
+    assert_eq!(
+        die.response.data.expect("die data")["exit_code"],
+        143,
+        "die reports the remembered SIGTERM exit code"
+    );
+
+    // Both mid-stream followers receive a faithful terminal eof{143}.
+    assert_eq!(
+        drain_until_eof(lines_a).await,
+        Some(143),
+        "follower A eof code"
+    );
+    assert_eq!(
+        drain_until_eof(lines_b).await,
+        Some(143),
+        "follower B eof code"
+    );
+
+    // A LATE attacher (after death) gets the remembered code, not "no such pane".
+    let (prelude_c, lines_c) = attach_open(&cfg, attach_follow_cmd()).await;
+    assert!(
+        prelude_c.get("type").is_some(),
+        "late attach still returns a prelude: {prelude_c}"
+    );
+    assert_eq!(
+        drain_until_eof(lines_c).await,
+        Some(143),
+        "late observer gets the remembered exit code"
+    );
+
+    // `list` shows the terminal-retained pane with its exit code.
+    let list = round_trip(&cfg, Command::List { all: false }).await;
+    let panes = list.response.data.expect("list data");
+    let arr = panes["panes"].as_array().expect("array");
+    assert_eq!(arr.len(), 1, "terminal pane is retained, not removed");
+    assert_eq!(
+        arr[0]["exit_code"], 143,
+        "list surfaces the remembered exit code"
+    );
+}
+
+/// Regression (G5): a terminal-RETAINED pane must not break implicit no-`--pane`
+/// resolution for a later live pane — the multi-turn flow (`spawn; die; spawn;
+/// snapshot`) the bwrap pi e2e exercises. Before the fix, turn 2's no-pane
+/// snapshot failed with "multiple panes" because the retained turn-1 pane
+/// counted toward resolution.
+#[tokio::test]
+async fn retained_pane_does_not_break_implicit_resolution() {
+    let (cfg, _h) = boot_daemon().await;
+    let spawn = |cmd: &str| Command::Spawn {
+        argv: vec!["/bin/sh".into(), "-c".into(), cmd.into()],
+        cwd: None,
+        size: Some((40, 10)),
+        stdin: agent_tui_protocol::request::StdinMode::default(),
+        env: Vec::new(),
+    };
+    // Turn 1: spawn, then die (pane is retained, not removed).
+    let _ = round_trip(&cfg, spawn("printf FIRST_TURN")).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+    // Turn 2: a fresh, FAST-EXITING pane (mirrors `pi --print`, which prints
+    // then exits — so by resolve time BOTH panes are terminal). No `--pane` is
+    // given, exactly like the harness.
+    let _ = round_trip(&cfg, spawn("printf SECOND_TURN_Z9")).await;
+    // Poll the no-pane snapshot until the turn-2 output renders (bounded).
+    let mut ok = false;
+    for _ in 0..100 {
+        let snap = round_trip(
+            &cfg,
+            Command::Snapshot {
+                pane: None,
+                mode: SnapshotMode::Text,
+                png: None,
+                annotate: None,
+                select: None,
+                all: false,
+                keep_color: false,
+            },
+        )
+        .await;
+        if snap.response.success
+            && snap
+                .response
+                .data
+                .as_ref()
+                .and_then(|d| d["text"].as_str())
+                .is_some_and(|t| t.contains("SECOND_TURN_Z9"))
+        {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        ok,
+        "no-pane snapshot must resolve to the live turn-2 pane despite the retained turn-1 pane"
+    );
 }

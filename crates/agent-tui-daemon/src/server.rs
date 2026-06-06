@@ -563,10 +563,13 @@ async fn stream_follow(
                     .await?;
             }
         }
-        // Emit `eof` only once the child exited AND the reader drained the PTY
+        // Emit `eof` once the child has exited AND the reader drained the PTY
         // (the child can be reaped a beat before its last bytes land in the
-        // ring), so a fast-exiting child's final output isn't lost.
-        if pane_arc.pty.try_exit_code().ok().flatten().is_some() && pane_arc.pty.reader_finished() {
+        // ring), so a fast-exiting child's final output isn't lost. The exit
+        // code is the pane's REMEMBERED code (`poll_exit`), authoritative even
+        // when the death was a 3rd-party `die` or the OS handle was already
+        // reaped — so every follower gets the same faithful fate.
+        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
             let tail = pane_arc.pty.tail(cursor);
             if !tail.bytes.is_empty() {
                 let env = wrap_envelope(
@@ -581,7 +584,7 @@ async fn stream_follow(
                 "type": "eof",
                 "pane": pane_arc.id,
                 "next_since": cursor,
-                "exit_code": pane_arc.pty.try_exit_code().ok().flatten(),
+                "exit_code": pane_arc.poll_exit(),
             });
             let env = wrap_envelope(state, req_id, Response::ok(payload));
             return write_envelope(writer, &env).await;

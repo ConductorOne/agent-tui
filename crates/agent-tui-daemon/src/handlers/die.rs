@@ -18,7 +18,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_tui_protocol::{ErrorBody, ErrorCode, PaneId, Response};
+use agent_tui_protocol::{PaneId, Response};
 
 use crate::pane::{Pane, Registry, resolve_focused};
 
@@ -29,24 +29,25 @@ pub async fn run(
     pane: Option<PaneId>,
     grace: Option<Duration>,
 ) -> Response {
-    let id = match resolve_focused(registry, pane).await {
-        Ok(p) => p.id.clone(),
+    let entry = match resolve_focused(registry, pane).await {
+        Ok(p) => p,
         Err(resp) => return resp,
     };
-
-    let Some(entry) = registry.remove(&id).await else {
-        return Response::err(ErrorBody::new(
-            ErrorCode::NoActivePane,
-            format!("pane {id} not found"),
-            "call list to see live panes",
-        ));
-    };
+    let id = entry.id.clone();
 
     // Demote focus to `Held` when the focused pane dies. Future no-`--pane`
     // commands error until the user re-focuses explicitly.
     registry.mark_focus_held_if(&id).await;
 
     let outcome = teardown(&entry, grace).await;
+
+    // Terminal-RETAINED: the pane stays in the registry with its exit code
+    // remembered (not removed), so mid-stream followers still receive a
+    // faithful `eof{exit_code}` and late observers / `list` read the outcome
+    // instead of "no such pane". With `--grace` the child is already dead here,
+    // so we can record the code now; an immediate `die` records it lazily on
+    // the next observe.
+    let exit_code = entry.poll_exit();
 
     Response::ok(serde_json::json!({
         "pane": id,
@@ -57,6 +58,8 @@ pub async fn run(
         // True when the grace window elapsed and we had to SIGKILL the group.
         "escalated": outcome.escalated,
         "kill_error": outcome.error,
+        // Remembered shell-style exit code (signal death → 128+sig), when known.
+        "exit_code": exit_code,
     }))
 }
 

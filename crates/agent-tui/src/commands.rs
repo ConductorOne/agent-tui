@@ -374,6 +374,7 @@ async fn tail_follow(
         follow: true,
     };
     let mut stdout = std::io::stdout().lock();
+    let mut child_exit: Option<i32> = None;
     client::stream(&layout, cmd, |env| {
         if env.response.is_failure() {
             // Print the error envelope and stop.
@@ -403,12 +404,26 @@ async fn tail_follow(
                     stdout.flush().ok();
                 }
             }
-            Some("eof") => return Ok(false),
+            Some("eof") => {
+                child_exit = data
+                    .get("exit_code")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|c| i32::try_from(c).ok());
+                return Ok(false);
+            }
             _ => {}
         }
         Ok(true)
     })
-    .await
+    .await?;
+    // Flush before any hard exit — `process::exit` skips buffered stdout.
+    stdout.flush().ok();
+    // Mirror the child's fate: a supervising process running `tail --follow` /
+    // `watch` sees the child's true exit status (e.g. 137/143) as its own.
+    if let Some(code) = child_exit {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 /// Parse an optional `--lease` token string into a `Uuid`.
@@ -443,6 +458,7 @@ async fn attach_stream(
         strip_ansi,
     };
     let mut stdout = std::io::stdout().lock();
+    let mut child_exit: Option<i32> = None;
     client::stream(&layout, cmd, |env| {
         if env.response.is_failure() {
             writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
@@ -456,6 +472,10 @@ async fn attach_stream(
         };
         let ty = data.get("type").and_then(serde_json::Value::as_str);
         if matches!(ty, Some("eof")) {
+            child_exit = data
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|c| i32::try_from(c).ok());
             return Ok(false);
         }
         // Non-JSON: emit the raw follow bytes (chunks, and a raw prelude).
@@ -472,7 +492,14 @@ async fn attach_stream(
         }
         Ok(true)
     })
-    .await
+    .await?;
+    // Flush before any hard exit — `process::exit` skips buffered stdout.
+    stdout.flush().ok();
+    // Mirror the child's fate as this CLI process's exit status (137/143/…).
+    if let Some(code) = child_exit {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 /// Replay an asciicast file through a fresh engine and emit the
