@@ -1751,3 +1751,180 @@ async fn retained_pane_does_not_break_implicit_resolution() {
         "no-pane snapshot must resolve to the live turn-2 pane despite the retained turn-1 pane"
     );
 }
+
+// ---- ring-buffer eviction / tail lost_bytes (cov-1, P0) ----------------
+
+/// The output ring's eviction cap (mirrors `OUTPUT_BUFFER_CAP` in `pty.rs`).
+const RING_CAP: u64 = 1_048_576;
+
+/// Poll a one-shot `tail --since 0` until the cumulative high-water mark
+/// (`next_since`) exceeds `target` bytes, returning that response's data.
+/// Used to wait until a flood has pushed past the 1 MiB ring cap.
+async fn tail0_until_total(cfg: &DaemonConfig, target: u64) -> serde_json::Value {
+    for _ in 0..600 {
+        let r = round_trip(
+            cfg,
+            Command::Tail {
+                pane: None,
+                since: 0,
+                strip_ansi: false,
+                follow: false,
+            },
+        )
+        .await;
+        if let Some(d) = r.response.data {
+            if d["next_since"].as_u64().unwrap_or(0) > target {
+                return d;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("flood never exceeded {target} bytes within the wait window");
+}
+
+/// cov-1 (gap #1, P0): the output ring evicts at a 1 MiB cap, so a reader
+/// whose `--since` is older than the retained floor MUST be told it lost the
+/// evicted prefix (`lost_bytes > 0`) — never silently corrupted — and the
+/// numbers must be internally consistent + monotonic. Fails if `lost_bytes`
+/// were hard-coded 0 or eviction reporting regressed.
+#[tokio::test]
+async fn tail_reports_lost_bytes_after_ring_eviction() {
+    let (cfg, _h) = boot_daemon().await;
+    // `seq 1 500000` emits ~3.9 MiB (with PTY CRLF) and exits — deterministic,
+    // bounded, well over the 1_048_576-byte ring cap.
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sh".into(), "-c".into(), "seq 1 500000".into()],
+            cwd: None,
+            size: Some((80, 24)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // Wait until the flood has pushed well past the 1 MiB cap, then assert on
+    // that same atomic `tail --since 0` response.
+    let d = tail0_until_total(&cfg, RING_CAP + 500_000).await;
+    let next_since = d["next_since"].as_u64().expect("next_since");
+    let lost = d["lost_bytes"].as_u64().expect("lost_bytes");
+    let retained = base64::engine::general_purpose::STANDARD
+        .decode(d["bytes_b64"].as_str().expect("bytes_b64"))
+        .expect("b64")
+        .len() as u64;
+
+    assert!(
+        next_since > RING_CAP,
+        "high-water {next_since} must exceed the ring cap"
+    );
+    assert!(
+        lost > 0,
+        "a --since 0 below the evicted floor must report lost_bytes>0"
+    );
+    assert!(
+        retained <= RING_CAP,
+        "retained {retained} must not exceed the ring cap {RING_CAP}"
+    );
+    // The evicted prefix + the retained suffix == every byte ever observed.
+    assert_eq!(
+        lost + retained,
+        next_since,
+        "lost + retained must equal total (no gap/overlap)"
+    );
+
+    // Monotonic + consistent: reading from the reported high-water returns no
+    // earlier data and never a smaller cursor.
+    let d2 = round_trip(
+        &cfg,
+        Command::Tail {
+            pane: None,
+            since: next_since,
+            strip_ansi: false,
+            follow: false,
+        },
+    )
+    .await;
+    let next2 = d2.response.data.expect("data")["next_since"]
+        .as_u64()
+        .expect("next_since");
+    assert!(
+        next2 >= next_since,
+        "next_since must be monotonic ({next2} >= {next_since})"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// cov-1: a follower that joins AFTER the flood has crossed the eviction
+/// horizon is flagged (`lost_bytes>0` in its raw prelude) — not silently
+/// corrupted or panicked — keeps a monotone cursor, and terminates with a
+/// clean `eof`. Exercises the streaming/attach eviction path end to end.
+#[tokio::test]
+async fn follower_past_eviction_horizon_is_flagged_then_eofs() {
+    let (cfg, _h) = boot_daemon().await;
+    // A flood that spans ~2s (so a follower genuinely joins mid-flight) and
+    // exceeds the 1 MiB cap: 60 lines × ~30 KiB.
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "i=0; while [ $i -lt 60 ]; do printf '%030000dEOL\\n' $i; sleep 0.03; i=$((i+1)); done".into(),
+            ],
+            cwd: None,
+            size: Some((80, 24)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // Wait until output has crossed the eviction horizon (>1 MiB buffered).
+    let _ = tail0_until_total(&cfg, RING_CAP + 200_000).await;
+
+    // Join now with a RAW prelude from offset 0 — below the evicted floor — so
+    // the prelude must report the lost prefix.
+    let (prelude, lines) = attach_open(
+        &cfg,
+        Command::Attach {
+            pane: None,
+            prelude: agent_tui_protocol::request::PreludeKind::Raw,
+            mode: SnapshotMode::Cells,
+            since: 0,
+            write_lease: false,
+            strip_ansi: false,
+        },
+    )
+    .await;
+    assert_eq!(prelude["prelude"], "raw");
+    let p_lost = prelude["lost_bytes"].as_u64().expect("prelude lost_bytes");
+    let p_next = prelude["next_since"].as_u64().expect("prelude next_since");
+    assert!(
+        p_lost > 0,
+        "late follower at since 0 must be flagged lost_bytes>0, got {p_lost}"
+    );
+    assert!(
+        p_next > RING_CAP,
+        "follower prelude high-water {p_next} must exceed the cap"
+    );
+
+    // Follow to a clean terminal eof (never panics; monotone cursor honored by
+    // the daemon's stream loop).
+    let code = drain_until_eof(lines).await;
+    assert_eq!(
+        code,
+        Some(0),
+        "flood child exits 0; follower must see a clean eof"
+    );
+}
