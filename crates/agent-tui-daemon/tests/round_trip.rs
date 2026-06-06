@@ -1928,3 +1928,147 @@ async fn follower_past_eviction_horizon_is_flagged_then_eofs() {
         "flood child exits 0; follower must see a clean eof"
     );
 }
+
+// ---- idle-pane disconnect -> write-lease auto-release (cov-2, P0) -------
+
+/// An `attach --write-lease` command with no prelude (we only care about the
+/// lease, not the screen) — used to acquire/probe the single-writer lease.
+fn lease_attach_cmd() -> Command {
+    Command::Attach {
+        pane: None,
+        prelude: agent_tui_protocol::request::PreludeKind::None,
+        mode: SnapshotMode::Cells,
+        since: 0,
+        write_lease: true,
+        strip_ansi: false,
+    }
+}
+
+/// Poll `attach --write-lease` (a fresh connection each try) until the lease is
+/// granted or the bounded window elapses. Returns the number of ~40ms polls it
+/// took (0 = first try), or `None` if never granted. Each probe connection is
+/// dropped immediately so it doesn't itself hold the lease.
+async fn poll_until_lease_granted(cfg: &DaemonConfig, max_tries: u32) -> Option<u32> {
+    for tries in 0..max_tries {
+        let (prelude, lines) = attach_open(cfg, lease_attach_cmd()).await;
+        let granted = prelude["lease"]["granted"] == serde_json::Value::Bool(true);
+        drop(lines); // release this probe's lease immediately
+        if granted {
+            return Some(tries);
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    None
+}
+
+/// cov-2 (gap #2, P0): the write-lease must auto-release when its holder
+/// disconnects from an **idle** pane that emits no output — exercising the
+/// read-half disconnect watcher, NOT the eof/output-driven release the G4 test
+/// covered. A browser viewer holding the lease that closes its tab while the
+/// task sits idle at a prompt must free the lease.
+#[tokio::test]
+async fn idle_pane_disconnect_releases_write_lease() {
+    let (cfg, _h) = boot_daemon().await;
+    // `sleep 1000` never emits a byte → the ONLY way A's disconnect is noticed
+    // is the read-half watcher (no chunk/eof traffic drives the release).
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/sleep".into(), "1000".into()],
+            cwd: None,
+            size: Some((40, 10)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    // A acquires the lease on the silent pane.
+    let (prelude_a, lines_a) = attach_open(&cfg, lease_attach_cmd()).await;
+    assert_eq!(
+        prelude_a["lease"]["granted"], true,
+        "A should be granted: {prelude_a}"
+    );
+    let token_a = prelude_a["lease"]["token"]
+        .as_str()
+        .expect("A token")
+        .to_string();
+
+    // While A holds it, a probe is denied and names A as the holder.
+    let (probe, probe_lines) = attach_open(&cfg, lease_attach_cmd()).await;
+    assert_eq!(probe["lease"]["granted"], false, "held while A connected");
+    assert_eq!(
+        probe["lease"]["held_by"].as_str(),
+        Some(token_a.as_str()),
+        "denied probe must name A as holder"
+    );
+    drop(probe_lines);
+
+    // Drop A's connection. The pane is still idle (no output) — release must
+    // come from the read-half watcher noticing the socket close.
+    drop(lines_a);
+
+    // Within a bounded window, B can acquire (lease auto-released).
+    let polls = poll_until_lease_granted(&cfg, 75).await; // ≤ ~3s
+    assert!(
+        polls.is_some(),
+        "idle-pane disconnect did not release the lease (B never granted) — watcher leak"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// cov-2 contrast: the same disconnect path also releases on a BUSY pane (one
+/// actively emitting output), so release works regardless of traffic.
+#[tokio::test]
+async fn busy_pane_disconnect_releases_write_lease() {
+    let (cfg, _h) = boot_daemon().await;
+    let env = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "i=0; while [ $i -lt 200 ]; do echo tick-$i; sleep 0.05; i=$((i+1)); done".into(),
+            ],
+            cwd: None,
+            size: Some((40, 10)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(env.response.success, "spawn failed: {env:?}");
+
+    let (prelude_a, lines_a) = attach_open(&cfg, lease_attach_cmd()).await;
+    assert_eq!(
+        prelude_a["lease"]["granted"], true,
+        "A should be granted on busy pane"
+    );
+
+    // Drop A mid-flow (pane is actively emitting).
+    drop(lines_a);
+
+    let polls = poll_until_lease_granted(&cfg, 75).await;
+    assert!(
+        polls.is_some(),
+        "busy-pane disconnect did not release the lease"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
