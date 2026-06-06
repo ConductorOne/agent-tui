@@ -135,6 +135,21 @@ async fn run_foreground_daemon(
     };
     let handle = run_daemon(cfg).await?;
     handle.shutdown.notified().await;
+    // Reap every pane's PTY process group before this process exits. The
+    // shutdown notify fires on owner death (`--monitor-parent`), idle timeout,
+    // or explicit `daemon shutdown`; in every case the daemon is about to exit
+    // and must take its PTY children down with it — the RFC's #1 adoption
+    // hazard (owner crash must not orphan a daemon's worth of PTY processes).
+    //
+    // This MUST happen here, in the foreground task that controls process exit:
+    // the per-pane PTY reader is a `spawn_blocking` thread parked in a blocking
+    // `read()` on the master, which `JoinHandle::abort` cannot cancel. If we
+    // just return, the tokio runtime's drop blocks waiting for that thread —
+    // which never returns until the child EOFs — so the daemon process hangs
+    // alive AND the child leaks. SIGKILLing the child group here makes the
+    // master EOF, unblocking the reader so the runtime can wind down, and
+    // reaps the child so nothing is orphaned.
+    handle.reap_all_panes().await;
     Ok(())
 }
 
