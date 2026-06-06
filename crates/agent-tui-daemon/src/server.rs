@@ -104,12 +104,53 @@ impl DaemonState {
     }
 }
 
-/// Handle returned by [`run_daemon`]. Currently only carries a shutdown
-/// signal; `wait` on `.shutdown_notified()` to know when the loop exits.
-#[derive(Debug, Clone)]
+/// Handle returned by [`run_daemon`]. Carries the shutdown signal (`wait` on
+/// `.shutdown.notified()` to know when the loop exits) and the pane registry
+/// (so a graceful-shutdown caller can reap PTY children before the process
+/// exits — see [`DaemonHandle::reap_all_panes`]).
+#[derive(Clone)]
 pub struct DaemonHandle {
     /// Notify channel fired when the daemon is about to exit.
     pub shutdown: Arc<Notify>,
+    /// Pane registry, shared with the running daemon's [`DaemonState`].
+    pub registry: Arc<Registry>,
+}
+
+impl DaemonHandle {
+    /// Reap every live pane's process GROUP. Call this on graceful shutdown
+    /// (owner death via `--monitor-parent`, idle timeout, explicit `daemon
+    /// shutdown`) **before the process exits**.
+    ///
+    /// This is the load-bearing guarantee behind `--monitor-parent` — the
+    /// RFC's #1 adoption hazard: when the owner (e.g. Squire's env-manager)
+    /// dies, the daemon must take its PTY children (and any forked
+    /// grandchildren) down with it, or an owner crash orphans a daemon's worth
+    /// of PTY processes. It cannot be done from `Drop`: when the foreground
+    /// daemon's main returns after the shutdown notify, the tokio runtime tears
+    /// the accept-loop task down **without running its `DaemonState`/registry
+    /// destructors**, so `PtyChild::drop` never fires. And closing the PTY
+    /// master does not reliably `SIGHUP` a `setsid` child. So we reap
+    /// explicitly here, from the foreground task that controls process exit.
+    ///
+    /// SIGKILL the group (mirroring `die`'s group-aware teardown); best-effort
+    /// and only while the child is still alive (a terminal-retained pane has
+    /// already exited — skip it to avoid signalling a stale/reused pgid).
+    #[cfg(unix)]
+    pub async fn reap_all_panes(&self) {
+        for pane in self.registry.all_panes().await {
+            if matches!(pane.pty.try_exit_code(), Ok(None))
+                && let Some(pgid) = pane.pty.pgid()
+            {
+                let _ =
+                    crate::handlers::signal::killpg_pgid(pgid, nix::sys::signal::Signal::SIGKILL);
+            }
+        }
+    }
+
+    /// No-op on non-Unix (the daemon's Windows teardown path is still in
+    /// design — see the `--monitor-parent` note in [`run_daemon`]).
+    #[cfg(not(unix))]
+    pub async fn reap_all_panes(&self) {}
 }
 
 /// Start the daemon. Blocks on the accept loop until `shutdown` is fired.
@@ -149,8 +190,12 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     );
 
     let shutdown = Arc::new(Notify::new());
+    // The registry is shared with the handle so a graceful-shutdown caller can
+    // reap PTY children before the process exits (see `reap_all_panes`).
+    let registry = Arc::new(Registry::new());
     let handle = DaemonHandle {
         shutdown: shutdown.clone(),
+        registry: registry.clone(),
     };
 
     let governance = build_governance(&cfg);
@@ -166,7 +211,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
 
     let state = DaemonState {
         cfg,
-        registry: Arc::new(Registry::new()),
+        registry,
         generations: Arc::new(handlers::snapshot::GenerationTracker::default()),
         hashes: Arc::new(HashWindow::new()),
         adapters: AdapterRegistry::with_builtins(),
