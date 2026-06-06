@@ -1969,7 +1969,7 @@ async fn poll_until_lease_granted(cfg: &DaemonConfig, max_tries: u32) -> Option<
 #[tokio::test]
 async fn idle_pane_disconnect_releases_write_lease() {
     let (cfg, _h) = boot_daemon().await;
-    // `sleep 1000` never emits a byte → the ONLY way A's disconnect is noticed
+    // `sleep 30` never emits a byte → the ONLY way A's disconnect is noticed
     // is the read-half watcher (no chunk/eof traffic drives the release).
     let env = round_trip(
         &cfg,
@@ -2071,4 +2071,211 @@ async fn busy_pane_disconnect_releases_write_lease() {
         },
     )
     .await;
+}
+
+// ---- resolve_focused >1-live ambiguity (cov-3, P0) ---------------------
+
+/// cov-3 (gap #3, P0): implicit (no-`--pane`) resolution must return a clean
+/// ambiguity error when more than one pane is LIVE — never silently pick one —
+/// and `--pane` / `pane focus` must disambiguate. Completes the resolve matrix
+/// alongside the merged 0-live (most-recent) and 1-live cases.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn resolve_ambiguity_on_multiple_live_panes() {
+    let (cfg, _h) = boot_daemon().await;
+    let spawn = |cmd: &str| Command::Spawn {
+        argv: vec!["/bin/sh".into(), "-c".into(), cmd.into()],
+        cwd: None,
+        size: Some((40, 10)),
+        stdin: agent_tui_protocol::request::StdinMode::default(),
+        env: Vec::new(),
+    };
+    let snap_nopane = || Command::Snapshot {
+        pane: None,
+        mode: SnapshotMode::Text,
+        png: None,
+        annotate: None,
+        select: None,
+        all: false,
+        keep_color: false,
+    };
+    let snap_pane = |id: &str| Command::Snapshot {
+        pane: Some(agent_tui_protocol::PaneId(id.into())),
+        mode: SnapshotMode::Text,
+        png: None,
+        annotate: None,
+        select: None,
+        all: false,
+        keep_color: false,
+    };
+    let text_of = |env: &ResponseEnvelope| {
+        env.response
+            .data
+            .as_ref()
+            .and_then(|d| d["text"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Two long-lived, distinguishable panes — both LIVE (printed then `sleep`).
+    let p1 = round_trip(&cfg, spawn("printf PANE_ONE; sleep 30")).await;
+    assert!(p1.response.success);
+    let id1 = p1.response.data.expect("p1")["pane"]
+        .as_str()
+        .expect("id1")
+        .to_string();
+    let p2 = round_trip(&cfg, spawn("printf PANE_TWO; sleep 30")).await;
+    assert!(p2.response.success);
+    let id2 = p2.response.data.expect("p2")["pane"]
+        .as_str()
+        .expect("id2")
+        .to_string();
+    assert!(
+        wait_for_text_pane(&cfg, &id1, "PANE_ONE").await,
+        "p1 never rendered"
+    );
+    assert!(
+        wait_for_text_pane(&cfg, &id2, "PANE_TWO").await,
+        "p2 never rendered"
+    );
+
+    // (1) >1 live → clean ambiguity error across the shared no-`--pane` verbs;
+    //     NEVER a silent pick of one pane, NEVER a panic.
+    let assert_ambiguous = |env: &ResponseEnvelope, verb: &str| {
+        assert!(
+            !env.response.success,
+            "{verb} must error on >1 live: {env:?}"
+        );
+        let err = env.response.error.as_ref().expect("error body");
+        assert!(
+            err.message.contains("multiple live panes"),
+            "{verb} must return the ambiguity error, got: {}",
+            err.message
+        );
+    };
+    assert_ambiguous(&round_trip(&cfg, snap_nopane()).await, "snapshot");
+    assert_ambiguous(
+        &round_trip(
+            &cfg,
+            Command::Type {
+                pane: None,
+                text: "x".into(),
+                to: None,
+                lease: None,
+            },
+        )
+        .await,
+        "type",
+    );
+    assert_ambiguous(
+        &round_trip(
+            &cfg,
+            Command::Wait {
+                pane: None,
+                condition: agent_tui_protocol::request::WaitCondition::Text { regex: "x".into() },
+                timeout: Duration::from_millis(500),
+            },
+        )
+        .await,
+        "wait",
+    );
+
+    // (2a) `--pane` disambiguates — explicit id resolves to that pane.
+    assert!(text_of(&round_trip(&cfg, snap_pane(&id1)).await).contains("PANE_ONE"));
+    assert!(text_of(&round_trip(&cfg, snap_pane(&id2)).await).contains("PANE_TWO"));
+
+    // (2b) `pane focus <id>` then a no-`--pane` verb resolves to the focused one.
+    let f = round_trip(
+        &cfg,
+        Command::Focus {
+            pane: Some(agent_tui_protocol::PaneId(id1.clone())),
+        },
+    )
+    .await;
+    assert!(f.response.success, "focus failed: {f:?}");
+    let focused = round_trip(&cfg, snap_nopane()).await;
+    assert!(
+        focused.response.success,
+        "focused snapshot must resolve: {focused:?}"
+    );
+    assert!(
+        text_of(&focused).contains("PANE_ONE"),
+        "focus must target p1"
+    );
+
+    // (3) Matrix completeness: kill p1 → exactly 1 live (p2) → no-`--pane`
+    //     resolves to it (the 1-live branch). Clear focus first so we exercise
+    //     auto-resolution, not the lingering focus.
+    let _ = round_trip(&cfg, Command::Focus { pane: None }).await;
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: Some(agent_tui_protocol::PaneId(id1.clone())),
+            grace: None,
+        },
+    )
+    .await;
+    // `die grace:None` is fire-and-forget SIGTERM: it returns BEFORE p1's child
+    // exits and is reaped, so `is_terminal(p1)` may still be false the instant
+    // `die` returns. While p1 is still live there are 2 live panes and the
+    // resolver CORRECTLY reports ambiguity — that is not the condition under
+    // test. Bound-poll until p1 has flipped to terminal-retained (the no-`--pane`
+    // snapshot stops erroring and resolves to p2), THEN assert. On a fast runner
+    // the first poll wins; on a slow/cold macOS runner this absorbs the reap
+    // latency without ever masking a real >1-live bug — we still require the
+    // resolved snapshot to be p2's, never an arbitrary pick.
+    let mut after = round_trip(&cfg, snap_nopane()).await;
+    for _ in 0..200 {
+        if after.response.success && text_of(&after).contains("PANE_TWO") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        after = round_trip(&cfg, snap_nopane()).await;
+    }
+    assert!(
+        after.response.success,
+        "1-live no-pane must resolve once p1 is terminal-retained: {after:?}"
+    );
+    assert!(
+        text_of(&after).contains("PANE_TWO"),
+        "must resolve to the sole live pane p2, never an arbitrary pick: {after:?}"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// Poll a `--pane`-targeted text snapshot until `needle` appears (bounded).
+async fn wait_for_text_pane(cfg: &DaemonConfig, id: &str, needle: &str) -> bool {
+    for _ in 0..100 {
+        let s = round_trip(
+            cfg,
+            Command::Snapshot {
+                pane: Some(agent_tui_protocol::PaneId(id.into())),
+                mode: SnapshotMode::Text,
+                png: None,
+                annotate: None,
+                select: None,
+                all: false,
+                keep_color: false,
+            },
+        )
+        .await;
+        if s.response
+            .data
+            .as_ref()
+            .and_then(|d| d["text"].as_str())
+            .is_some_and(|t| t.contains(needle))
+        {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
 }
