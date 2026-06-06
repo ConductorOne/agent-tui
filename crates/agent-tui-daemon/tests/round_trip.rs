@@ -2279,3 +2279,190 @@ async fn wait_for_text_pane(cfg: &DaemonConfig, id: &str, needle: &str) -> bool 
     }
     false
 }
+
+// ---- write-lease gate uniform across all 4 write verbs (cov-4, gap #4, P1) --
+
+/// A write-verb constructor parameterized by an optional lease token, so the
+/// cov-4 test can loop the same gate matrix over the whole write surface.
+type WriteVerb = fn(Option<Uuid>) -> Command;
+
+/// cov-4 (gap #4, P1): the single-writer write-lease gate must be **uniform**
+/// across every write verb — `type`, `press`, `send-ansi`, and `stdin` all
+/// route through the same `lease_denied`/`write_allowed` check, so a non-holder
+/// must be rejected on *each* of them (G4 only proved `type`). A future change
+/// that drops the gate from any one verb would silently let a browser viewer
+/// without the lease inject input through that verb — a real single-driver hole.
+///
+/// The pane is spawned `stdin: Pipe` so the holder path of all four verbs
+/// returns success: `stdin` needs the pipe, and `type`/`press`/`send-ansi`
+/// write the PTY master regardless of stdin mode. The lease is per-pane and
+/// independent of stdin mode, so the gate matrix is identical for every verb.
+///
+/// Discriminating: parameterized over the four verbs, so removing the gate from
+/// ANY single verb flips that verb's non-holder assertion from "rejected" to
+/// "succeeded" and fails the test for exactly that verb. `resize` is asserted
+/// to be the deliberate carve-out (geometry is not gated).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn write_lease_gate_uniform_across_all_write_verbs() {
+    let (cfg, _h) = boot_daemon().await;
+    let spawned = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((40, 10)),
+            stdin: agent_tui_protocol::request::StdinMode::Pipe,
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(spawned.response.success, "spawn failed: {spawned:?}");
+
+    // A acquires the single-writer lease and holds it for the duration (the
+    // lease is bound to A's connection `lines_a`; dropping it releases).
+    let lease_cmd = || Command::Attach {
+        pane: None,
+        prelude: agent_tui_protocol::request::PreludeKind::None,
+        mode: SnapshotMode::Cells,
+        since: 0,
+        write_lease: true,
+        strip_ansi: false,
+    };
+    let (prelude_a, lines_a) = attach_open(&cfg, lease_cmd()).await;
+    assert_eq!(
+        prelude_a["lease"]["granted"], true,
+        "A should be granted the lease: {prelude_a:?}"
+    );
+    let token = Uuid::parse_str(prelude_a["lease"]["token"].as_str().expect("token"))
+        .expect("lease token is a uuid");
+
+    // One byte 'x' (hex 78) / key "a" per verb. Non-capturing fns so we can
+    // loop the SAME matrix over the whole write surface.
+    let verbs: [(&str, WriteVerb); 4] = [
+        ("type", |lease| Command::Type {
+            pane: None,
+            text: "x".into(),
+            to: None,
+            lease,
+        }),
+        ("press", |lease| Command::Press {
+            pane: None,
+            keys: "a".into(),
+            to: None,
+            lease,
+        }),
+        ("send-ansi", |lease| Command::SendAnsi {
+            pane: None,
+            bytes_hex: "78".into(),
+            lease,
+        }),
+        ("stdin", |lease| Command::Stdin {
+            pane: None,
+            bytes_hex: "78".into(),
+            lease,
+        }),
+    ];
+
+    // (1) Uniform gate while A holds the lease: for EACH verb a non-holder is
+    //     rejected EBUSY-style, a foreign token is rejected, and A's token
+    //     passes. This is the per-verb discriminator.
+    for (name, make) in verbs {
+        // non-holder (no token) -> EBUSY-style INVALID_ARGS citing the lease.
+        let denied = round_trip(&cfg, make(None)).await;
+        assert!(
+            !denied.response.success,
+            "{name}: non-holder write must be rejected while a lease is held: {denied:?}"
+        );
+        let err = denied
+            .response
+            .error
+            .as_ref()
+            .expect("error body on denial");
+        assert_eq!(
+            err.code,
+            agent_tui_protocol::ErrorCode::InvalidArgs,
+            "{name}: gate must reject with INVALID_ARGS (EBUSY-style): {err:?}"
+        );
+        assert!(
+            err.message.contains("write-lease"),
+            "{name}: rejection must cite the write-lease, got: {}",
+            err.message
+        );
+
+        // foreign token -> still rejected (proves the gate checks the HOLDER,
+        // not mere token presence).
+        let foreign = round_trip(&cfg, make(Some(Uuid::nil()))).await;
+        assert!(
+            !foreign.response.success,
+            "{name}: a foreign lease token must be rejected: {foreign:?}"
+        );
+
+        // holder (A's token) -> passes the gate and succeeds.
+        let ok = round_trip(&cfg, make(Some(token))).await;
+        assert!(
+            ok.response.success,
+            "{name}: the lease holder's write must succeed: {ok:?}"
+        );
+    }
+
+    // (2) Contrast: `resize` is the deliberate carve-out. A non-holder resize
+    //     succeeds while A holds the lease — keystroke input is gated, geometry
+    //     is not. (If resize were ever gated this assertion fails.)
+    let resize = round_trip(
+        &cfg,
+        Command::Resize {
+            pane: None,
+            cols: 50,
+            rows: 12,
+        },
+    )
+    .await;
+    assert!(
+        resize.response.success,
+        "resize must NOT be lease-gated (deliberate carve-out): {resize:?}"
+    );
+
+    // (3) No-lease free-for-all: drop A's connection so the lease auto-releases
+    //     (read-half disconnect watcher), then every write verb must succeed for
+    //     an unauthenticated client — single-driver back-compat is unaffected.
+    drop(lines_a);
+    let mut released = false;
+    for _ in 0..100 {
+        let probe = round_trip(
+            &cfg,
+            Command::Type {
+                pane: None,
+                text: "z".into(),
+                to: None,
+                lease: None,
+            },
+        )
+        .await;
+        if probe.response.success {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        released,
+        "lease must auto-release after the holder disconnects"
+    );
+    for (name, make) in verbs {
+        let ok = round_trip(&cfg, make(None)).await;
+        assert!(
+            ok.response.success,
+            "{name}: with no lease outstanding any client must be able to write: {ok:?}"
+        );
+    }
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
