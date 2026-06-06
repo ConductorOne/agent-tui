@@ -1969,7 +1969,7 @@ async fn poll_until_lease_granted(cfg: &DaemonConfig, max_tries: u32) -> Option<
 #[tokio::test]
 async fn idle_pane_disconnect_releases_write_lease() {
     let (cfg, _h) = boot_daemon().await;
-    // `sleep 1000` never emits a byte → the ONLY way A's disconnect is noticed
+    // `sleep 30` never emits a byte → the ONLY way A's disconnect is noticed
     // is the read-half watcher (no chunk/eof traffic drives the release).
     let env = round_trip(
         &cfg,
@@ -2118,13 +2118,13 @@ async fn resolve_ambiguity_on_multiple_live_panes() {
     };
 
     // Two long-lived, distinguishable panes — both LIVE (printed then `sleep`).
-    let p1 = round_trip(&cfg, spawn("printf PANE_ONE; sleep 1000")).await;
+    let p1 = round_trip(&cfg, spawn("printf PANE_ONE; sleep 30")).await;
     assert!(p1.response.success);
     let id1 = p1.response.data.expect("p1")["pane"]
         .as_str()
         .expect("id1")
         .to_string();
-    let p2 = round_trip(&cfg, spawn("printf PANE_TWO; sleep 1000")).await;
+    let p2 = round_trip(&cfg, spawn("printf PANE_TWO; sleep 30")).await;
     assert!(p2.response.success);
     let id2 = p2.response.data.expect("p2")["pane"]
         .as_str()
@@ -2215,14 +2215,30 @@ async fn resolve_ambiguity_on_multiple_live_panes() {
         },
     )
     .await;
-    let after = round_trip(&cfg, snap_nopane()).await;
+    // `die grace:None` is fire-and-forget SIGTERM: it returns BEFORE p1's child
+    // exits and is reaped, so `is_terminal(p1)` may still be false the instant
+    // `die` returns. While p1 is still live there are 2 live panes and the
+    // resolver CORRECTLY reports ambiguity — that is not the condition under
+    // test. Bound-poll until p1 has flipped to terminal-retained (the no-`--pane`
+    // snapshot stops erroring and resolves to p2), THEN assert. On a fast runner
+    // the first poll wins; on a slow/cold macOS runner this absorbs the reap
+    // latency without ever masking a real >1-live bug — we still require the
+    // resolved snapshot to be p2's, never an arbitrary pick.
+    let mut after = round_trip(&cfg, snap_nopane()).await;
+    for _ in 0..200 {
+        if after.response.success && text_of(&after).contains("PANE_TWO") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        after = round_trip(&cfg, snap_nopane()).await;
+    }
     assert!(
         after.response.success,
-        "1-live no-pane must resolve: {after:?}"
+        "1-live no-pane must resolve once p1 is terminal-retained: {after:?}"
     );
     assert!(
         text_of(&after).contains("PANE_TWO"),
-        "must resolve to the sole live pane p2"
+        "must resolve to the sole live pane p2, never an arbitrary pick: {after:?}"
     );
 
     let _ = round_trip(
