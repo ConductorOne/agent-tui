@@ -2738,3 +2738,277 @@ async fn concurrent_followers_slow_one_late_joiner_and_cursor_independence() {
     )
     .await;
 }
+
+// ---- resize-vs-live-stream race (cov-9, gap #8 — FINAL Phase-B gap) ---------
+
+/// The focused pane's live dimensions per `list` (G2 reports live, post-resize
+/// dims rather than the spawn-time size).
+async fn list_dims(cfg: &DaemonConfig) -> (u64, u64) {
+    let l = round_trip(cfg, Command::List { all: false }).await;
+    let data = l.response.data.expect("list data");
+    let p = &data["panes"].as_array().expect("panes array")[0];
+    (
+        p["cols"].as_u64().expect("list cols"),
+        p["rows"].as_u64().expect("list rows"),
+    )
+}
+
+/// The focused pane's rendered grid dimensions per `snapshot --mode cells`.
+async fn snapshot_grid_dims(cfg: &DaemonConfig) -> (u64, u64) {
+    let s = round_trip(
+        cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Cells,
+            png: None,
+            annotate: None,
+            select: None,
+            all: false,
+            keep_color: false,
+        },
+    )
+    .await;
+    let data = s.response.data.expect("snapshot data");
+    let cells = &data["cells"];
+    (
+        cells["cols"].as_u64().expect("grid cols"),
+        cells["rows"].as_u64().expect("grid rows"),
+    )
+}
+
+/// Poll `list` until the live dims equal `(cols, rows)`, bounded.
+async fn wait_for_dims(cfg: &DaemonConfig, cols: u64, rows: u64) -> bool {
+    for _ in 0..250 {
+        if list_dims(cfg).await == (cols, rows) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// cov-9 (gap #8, FINAL Phase-B gap): a `resize` arriving WHILE a follower is
+/// mid-stream. Squire's env-manager resizes the PTY when the browser viewport
+/// changes during a live `tail`/`attach`. The alacritty engine wraps `Term`
+/// behind a single Mutex, so feed/resize/snapshot are serialized; this pins that
+/// the concurrent resize×stream interaction is safe: no panic, no daemon wedge,
+/// the new dims take effect (in `list` AND the snapshot grid), and the follower
+/// keeps receiving cleanly across the resize.
+///
+/// A background task continuously FEEDS a real `cat` (pipe stdin → PTY stdout)
+/// so the daemon's PTY reader is actively `engine.feed`-ing (and the grid
+/// reflows on resize) WHILE the main task resizes — genuine concurrency, not a
+/// quiescent pane. Newline-free `x` keeps ring byte-accounting exact; paced
+/// (~5 MB/s) under the per-poll no-loss ceiling. Every wait polls a real
+/// condition (follower progress, observed dims); no blind sleeps (cov-3 lesson).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn resize_during_live_stream_is_safe_and_takes_effect() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let (cfg, _h) = boot_daemon().await;
+    let spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            size: Some((80, 24)),
+            stdin: agent_tui_protocol::request::StdinMode::Pipe,
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(spawn.response.success, "spawn failed: {spawn:?}");
+    let pane_id = spawn.response.data.expect("spawn data")["pane"]
+        .as_str()
+        .expect("pane id")
+        .to_string();
+    assert_eq!(
+        list_dims(&cfg).await,
+        (80, 24),
+        "initial dims must be 80x24"
+    );
+
+    // Background feeder keeps the PTY reader actively engine.feed-ing while we
+    // resize.
+    let stop = Arc::new(AtomicBool::new(false));
+    let feeder_cfg = cfg.clone();
+    let feeder_stop = stop.clone();
+    let feeder = tokio::spawn(async move {
+        let block_hex = "78".repeat(32 * 1024);
+        for _ in 0..2000u32 {
+            if feeder_stop.load(Ordering::Acquire) {
+                break;
+            }
+            let fed = round_trip(
+                &feeder_cfg,
+                Command::Stdin {
+                    pane: None,
+                    bytes_hex: block_hex.clone(),
+                    lease: None,
+                },
+            )
+            .await;
+            if !fed.response.success {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(6)).await;
+        }
+    });
+
+    // A follower actively receiving, tracking live progress + per-read
+    // consistency, draining to eof.
+    let (pf, lines_f) = attach_open(&cfg, attach_follow_cmd()).await;
+    let start_f = pf["since"].as_u64().expect("prelude since");
+    let received = Arc::new(AtomicU64::new(0));
+    let recv2 = received.clone();
+    let follower = tokio::spawn(async move {
+        let mut lines_f = lines_f;
+        let mut prev = start_f;
+        let mut consistent = true;
+        let mut monotonic = true;
+        let mut saw_eof = false;
+        loop {
+            let Ok(Ok(Some(line))) = timeout(Duration::from_secs(25), lines_f.next_line()).await
+            else {
+                break;
+            };
+            let env: ResponseEnvelope = serde_json::from_str(&line).expect("decode");
+            let data = env.response.data.unwrap_or(serde_json::Value::Null);
+            match data.get("type").and_then(|t| t.as_str()) {
+                Some("chunk") => {
+                    let lost = data["lost_bytes"].as_u64().unwrap_or(0);
+                    let next = data["next_since"].as_u64().unwrap_or(0);
+                    let blen = data
+                        .get("bytes_b64")
+                        .and_then(|v| v.as_str())
+                        .map_or(0, |b| {
+                            base64::engine::general_purpose::STANDARD
+                                .decode(b)
+                                .expect("b64")
+                                .len() as u64
+                        });
+                    if next.checked_sub(prev) != Some(lost + blen) {
+                        consistent = false;
+                    }
+                    if next < prev {
+                        monotonic = false;
+                    }
+                    prev = next;
+                    recv2.fetch_add(blen, Ordering::Release);
+                }
+                Some("eof") => {
+                    saw_eof = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (consistent, monotonic, saw_eof)
+    });
+
+    // Wait until the follower is actively receiving before we resize.
+    for _ in 0..300 {
+        if received.load(Ordering::Acquire) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let pre = received.load(Ordering::Acquire);
+    assert!(pre > 0, "follower must be receiving before the resize");
+
+    // (1) RESIZE mid-stream → must succeed, take effect, not wedge/panic.
+    let rz = round_trip(
+        &cfg,
+        Command::Resize {
+            pane: Some(agent_tui_protocol::PaneId(pane_id.clone())),
+            cols: 100,
+            rows: 30,
+        },
+    )
+    .await;
+    assert!(rz.response.success, "mid-stream resize failed: {rz:?}");
+
+    // New dims take effect in BOTH list (live dims) and the snapshot grid.
+    assert!(
+        wait_for_dims(&cfg, 100, 30).await,
+        "list must report the new dims 100x30 after a mid-stream resize"
+    );
+    assert_eq!(
+        snapshot_grid_dims(&cfg).await,
+        (100, 30),
+        "snapshot --mode cells grid must match the new dims"
+    );
+
+    // Daemon stays responsive (a follow-up command succeeds — not wedged).
+    let resp = round_trip(&cfg, Command::List { all: false }).await;
+    assert!(
+        resp.response.success,
+        "daemon must stay responsive after a mid-stream resize"
+    );
+
+    // Follower keeps receiving across the resize (≥ 256 KiB more bytes).
+    for _ in 0..600 {
+        if received.load(Ordering::Acquire) >= pre + 256 * 1024 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let now = received.load(Ordering::Acquire);
+    assert!(
+        now >= pre + 256 * 1024,
+        "follower must keep receiving after the resize (pre={pre}, now={now})"
+    );
+
+    // (3) Multiple rapid resizes mid-stream must settle to the LAST dims (no
+    //     stuck intermediate grid).
+    for (c, r) in [(120u16, 40u16), (110, 36), (90, 28)] {
+        let rz = round_trip(
+            &cfg,
+            Command::Resize {
+                pane: Some(agent_tui_protocol::PaneId(pane_id.clone())),
+                cols: c,
+                rows: r,
+            },
+        )
+        .await;
+        assert!(rz.response.success, "rapid resize {c}x{r} failed: {rz:?}");
+    }
+    assert!(
+        wait_for_dims(&cfg, 90, 28).await,
+        "rapid resizes must settle to the last dims 90x28 (no stuck intermediate)"
+    );
+    assert_eq!(
+        snapshot_grid_dims(&cfg).await,
+        (90, 28),
+        "snapshot grid must reflect the settled dims"
+    );
+
+    // Tear down: stop feeding, close cat's stdin (cat exits), follower eofs.
+    stop.store(true, Ordering::Release);
+    let _ = feeder.await;
+    let _ = round_trip(&cfg, Command::CloseStdin { pane: None }).await;
+    let (consistent, monotonic, saw_eof) = follower.await.expect("follower task");
+    assert!(
+        saw_eof,
+        "follower must terminate on eof after the child exits"
+    );
+    assert!(
+        monotonic,
+        "follower next_since must be monotonic across resizes"
+    );
+    assert!(
+        consistent,
+        "follower per-read accounting must hold across resizes (next - prev == lost + delivered)"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
