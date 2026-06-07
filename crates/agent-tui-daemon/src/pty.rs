@@ -17,6 +17,7 @@ use agent_tui_protocol::request::StdinMode;
 use agent_tui_recorder::Recorder;
 use anyhow::{Context, Result, anyhow};
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// A spawned PTY child, paired with the engine that consumes its output.
@@ -65,6 +66,12 @@ pub struct PtyChild {
     /// output isn't dropped (the child can be reaped by `try_wait` a beat
     /// before the reader thread flushes the last bytes).
     reader_done: Arc<AtomicBool>,
+    /// Notify-on-append channel: the reader task publishes the ring's new
+    /// high-water mark here after every chunk push. Streaming followers
+    /// subscribe via [`Self::subscribe_output`] and block on `changed()`
+    /// instead of polling, collapsing echo latency to the ring-freshness
+    /// floor. The held sender keeps the channel alive for late subscribers.
+    output_tx: watch::Sender<u64>,
 }
 
 /// Holds the first ~`MAX_FIRST_BYTES` bytes of PTY output for the adapter
@@ -148,7 +155,7 @@ impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
     /// reader task piping output into `engine.feed`. `recorder`, when
     /// supplied, gets a tee of every byte chunk read from the PTY.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
@@ -284,6 +291,11 @@ impl PtyChild {
         let reader_capture_lock = capture_lock.clone();
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_done_signal = reader_done.clone();
+        // Notify-on-append channel. The reader task publishes the ring's new
+        // high-water mark; followers block on `changed()` for low-latency
+        // streaming. The retained sender (`output_tx` below) keeps it open.
+        let (output_tx, _output_rx) = watch::channel(0u64);
+        let reader_output_tx = output_tx.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(
                 reader,
@@ -293,6 +305,7 @@ impl PtyChild {
                 &reader_osc133,
                 &reader_output_buf,
                 &reader_capture_lock,
+                &reader_output_tx,
             );
             // Reader saw EOF/error and is exiting: every byte the child
             // wrote is now in the output ring. Publish *after* the loop so
@@ -315,6 +328,7 @@ impl PtyChild {
             first_bytes,
             last_osc133,
             reader_done,
+            output_tx,
         })
     }
 
@@ -485,6 +499,17 @@ impl PtyChild {
     #[must_use]
     pub fn reader_finished(&self) -> bool {
         self.reader_done.load(Ordering::Acquire)
+    }
+
+    /// Subscribe to output-append notifications. The returned `watch::Receiver`
+    /// observes the output ring's high-water mark and fires `changed()` every
+    /// time the reader task appends a new chunk. Streaming followers
+    /// (`attach`, `tail --follow`) block on this instead of polling on a fixed
+    /// tick, so an echoed keystroke reaches the follower as soon as the child
+    /// produces it rather than at the next periodic flush.
+    #[must_use]
+    pub fn subscribe_output(&self) -> watch::Receiver<u64> {
+        self.output_tx.subscribe()
     }
 }
 
@@ -788,6 +813,7 @@ fn signal_name_to_num(_name: &str) -> Option<u32> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pty_reader_loop(
     mut reader: Box<dyn Read + Send>,
     engine: &Arc<dyn Engine>,
@@ -796,6 +822,7 @@ fn pty_reader_loop(
     last_osc133: &Arc<Mutex<Option<crate::osc133::Marker>>>,
     output_buf: &Arc<Mutex<OutputRing>>,
     capture_lock: &Arc<Mutex<()>>,
+    output_tx: &watch::Sender<u64>,
 ) {
     let mut buf = [0u8; 8192];
     let mut osc_scanner = crate::osc133::Scanner::new();
@@ -811,6 +838,7 @@ fn pty_reader_loop(
                 // Feed the engine and push to the ring as one unit under the
                 // capture lock, so an `attach` capture observes a consistent
                 // (rendered frame, high-water) pair — no byte falls between.
+                let mut new_total: Option<u64> = None;
                 let feed_result = {
                     let Ok(_cap) = capture_lock.lock() else {
                         break;
@@ -820,12 +848,19 @@ fn pty_reader_loop(
                         && let Ok(mut ring) = output_buf.lock()
                     {
                         ring.push(&buf[..n]);
+                        new_total = Some(ring.total);
                     }
                     r
                 };
                 if let Err(e) = feed_result {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
                     break;
+                }
+                // Wake any streaming followers as soon as the bytes are in the
+                // ring (outside the capture lock). `send_replace` never errors,
+                // even with zero current subscribers.
+                if let Some(total) = new_total {
+                    output_tx.send_replace(total);
                 }
                 if let Some(rec) = recorder {
                     rec.push_output(&buf[..n]);

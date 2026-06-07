@@ -352,15 +352,18 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
 /// Stream the child's output to the client as new bytes arrive.
 /// Emits one envelope per chunk plus a final `{type:"eof"}` envelope.
 ///
-/// Polling cadence (~50ms) is chosen so:
-///   - the response feels live for human-visible output rates
-///   - the daemon doesn't spin on idle children
-///   - the overhead per empty poll is one mutex-lock + one u64-compare
+/// Streaming is **event-driven**: the follow loop blocks on the PTY's
+/// notify-on-append channel ([`crate::pty::PtyChild::subscribe_output`]) and
+/// flushes the moment the child produces output, so an echoed keystroke
+/// reaches the follower at the ring-freshness floor (low single-digit ms)
+/// instead of waiting for a periodic tick. To avoid a wakeup storm under
+/// sustained high-throughput output, the loop coalesces within a small window
+/// ([`stream_coalesce_window`]) after each flush. A slow [`STREAM_IDLE_TICK`] fallback
+/// keeps exit / lease / disconnect checks responsive on a quiet pane without
+/// busy-spinning (the loop blocks on the notify, it does not poll).
 ///
-/// Subscribing to the engine's mutation broadcast would be more
-/// elegant, but for `tail` we want byte-level deltas (which are
-/// upstream of engine mutations), so a polling loop on the output
-/// ring is the right primitive.
+/// We follow the byte-level output ring (upstream of engine mutations) rather
+/// than the engine's mutation broadcast, because `tail` wants raw byte deltas.
 /// Which multi-envelope streaming path a connection takes (if any).
 enum StreamKind {
     None,
@@ -560,10 +563,40 @@ fn chunk_payload(
     }
 }
 
-/// Shared follow loop for `tail --follow` and `attach`: poll the output ring
+/// Coalescing window applied *after* a flush so a sustained high-throughput
+/// burst batches into the next read instead of waking the loop per chunk. The
+/// first byte after an idle period is flushed immediately (no added latency);
+/// only follow-on bytes within this window are batched. Overridable per
+/// connection via `AGENT_TUI_STREAM_MAX_LATENCY_MS`.
+const STREAM_COALESCE_DEFAULT_MS: u64 = 2;
+
+/// Fallback wake cadence for a *quiet* pane: with no output to notify us, we
+/// still re-check child-exit / lease-change / client-disconnect this often.
+/// Output latency no longer depends on this — it is governed by the
+/// notify-on-append channel — so this only bounds how fast we notice an idle
+/// pane's exit or a lease handoff, matching the pre-change 50ms behavior.
+const STREAM_IDLE_TICK: tokio::time::Duration = tokio::time::Duration::from_millis(50);
+
+/// Resolve the post-flush coalescing window, honoring an optional
+/// `AGENT_TUI_STREAM_MAX_LATENCY_MS` override (clamped to a sane ceiling).
+fn stream_coalesce_window() -> tokio::time::Duration {
+    let ms = std::env::var("AGENT_TUI_STREAM_MAX_LATENCY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(STREAM_COALESCE_DEFAULT_MS, |v| v.min(1000));
+    tokio::time::Duration::from_millis(ms)
+}
+
+/// Shared follow loop for `tail --follow` and `attach`: stream the output ring
 /// from `cursor`, emit a `chunk` envelope per new delta, and a terminal `eof`
 /// once the child has exited AND the reader has drained. When `emit_lease` is
 /// set (attach), also push a `lease` envelope whenever the holder changes.
+///
+/// Event-driven: blocks on the PTY's notify-on-append channel and flushes the
+/// moment the child produces output (echo latency ≈ ring-freshness floor),
+/// coalescing a sustained burst within [`stream_coalesce_window`]. A slow
+/// [`STREAM_IDLE_TICK`] fallback keeps exit/lease/disconnect checks live on a
+/// quiet pane without busy-spinning.
 #[allow(clippy::too_many_arguments)]
 async fn stream_follow(
     state: &DaemonState,
@@ -575,7 +608,8 @@ async fn stream_follow(
     emit_lease: bool,
     disconnected: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<()> {
-    let poll_interval = tokio::time::Duration::from_millis(50);
+    let coalesce = stream_coalesce_window();
+    let mut output_rx = pane_arc.pty.subscribe_output();
     let mut last_lease = pane_arc.lease_holder();
     loop {
         // Client gone (read half hit EOF) → stop so the caller can release any
@@ -585,8 +619,13 @@ async fn stream_follow(
         }
         // A live follower shouldn't count as idle.
         state.touch_activity();
+        // Mark the current high-water mark seen *before* reading the ring, so a
+        // chunk pushed between this read and the wait below still fires
+        // `changed()` — no lost wakeup.
+        output_rx.mark_unchanged();
         let read = pane_arc.pty.tail(cursor);
-        if !read.bytes.is_empty() {
+        let had_output = !read.bytes.is_empty();
+        if had_output {
             let env = wrap_envelope(
                 state,
                 req_id,
@@ -634,7 +673,25 @@ async fn stream_follow(
             let env = wrap_envelope(state, req_id, Response::ok(payload));
             return write_envelope(writer, &env).await;
         }
-        tokio::time::sleep(poll_interval).await;
+        if had_output {
+            // We just flushed promptly; briefly coalesce so a sustained burst
+            // batches into the next read instead of waking us per chunk, then
+            // loop back to drain it. Bounds the max flush rate at 1/coalesce.
+            tokio::time::sleep(coalesce).await;
+        } else {
+            // Quiet: block until the reader appends new bytes (low-latency
+            // wakeup) or the idle tick fires to re-check exit/lease/disconnect.
+            // `changed()` only errs if the sender dropped (pane gone) — the
+            // idle tick then drives the exit path on the next iteration.
+            tokio::select! {
+                r = output_rx.changed() => {
+                    if r.is_err() {
+                        tokio::time::sleep(STREAM_IDLE_TICK).await;
+                    }
+                }
+                () = tokio::time::sleep(STREAM_IDLE_TICK) => {}
+            }
+        }
     }
 }
 
