@@ -26,6 +26,7 @@ pub mod pty;
 pub mod render;
 pub mod server;
 pub mod sidecar;
+pub mod upgrade;
 
 pub use paths::SocketLayout;
 pub use server::{DaemonConfig, DaemonHandle, run_daemon};

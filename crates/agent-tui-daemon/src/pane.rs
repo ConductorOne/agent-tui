@@ -176,6 +176,19 @@ impl Registry {
         arc
     }
 
+    /// Insert a pane reconstructed during an in-place upgrade adoption,
+    /// advancing the id allocator so a later `spawn` never collides with the
+    /// adopted id. `counter` is the numeric suffix of the adopted pane's id
+    /// (`p<N>` → `N`).
+    pub async fn adopt_insert(&self, pane: Pane, counter: u64) -> Arc<Pane> {
+        // next_id is monotonic; make sure it sits strictly past the adopted id.
+        let cur = self.next_id.load(Ordering::Relaxed);
+        if counter >= cur {
+            self.next_id.store(counter + 1, Ordering::Relaxed);
+        }
+        self.insert(pane).await
+    }
+
     /// Look up a pane by id.
     pub async fn get(&self, id: &PaneId) -> Option<Arc<Pane>> {
         self.panes.read().await.get(id).cloned()

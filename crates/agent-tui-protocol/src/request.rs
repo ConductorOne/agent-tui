@@ -384,6 +384,18 @@ pub enum Command {
         #[serde(default)]
         force: bool,
     },
+    /// In-place daemon upgrade (Option-A re-exec). The daemon validates the
+    /// new binary, hands off its live pane(s) — PTY master fd + child
+    /// process — across an `execve` into the SAME PID, and the new image
+    /// adopts them. The child harness never sees a SIGHUP and exit-code
+    /// fidelity is preserved because the daemon stays the child's parent.
+    DaemonUpgrade {
+        /// Path to the new binary to exec. `None` re-execs the daemon's own
+        /// current executable (the production path: the on-disk file is
+        /// swapped out-of-band, then `daemon upgrade` re-execs it).
+        #[serde(default)]
+        binary: Option<String>,
+    },
 }
 
 /// Top-level wire request envelope.

@@ -87,7 +87,8 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # Unix integration (Linux/macOS-only callers feature-gate as needed).
-nix = { version = "0.30", features = ["fs", "user", "signal", "term"] }
+# `process` powers `waitpid` on an adopted (re-exec'd) PTY child.
+nix = { version = "0.30", features = ["fs", "user", "signal", "term", "process"] }
 
 # Embedded skill-data files.
 include_dir = "0.7"
