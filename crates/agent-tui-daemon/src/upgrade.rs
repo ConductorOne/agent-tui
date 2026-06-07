@@ -403,6 +403,7 @@ pub async fn adopt(state: &DaemonState) {
     }
 }
 
+/// In-place upgrade is Unix-only; nothing to adopt on other platforms.
 #[cfg(not(unix))]
 pub async fn adopt(_state: &DaemonState) {}
 
