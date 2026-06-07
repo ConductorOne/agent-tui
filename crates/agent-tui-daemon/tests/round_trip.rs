@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use agent_tui_daemon::{DaemonConfig, SocketLayout, run_daemon};
 use agent_tui_protocol::request::SnapshotMode;
-use agent_tui_protocol::{Command, PROTOCOL_VERSION, Request, ResponseEnvelope, SessionId};
+use agent_tui_protocol::{Command, PROTOCOL_VERSION, PaneId, Request, ResponseEnvelope, SessionId};
 use base64::Engine as _;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
@@ -3001,6 +3001,183 @@ async fn resize_during_live_stream_is_safe_and_takes_effect() {
     assert!(
         consistent,
         "follower per-read accounting must hold across resizes (next - prev == lost + delivered)"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
+}
+
+/// Lowercase-hex encode (mirrors what the `send-ansi` CLI sends as `bytes_hex`).
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty() || haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Decode a streaming `chunk` envelope's raw bytes into `seen` (no-op for
+/// non-chunk envelopes like `eof`). Shared by the latency follow loop below.
+fn absorb_chunk(line: &str, seen: &mut Vec<u8>) {
+    let env: ResponseEnvelope = serde_json::from_str(line).expect("decode");
+    let data = env.response.data.unwrap_or(serde_json::Value::Null);
+    if data.get("type").and_then(|t| t.as_str()) == Some("chunk") {
+        if let Some(b64) = data.get("bytes_b64").and_then(|b| b.as_str()) {
+            seen.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .expect("b64"),
+            );
+        }
+    }
+}
+
+/// Latency regression guard for the follower-broadcast path (bd `pqprime-x0l`).
+///
+/// Before the notify-on-append fix the daemon flushed ring bytes to streaming
+/// followers on a fixed ~50ms (≈20Hz) periodic tick, so an echoed keystroke
+/// took a median of ~51ms to reach an `attach` / `tail --follow` consumer —
+/// the felt input lag for an interactive harness PTY. The fix wakes the follow
+/// loop the moment the child produces output (coalescing only a sub-millisecond
+/// burst), collapsing the round-trip toward the ring-freshness floor.
+///
+/// This drives the **real** daemon over a **real** UDS with a **real** PTY
+/// child (`cat`, echoing via the terminal): spawn → open a live `tail --follow`
+/// → repeatedly `send-ansi` a unique marker and time how long until that marker
+/// surfaces on the follow stream. We assert the median round-trip stays under a
+/// CI-stable bound (15ms) — far below the old ~51ms tick, with headroom for a
+/// loaded runner. No stub anywhere on the path.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn follower_round_trip_is_low_latency() {
+    let (cfg, _h) = boot_daemon().await;
+
+    // `cat` echoes stdin to stdout; `stty -echo -icanon` makes the terminal
+    // driver quiet and byte-immediate so each marker surfaces exactly once,
+    // promptly — the same child the standalone latency_probe.py uses.
+    let spawn = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![
+                "/bin/bash".into(),
+                "-lc".into(),
+                "stty -echo -icanon; cat".into(),
+            ],
+            cwd: None,
+            size: Some((80, 24)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: Vec::new(),
+        },
+    )
+    .await;
+    assert!(spawn.response.success, "spawn failed: {spawn:?}");
+    let pane = spawn.response.data.expect("spawn data")["pane"]
+        .as_str()
+        .expect("pane id")
+        .to_string();
+
+    // Let `cat` wire up its controlling tty before we type at it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Open a live `tail --follow` connection and hold it open for the run.
+    let name = agent_tui_daemon::paths::socket_name(&cfg.layout).expect("name");
+    let stream = Stream::connect(name).await.expect("connect follower");
+    let req = Request {
+        id: Uuid::new_v4(),
+        protocol: PROTOCOL_VERSION,
+        command: Command::Tail {
+            pane: Some(PaneId(pane.clone())),
+            since: 0,
+            strip_ansi: false,
+            follow: true,
+        },
+    };
+    let mut bytes = serde_json::to_vec(&req).expect("encode");
+    bytes.push(b'\n');
+    let (r, mut w) = tokio::io::split(stream);
+    w.write_all(&bytes).await.expect("write tail req");
+    let mut lines = BufReader::new(r).lines();
+
+    // Accumulates every raw follow byte seen, so a marker that happens to span
+    // two chunks is still found.
+    let mut seen: Vec<u8> = Vec::new();
+
+    // Drain any startup chatter until the stream goes quiet (~150ms idle).
+    while let Ok(Ok(Some(line))) = timeout(Duration::from_millis(150), lines.next_line()).await {
+        absorb_chunk(&line, &mut seen);
+    }
+
+    // Measure N round-trips. Discard the first few as warmup.
+    let rounds = 20usize;
+    let warmup = 5usize;
+    let mut samples_ms: Vec<f64> = Vec::new();
+    for i in 0..rounds {
+        let marker = format!("RT{i}END");
+        let mut payload = marker.clone().into_bytes();
+        payload.push(b'\n');
+        let hex = hex_encode(&payload);
+
+        let t0 = Instant::now();
+        let send = round_trip(
+            &cfg,
+            Command::SendAnsi {
+                pane: Some(PaneId(pane.clone())),
+                bytes_hex: hex,
+                lease: None,
+            },
+        )
+        .await;
+        assert!(send.response.success, "send-ansi failed: {send:?}");
+
+        // Read follow chunks until the marker surfaces.
+        let needle = marker.as_bytes();
+        let scan_from = seen.len().saturating_sub(needle.len());
+        if !contains_subslice(&seen[scan_from..], needle) {
+            loop {
+                let line = timeout(Duration::from_secs(2), lines.next_line())
+                    .await
+                    .expect("follow read timeout")
+                    .expect("follow read err")
+                    .expect("follow eof");
+                absorb_chunk(&line, &mut seen);
+                if contains_subslice(&seen, needle) {
+                    break;
+                }
+            }
+        }
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if i >= warmup {
+            samples_ms.push(elapsed_ms);
+        }
+    }
+
+    samples_ms.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+    let median = samples_ms[samples_ms.len() / 2];
+    let max = *samples_ms.last().expect("samples");
+    eprintln!(
+        "follower round-trip over {} samples: median={median:.1}ms min={:.1}ms max={max:.1}ms",
+        samples_ms.len(),
+        samples_ms[0],
+    );
+
+    // Old behavior: median ~51ms (the 50ms periodic tick). New behavior:
+    // low single-digit ms. 15ms is a CI-stable bound that the periodic-tick
+    // regression cannot pass while leaving headroom for a loaded runner.
+    assert!(
+        median < 15.0,
+        "follower round-trip median {median:.1}ms (max {max:.1}ms) exceeds the 15ms bound — \
+         the ~50ms periodic-flush regression is back (bd pqprime-x0l)"
     );
 
     let _ = round_trip(
