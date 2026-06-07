@@ -11,6 +11,7 @@ use crate::client;
 use crate::gc;
 
 /// Top-level dispatch entry point.
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch(cli: Cli) -> Result<()> {
     // The `wezterm` engine is an unimplemented placeholder. Fail fast and
     // name the working alternative instead of silently behaving as
@@ -26,10 +27,28 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             DaemonAction::Run {
                 monitor_parent,
                 idle_timeout_secs,
-            } => run_foreground_daemon(&cli.globals, monitor_parent, idle_timeout_secs).await,
+                adopt_handoff,
+            } => {
+                run_foreground_daemon(
+                    &cli.globals,
+                    monitor_parent,
+                    idle_timeout_secs,
+                    adopt_handoff,
+                )
+                .await
+            }
             DaemonAction::Status => one_shot_print(&cli.globals, Command::DaemonStatus).await,
             DaemonAction::Shutdown { force } => {
                 one_shot_print(&cli.globals, Command::DaemonShutdown { force }).await
+            }
+            DaemonAction::Upgrade { binary } => {
+                one_shot_print(
+                    &cli.globals,
+                    Command::DaemonUpgrade {
+                        binary: binary.map(|p| p.to_string_lossy().into_owned()),
+                    },
+                )
+                .await
             }
         },
         CliCmd::Session(args) => match args.action {
@@ -119,6 +138,7 @@ async fn run_foreground_daemon(
     g: &crate::cli::GlobalArgs,
     monitor_parent: Option<u32>,
     idle_timeout_secs: Option<u64>,
+    adopt_handoff: Option<String>,
 ) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
     // `--allowed-binaries` is also wired to AGENT_TUI_ALLOWED_BINARIES via
@@ -132,6 +152,7 @@ async fn run_foreground_daemon(
         allowed_binaries: g.allowed_binaries.clone(),
         monitor_parent,
         idle_timeout_secs,
+        adopt_handoff,
     };
     let handle = run_daemon(cfg).await?;
     handle.shutdown.notified().await;

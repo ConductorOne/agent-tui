@@ -26,7 +26,7 @@ use tokio::task::JoinHandle;
 /// fd-owning types), so we wrap each in a `Mutex` to make the whole struct
 /// `Send + Sync` for storage inside `Arc<Pane>`.
 pub struct PtyChild {
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    master: MasterEnd,
     writer: Mutex<Box<dyn Write + Send>>,
     /// Separate write end of the child's stdin when `stdin_mode == Pipe`.
     /// `None` for `Pty` (writes go through `writer`) and `Closed` (stdin
@@ -47,8 +47,7 @@ pub struct PtyChild {
     /// atomicity contract). Held briefly per chunk by the reader and once per
     /// `capture()` by an attacher.
     capture_lock: Arc<Mutex<()>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    child: ChildEnd,
     /// Reader task handle; kept so callers can abort/await on drop.
     reader: Mutex<Option<JoinHandle<()>>>,
     /// Optional recorder so input events can be teed back into the cast log.
@@ -65,6 +64,42 @@ pub struct PtyChild {
     /// output isn't dropped (the child can be reaped by `try_wait` a beat
     /// before the reader thread flushes the last bytes).
     reader_done: Arc<AtomicBool>,
+}
+
+/// The master end of the PTY, abstracted over the two ways a [`PtyChild`]
+/// comes to own one:
+///
+///  - [`MasterEnd::Portable`] — the normal `spawn` path, where `portable-pty`
+///    allocated the pair and hands us a `MasterPty` trait object.
+///  - [`MasterEnd::Adopted`] — the in-place-upgrade path, where the new daemon
+///    image inherited a raw master fd (by number, across `execve`) from the
+///    previous image. There is no `portable-pty` object to rebuild — exec
+///    nuked it — so we hold the fd directly and drive resize/pgid via raw
+///    `ioctl`/`tcgetpgrp` on it.
+enum MasterEnd {
+    Portable(Mutex<Box<dyn MasterPty + Send>>),
+    #[cfg(unix)]
+    Adopted(Mutex<std::os::fd::OwnedFd>),
+}
+
+/// The child process, abstracted over `spawn` vs `adopt`.
+///
+///  - [`ChildEnd::Portable`] — `portable-pty`'s `Child` + `ChildKiller`.
+///  - [`ChildEnd::Adopted`] — after a same-PID re-exec the daemon is STILL the
+///    child's parent, so `waitpid` works directly. We track the pid plus a
+///    memoized exit code (set the first time `waitpid` reports termination).
+enum ChildEnd {
+    Portable {
+        child: Mutex<Box<dyn Child + Send + Sync>>,
+        killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    },
+    #[cfg(unix)]
+    Adopted {
+        pid: i32,
+        /// Memoized shell-style exit code (signal death → 128+sig), once the
+        /// adopted child has been reaped via `waitpid`.
+        exited: Mutex<Option<u32>>,
+    },
 }
 
 /// Holds the first ~`MAX_FIRST_BYTES` bytes of PTY output for the adapter
@@ -302,14 +337,102 @@ impl PtyChild {
         });
 
         Ok(Self {
-            master: Mutex::new(pair.master),
+            master: MasterEnd::Portable(Mutex::new(pair.master)),
             writer: Mutex::new(writer),
             stdin_pipe: Mutex::new(stdin_pipe),
             stdin_mode,
             output_buf,
             capture_lock,
-            child: Mutex::new(child),
-            killer: Mutex::new(killer),
+            child: ChildEnd::Portable {
+                child: Mutex::new(child),
+                killer: Mutex::new(killer),
+            },
+            reader: Mutex::new(Some(reader_handle)),
+            recorder,
+            first_bytes,
+            last_osc133,
+            reader_done,
+        })
+    }
+
+    /// Adopt a PTY master fd + child process inherited across an in-place
+    /// daemon re-exec (`daemon upgrade`, Option-A).
+    ///
+    /// `master_fd` is a raw fd the previous daemon image left open across
+    /// `execve` (it cleared `FD_CLOEXEC` first). We take ownership of it,
+    /// derive blocking reader + writer handles from `dup`s, and start the
+    /// same reader loop `spawn` uses — feeding `engine` and (re-)recording
+    /// into `recorder`. `child_pid` is the surviving child; because the
+    /// re-exec preserved the daemon's PID, `waitpid(child_pid)` still works,
+    /// so exit-code fidelity carries over for free. `last_exit` seeds the
+    /// memoized exit code for a pane that had already terminated before the
+    /// upgrade (terminal-retained).
+    #[cfg(unix)]
+    pub fn adopt(
+        master_fd: std::os::fd::RawFd,
+        child_pid: i32,
+        last_exit: Option<i32>,
+        engine: Arc<dyn Engine>,
+        recorder: Option<Recorder>,
+    ) -> Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        // Take ownership of the inherited fd.
+        #[allow(unsafe_code)]
+        let owned = unsafe { OwnedFd::from_raw_fd(master_fd) };
+
+        // PTY masters are normally blocking; clear O_NONBLOCK defensively so
+        // the blocking reader loop doesn't spin on EAGAIN if the prior image
+        // had flipped it.
+        clear_nonblocking(owned.as_raw_fd());
+
+        // Independent dup'd handles for the reader and writer so each owns its
+        // own fd (closing one doesn't disturb the canonical master or the
+        // other), mirroring how `portable-pty` hands out a reader + writer.
+        let reader_fd = dup_owned(&owned)?;
+        let writer_fd = dup_owned(&owned)?;
+        let reader: Box<dyn Read + Send> = Box::new(std::fs::File::from(reader_fd));
+        let writer: Box<dyn Write + Send> = Box::new(std::fs::File::from(writer_fd));
+
+        let reader_engine = engine;
+        let reader_recorder = recorder.clone();
+        let first_bytes = Arc::new(Mutex::new(FirstBytes::default()));
+        let reader_first_bytes = first_bytes.clone();
+        let last_osc133 = Arc::new(Mutex::new(None));
+        let reader_osc133 = last_osc133.clone();
+        let output_buf = Arc::new(Mutex::new(OutputRing::default()));
+        let reader_output_buf = output_buf.clone();
+        let capture_lock = Arc::new(Mutex::new(()));
+        let reader_capture_lock = capture_lock.clone();
+        let reader_done = Arc::new(AtomicBool::new(false));
+        let reader_done_signal = reader_done.clone();
+        let reader_handle = tokio::task::spawn_blocking(move || {
+            pty_reader_loop(
+                reader,
+                &reader_engine,
+                reader_recorder.as_ref(),
+                &reader_first_bytes,
+                &reader_osc133,
+                &reader_output_buf,
+                &reader_capture_lock,
+            );
+            reader_done_signal.store(true, Ordering::Release);
+        });
+
+        Ok(Self {
+            master: MasterEnd::Adopted(Mutex::new(owned)),
+            writer: Mutex::new(writer),
+            // The original stdin pipe (if any) did not survive the exec; an
+            // adopted pane writes input through the PTY master like `Pty` mode.
+            stdin_pipe: Mutex::new(None),
+            stdin_mode: StdinMode::Pty,
+            output_buf,
+            capture_lock,
+            child: ChildEnd::Adopted {
+                pid: child_pid,
+                #[allow(clippy::cast_sign_loss)]
+                exited: Mutex::new(last_exit.map(|c| c as u32)),
+            },
             reader: Mutex::new(Some(reader_handle)),
             recorder,
             first_bytes,
@@ -399,18 +522,34 @@ impl PtyChild {
     /// Inform the kernel of a new window size; the child receives SIGWINCH.
     /// Tees an `r` event to the attached recorder, if any.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        let m = self
-            .master
-            .lock()
-            .map_err(|e| anyhow!("master poisoned: {e}"))?;
-        m.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .context("pty resize")?;
-        drop(m);
+        match &self.master {
+            MasterEnd::Portable(m) => {
+                let m = m.lock().map_err(|e| anyhow!("master poisoned: {e}"))?;
+                m.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .context("pty resize")?;
+            }
+            #[cfg(unix)]
+            MasterEnd::Adopted(fd) => {
+                use std::os::fd::AsRawFd;
+                let fd = fd.lock().map_err(|e| anyhow!("master poisoned: {e}"))?;
+                let ws = libc::winsize {
+                    ws_row: rows,
+                    ws_col: cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                #[allow(unsafe_code)]
+                let rc = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+                if rc == -1 {
+                    return Err(std::io::Error::last_os_error()).context("pty resize (TIOCSWINSZ)");
+                }
+            }
+        }
         if let Some(rec) = &self.recorder {
             rec.push_resize(cols, rows);
         }
@@ -420,36 +559,97 @@ impl PtyChild {
     /// Poll the child without blocking. Returns the exit code if the child
     /// has terminated.
     pub fn try_exit_code(&self) -> Result<Option<u32>> {
-        let mut c = self
-            .child
-            .lock()
-            .map_err(|e| anyhow!("child poisoned: {e}"))?;
-        Ok(c.try_wait()?.map(|s| shell_exit_code(&s)))
+        match &self.child {
+            ChildEnd::Portable { child, .. } => {
+                let mut c = child.lock().map_err(|e| anyhow!("child poisoned: {e}"))?;
+                Ok(c.try_wait()?.map(|s| shell_exit_code(&s)))
+            }
+            #[cfg(unix)]
+            ChildEnd::Adopted { pid, exited } => {
+                let mut slot = exited.lock().map_err(|e| anyhow!("exited poisoned: {e}"))?;
+                if let Some(code) = *slot {
+                    return Ok(Some(code));
+                }
+                let code = adopted_try_wait(*pid)?;
+                if let Some(c) = code {
+                    *slot = Some(c);
+                }
+                Ok(code)
+            }
+        }
     }
 
-    /// Forcibly terminate the child via the killer handle.
+    /// Forcibly terminate the child. For an adopted child we SIGKILL the pid
+    /// directly (the daemon is still its parent post-re-exec).
     pub fn kill(&self) -> Result<()> {
-        let mut k = self
-            .killer
-            .lock()
-            .map_err(|e| anyhow!("killer poisoned: {e}"))?;
-        k.kill().context("kill child")?;
-        Ok(())
+        match &self.child {
+            ChildEnd::Portable { killer, .. } => {
+                let mut k = killer.lock().map_err(|e| anyhow!("killer poisoned: {e}"))?;
+                k.kill().context("kill child")?;
+                Ok(())
+            }
+            #[cfg(unix)]
+            ChildEnd::Adopted { pid, .. } => {
+                nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(*pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                )
+                .context("kill adopted child")?;
+                Ok(())
+            }
+        }
     }
 
     /// Process-group leader pid for `signal` delivery.
     #[cfg(unix)]
     pub fn pgid(&self) -> Option<i32> {
-        let m = self.master.lock().ok()?;
-        m.process_group_leader()
+        match &self.master {
+            MasterEnd::Portable(m) => m.lock().ok()?.process_group_leader(),
+            // `tcgetpgrp(master)` returns the controlling terminal's
+            // foreground process group — the child's pgid (it did `setsid` +
+            // TIOCSCTTY at spawn). Works identically for an adopted master.
+            MasterEnd::Adopted(fd) => {
+                use std::os::fd::{AsRawFd, BorrowedFd};
+                let fd = fd.lock().ok()?;
+                #[allow(unsafe_code)]
+                let borrowed = unsafe { BorrowedFd::borrow_raw(fd.as_raw_fd()) };
+                nix::unistd::tcgetpgrp(borrowed)
+                    .ok()
+                    .map(nix::unistd::Pid::as_raw)
+            }
+        }
     }
 
     /// Child PID for Windows `GenerateConsoleCtrlEvent` delivery. portable-pty
     /// spawns the child with `CREATE_NEW_PROCESS_GROUP` so the PID doubles as
     /// the process-group id Windows control events expect.
     pub fn child_pid(&self) -> Option<u32> {
-        let c = self.child.lock().ok()?;
-        c.process_id()
+        match &self.child {
+            ChildEnd::Portable { child, .. } => child.lock().ok()?.process_id(),
+            #[cfg(unix)]
+            #[allow(clippy::cast_sign_loss)]
+            ChildEnd::Adopted { pid, .. } => Some(*pid as u32),
+        }
+    }
+
+    /// Raw master-PTY fd, for handing off across an in-place re-exec
+    /// (`daemon upgrade`). `None` on a non-Unix platform or if the lock is
+    /// poisoned.
+    #[cfg(unix)]
+    pub fn raw_master_fd(&self) -> Option<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+        match &self.master {
+            MasterEnd::Portable(m) => m.lock().ok()?.as_raw_fd(),
+            MasterEnd::Adopted(fd) => Some(fd.lock().ok()?.as_raw_fd()),
+        }
+    }
+
+    /// Current output high-water mark (cumulative bytes ever observed). Used
+    /// by the upgrade handoff to record where the new image should consider
+    /// the `.cast` replay caught up to.
+    #[must_use]
+    pub fn output_total(&self) -> u64 {
+        self.output_buf.lock().map_or(0, |g| g.total)
     }
 
     /// Borrowed reference to the attached recorder, if any. Used by
@@ -665,6 +865,38 @@ fn ptsname_owned(master_fd: i32) -> Result<std::ffi::CString> {
     #[allow(unsafe_code)]
     let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(master_fd) };
     rustix::pty::ptsname(borrowed, Vec::new()).context("ptsname")
+}
+
+/// Non-blocking `waitpid(WNOHANG)` on an adopted child, mapping the status to
+/// a shell-style code (signal death → 128+sig). Returns `None` while the child
+/// is still alive (or already reaped elsewhere — `ECHILD`).
+#[cfg(unix)]
+fn adopted_try_wait(pid: i32) -> Result<Option<u32>> {
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    use nix::unistd::Pid;
+    match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::Exited(_, code)) => Ok(Some(u32::try_from(code).unwrap_or(1))),
+        #[allow(clippy::cast_sign_loss)]
+        Ok(WaitStatus::Signaled(_, sig, _)) => Ok(Some(128 + (sig as i32) as u32)),
+        // StillAlive / Stopped / Continued / Ptrace* → not terminal; or
+        // ECHILD → already reaped elsewhere / never our child after an exotic
+        // restart. Either way there's no observable terminal exit to report.
+        Ok(_) | Err(nix::errno::Errno::ECHILD) => Ok(None),
+        Err(e) => Err(anyhow!("waitpid({pid}): {e}")),
+    }
+}
+
+/// Clear `O_NONBLOCK` on `fd` (best-effort). The adopted reader loop does
+/// blocking reads; an inherited fd left in non-blocking mode would spin.
+#[cfg(unix)]
+fn clear_nonblocking(fd: std::os::fd::RawFd) {
+    #[allow(unsafe_code)]
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+        }
+    }
 }
 
 #[cfg(unix)]

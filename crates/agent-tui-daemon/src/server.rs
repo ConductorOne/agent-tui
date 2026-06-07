@@ -48,6 +48,12 @@ pub struct DaemonConfig {
     /// ([`DEFAULT_IDLE_TIMEOUT_SECS`]); `Some(0)` disables idle
     /// shutdown entirely.
     pub idle_timeout_secs: Option<u64>,
+    /// In-place-upgrade handoff blob (JSON [`crate::upgrade::Handoff`]),
+    /// present only when this image was re-exec'd by a prior daemon via
+    /// `daemon upgrade`. The startup adoption path consumes it to re-own the
+    /// handed-off panes. Passed as a hidden CLI arg (not an env var) so it is
+    /// never inherited by the daemon's PTY children. `None` on a fresh start.
+    pub adopt_handoff: Option<String>,
 }
 
 /// Default idle-shutdown window (15 min). Long enough that an
@@ -238,6 +244,12 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
             shutdown_for_idle,
         ));
     }
+    // In-place-upgrade adoption: if this image was re-exec'd by a prior daemon
+    // (`daemon upgrade`), adopt the panes it handed off — take the inherited
+    // PTY master fd(s), replay each `.cast` to rebuild the grid, and resume the
+    // reader loop. No-op on a fresh start (no handoff env var).
+    crate::upgrade::adopt(&state).await;
+
     let shutdown_inner = shutdown.clone();
     tokio::spawn(async move {
         loop {
@@ -792,6 +804,7 @@ fn op_name_of(cmd: &agent_tui_protocol::Command) -> &'static str {
         Command::Focus { .. } => "focus",
         Command::DaemonStatus => "daemon_status",
         Command::DaemonShutdown { .. } => "daemon_shutdown",
+        Command::DaemonUpgrade { .. } => "daemon_upgrade",
     }
 }
 
@@ -954,6 +967,7 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
                 "status": "shutting_down",
             }))
         }
+        Command::DaemonUpgrade { binary } => crate::upgrade::run(state, binary).await,
         Command::Focus { pane } => handlers::focus::run(&state.registry, pane).await,
         Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,

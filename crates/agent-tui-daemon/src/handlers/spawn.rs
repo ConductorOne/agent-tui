@@ -208,7 +208,7 @@ fn spawn_redetect_task(
 /// engine's broadcast channel closes (i.e. the pane is destroyed).
 const CHECKPOINT_EVERY: u64 = 1000;
 
-fn spawn_checkpoint_task(engine: Arc<dyn Engine>, recorder: Recorder) {
+pub(crate) fn spawn_checkpoint_task(engine: Arc<dyn Engine>, recorder: Recorder) {
     tokio::spawn(async move {
         let mut sub = engine.subscribe();
         let mut last_checkpointed: u64 = 0;

@@ -568,6 +568,13 @@ pub enum DaemonAction {
         /// `AGENT_TUI_IDLE_TIMEOUT` env. Set to `0` to disable.
         #[arg(long, value_name = "SECS", env = "AGENT_TUI_IDLE_TIMEOUT")]
         idle_timeout_secs: Option<u64>,
+
+        /// Internal: in-place-upgrade handoff blob. Set automatically by
+        /// `daemon upgrade` when it re-execs the new image; the new daemon
+        /// adopts the handed-off pane(s) from it. Hidden — humans never pass
+        /// this.
+        #[arg(long, value_name = "JSON", hide = true)]
+        adopt_handoff: Option<String>,
     },
     /// Print daemon status (running / unreachable / version).
     Status,
@@ -576,6 +583,18 @@ pub enum DaemonAction {
         /// Accept loss of non-shell pane state.
         #[arg(long)]
         force: bool,
+    },
+    /// In-place upgrade: re-exec the daemon into the same PID while keeping
+    /// live pane(s) — PTY master fd + child process — alive across the swap.
+    /// The harness/child never notices the daemon was replaced and exit-code
+    /// fidelity (137/143/N) is preserved. (U1: one pane, session survives.)
+    Upgrade {
+        /// New binary to exec. Defaults to the daemon's own current
+        /// executable (production path: swap the file on disk, then run
+        /// `daemon upgrade`). The binary is smoke-tested (`--version`)
+        /// before the one-way re-exec.
+        #[arg(long, value_name = "PATH")]
+        binary: Option<PathBuf>,
     },
 }
 

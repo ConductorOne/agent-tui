@@ -42,6 +42,7 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         allowed_binaries: None,
         monitor_parent: None,
         idle_timeout_secs: None,
+        adopt_handoff: None,
     };
     let handle = run_daemon(cfg.clone()).await.expect("run_daemon");
     // Tiny yield so the accept loop is parked before we connect.
