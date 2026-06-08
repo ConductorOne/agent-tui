@@ -365,6 +365,7 @@ impl PtyChild {
             first_bytes,
             last_osc133,
             reader_done,
+            output_tx,
         })
     }
 
@@ -419,6 +420,12 @@ impl PtyChild {
         let reader_capture_lock = capture_lock.clone();
         let reader_done = Arc::new(AtomicBool::new(false));
         let reader_done_signal = reader_done.clone();
+        // Notify-on-append channel, identical to the `spawn` path: the reader
+        // task publishes the ring's new high-water mark so an adopted pane's
+        // streaming followers (attach / `tail --follow` after an in-place
+        // upgrade) wake on output instead of falling back to the 50ms poll.
+        let (output_tx, _output_rx) = watch::channel(0u64);
+        let reader_output_tx = output_tx.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(
                 reader,
@@ -428,6 +435,7 @@ impl PtyChild {
                 &reader_osc133,
                 &reader_output_buf,
                 &reader_capture_lock,
+                &reader_output_tx,
             );
             reader_done_signal.store(true, Ordering::Release);
         });
