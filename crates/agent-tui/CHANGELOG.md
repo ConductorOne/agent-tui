@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/ConductorOne/agent-tui/compare/v0.1.8...v0.1.9) - 2026-06-10
+
+### Added
+
+- screen-model query verbs (snapshot fields, events, capabilities, wait exit code)
+
 ## [0.1.8](https://github.com/ConductorOne/agent-tui/compare/v0.1.7...v0.1.8) - 2026-06-08
 
 ### Other
