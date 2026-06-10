@@ -105,6 +105,24 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             strip_ansi,
             follow: true,
         } => tail_follow(&cli.globals, pane, since, strip_ansi).await,
+        CliCmd::Events { pane, debounce } => events_stream(&cli.globals, pane, debounce).await,
+        CliCmd::Capabilities => capabilities(),
+        // `wait` is a one-shot RPC, but its timeout failure gets a distinct
+        // exit code (124, the coreutils `timeout` convention) so callers
+        // can branch "not settled yet" vs "actually broken" without
+        // parsing the JSON envelope.
+        CliCmd::Wait(a) => {
+            let cmd = cli_command_to_protocol(CliCmd::Wait(a))?;
+            one_shot_print_with(&cli.globals, cmd, |env| {
+                let timed_out = env
+                    .response
+                    .error
+                    .as_ref()
+                    .is_some_and(|e| e.code == agent_tui_protocol::ErrorCode::WaitTimeout);
+                timed_out.then_some(WAIT_TIMEOUT_EXIT_CODE)
+            })
+            .await
+        }
         CliCmd::Attach {
             pane,
             prelude,
@@ -993,15 +1011,97 @@ fn interpret_escapes(s: &str) -> Vec<u8> {
 }
 
 async fn one_shot_print(g: &crate::cli::GlobalArgs, cmd: Command) -> Result<()> {
+    one_shot_print_with(g, cmd, |_| None).await
+}
+
+/// `wait --max` timeout exit code. 124 mirrors coreutils `timeout(1)`, so
+/// shell callers can branch "condition not met in time" (124) vs "request
+/// failed" (2) without parsing the JSON envelope.
+pub const WAIT_TIMEOUT_EXIT_CODE: i32 = 124;
+
+/// One-shot RPC with an overridable failure exit code: `exit_override` maps
+/// a failure envelope to a specific code; `None` keeps the default (2).
+async fn one_shot_print_with(
+    g: &crate::cli::GlobalArgs,
+    cmd: Command,
+    exit_override: impl Fn(&agent_tui_protocol::ResponseEnvelope) -> Option<i32>,
+) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
     let env = client::one_shot(&layout, cmd).await?;
     let out = serde_json::to_string(&env)?;
     println!("{out}");
     // Exit code: zero on success, non-zero on protocol failure.
     if env.response.is_failure() {
-        std::process::exit(2);
+        std::process::exit(exit_override(&env).unwrap_or(2));
     }
     Ok(())
+}
+
+/// Drive `events` — stream state-change events from the daemon to stdout as
+/// NDJSON. Default output is one bare event object per line (the `data`
+/// payload); under `--json`, the full envelopes. Ends when the daemon emits
+/// `child_exited` (exit 0 — the event itself carries the child's code) or
+/// the stream errors.
+async fn events_stream(
+    g: &crate::cli::GlobalArgs,
+    pane: Option<String>,
+    debounce: u64,
+) -> Result<()> {
+    use std::io::Write;
+    let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
+    let cmd = Command::Events {
+        pane: pane.map(agent_tui_protocol::PaneId),
+        debounce_ms: Some(debounce),
+    };
+    let mut stdout = std::io::stdout().lock();
+    client::stream(&layout, cmd, |env| {
+        if env.response.is_failure() {
+            writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
+            return Ok(false);
+        }
+        if g.json {
+            writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
+        } else if let Some(data) = env.response.data.as_ref() {
+            writeln!(stdout, "{}", serde_json::to_string(data)?).ok();
+        }
+        stdout.flush().ok();
+        let ty = env
+            .response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("type"))
+            .and_then(serde_json::Value::as_str);
+        Ok(!matches!(ty, Some("child_exited")))
+    })
+    .await?;
+    stdout.flush().ok();
+    Ok(())
+}
+
+/// `capabilities` — print the binary's feature surface as JSON. Purely
+/// client-side (no daemon round-trip) so fleet callers can feature-detect
+/// even when no daemon is running. `verbs` is the visible top-level
+/// subcommand list straight from the clap surface, so it can never drift
+/// from `--help`.
+fn capabilities() -> Result<()> {
+    println!("{}", serde_json::to_string(&capabilities_payload())?);
+    Ok(())
+}
+
+/// The `capabilities` payload, separated from the printer for testability.
+fn capabilities_payload() -> serde_json::Value {
+    use clap::CommandFactory;
+    let root = crate::cli::Cli::command();
+    let verbs: Vec<String> = root
+        .get_subcommands()
+        .filter(|c| !c.is_hide_set() && c.get_name() != "help")
+        .map(|c| c.get_name().to_string())
+        .collect();
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": agent_tui_protocol::PROTOCOL_VERSION,
+        "verbs": verbs,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1312,4 +1412,47 @@ fn skills(args: &crate::cli::SkillsArgs) -> Result<()> {
     // engine selection is wired through to the daemon's actual choice.
     let _ = EngineKind::Wezterm;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `capabilities` is the fleet feature-detection contract: callers
+    /// check `verbs` for the verb they need before using it. Lock the
+    /// shape and the presence of the screen-query verbs.
+    #[test]
+    fn capabilities_payload_lists_screen_query_verbs() {
+        let payload = capabilities_payload();
+        assert_eq!(
+            payload.get("version").and_then(serde_json::Value::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            payload.get("protocol").and_then(serde_json::Value::as_u64),
+            Some(u64::from(agent_tui_protocol::PROTOCOL_VERSION))
+        );
+        let verbs: Vec<&str> = payload
+            .get("verbs")
+            .and_then(serde_json::Value::as_array)
+            .expect("verbs array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        for verb in ["snapshot", "wait", "events", "capabilities", "spawn"] {
+            assert!(
+                verbs.contains(&verb),
+                "verbs must include {verb}: {verbs:?}"
+            );
+        }
+        // Hidden plumbing must not leak into the feature surface.
+        assert!(!verbs.contains(&"__surface"), "hidden verbs excluded");
+    }
+
+    /// The wait-timeout exit code is a published contract (callers branch
+    /// on it in shell); pin the value so it can't drift silently.
+    #[test]
+    fn wait_timeout_exit_code_is_124() {
+        assert_eq!(WAIT_TIMEOUT_EXIT_CODE, 124, "documented in commands.md");
+    }
 }

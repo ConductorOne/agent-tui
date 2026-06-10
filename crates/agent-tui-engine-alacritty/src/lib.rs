@@ -10,7 +10,8 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use agent_tui_engine::{
     Cell, CellGrid, Engine, EngineError, EngineSnapshot, ModeFlags, MutationEvent, MutationKind,
@@ -29,6 +30,10 @@ use tokio::sync::broadcast;
 pub struct AlacrittyEngine {
     state: Mutex<State>,
     events: broadcast::Sender<MutationEvent>,
+    /// Out-of-band terminal events (bell rings, title changes) captured by
+    /// the [`EventProxy`] while the parser advances. Shared with the proxy
+    /// installed in the `Term`.
+    term_events: Arc<TermEvents>,
 }
 
 /// Mutable engine state guarded by the outer `Mutex`.
@@ -51,13 +56,39 @@ struct State {
     utf8_carry: Vec<u8>,
 }
 
+/// Shared sink for the alacritty events agents care about. The
+/// [`EventProxy`] writes into it from inside `parser.advance()` (under the
+/// engine's state lock); `feed` inspects deltas after each advance and
+/// `build_snapshot` reads the current title.
+#[derive(Default)]
+struct TermEvents {
+    /// Cumulative BEL count. `feed` diffs this across an advance to know
+    /// how many bells the chunk rang.
+    bell_count: AtomicU64,
+    /// Most recent OSC 0/2 title; `None` after a reset (or never set).
+    title: Mutex<Option<String>>,
+}
+
+/// Listener installed in the `Term`; forwards the events agents care about
+/// into the shared [`TermEvents`] sink and drops the rest (`PtyWrite`,
+/// clipboard, …) — the daemon polls `snapshot`/`subscribe` for state.
 #[derive(Clone, Default)]
-struct EventProxy;
+struct EventProxy(Arc<TermEvents>);
 
 impl EventListener for EventProxy {
-    fn send_event(&self, _event: Event) {
-        // The daemon polls `snapshot`/`subscribe` for state; alacritty events
-        // (Title changes, PtyWrite, Bell, …) are dropped in v0.1.0.
+    fn send_event(&self, event: Event) {
+        match event {
+            Event::Bell => {
+                self.0.bell_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::Title(title) => {
+                *self.0.title.lock().expect("title lock poisoned") = Some(title);
+            }
+            Event::ResetTitle => {
+                *self.0.title.lock().expect("title lock poisoned") = None;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -89,7 +120,8 @@ impl AlacrittyEngine {
         let cols = cols.max(2);
         let rows = rows.max(1);
         let size = Size { cols, rows };
-        let term = Term::new(Config::default(), &size, EventProxy);
+        let term_events = Arc::new(TermEvents::default());
+        let term = Term::new(Config::default(), &size, EventProxy(term_events.clone()));
         let (events, _) = broadcast::channel(256);
         Self {
             state: Mutex::new(State {
@@ -101,10 +133,11 @@ impl AlacrittyEngine {
                 utf8_carry: Vec::with_capacity(3),
             }),
             events,
+            term_events,
         }
     }
 
-    fn build_snapshot(state: &State) -> EngineSnapshot {
+    fn build_snapshot(state: &State, term_events: &TermEvents) -> EngineSnapshot {
         let grid = state.term.grid();
         let cols = state.cols;
         let rows = state.rows;
@@ -123,6 +156,12 @@ impl AlacrittyEngine {
         let cursor_col = u16::try_from(cursor_point.column.0).unwrap_or(u16::MAX);
 
         EngineSnapshot {
+            cursor_visible: state.term.mode().contains(TermMode::SHOW_CURSOR),
+            title: term_events
+                .title
+                .lock()
+                .expect("title lock poisoned")
+                .clone(),
             grid: CellGrid {
                 cols,
                 rows,
@@ -201,6 +240,11 @@ impl Engine for AlacrittyEngine {
             .state
             .lock()
             .map_err(|e| EngineError::Refused(format!("poisoned: {e}")))?;
+        // Capture pre-advance state so this chunk's side effects (mode
+        // flips, bell rings) can be diffed and broadcast as their own
+        // mutation kinds after the parse.
+        let modes_before = mode_flags(*s.term.mode());
+        let bells_before = self.term_events.bell_count.load(Ordering::Relaxed);
         let safe = Self::buffer_utf8_tail(&mut s.utf8_carry, bytes);
         if !safe.is_empty() {
             // Split-borrow: parser and term are sibling fields of `s`.
@@ -209,14 +253,28 @@ impl Engine for AlacrittyEngine {
         }
         s.sequence = s.sequence.saturating_add(1);
         let seq = s.sequence;
+        let modes_changed = mode_flags(*s.term.mode()) != modes_before;
         drop(s);
         self.emit(seq, MutationKind::Output);
+        // Same sequence for the companion events: they're facets of the one
+        // mutation this feed applied (sequence is monotonic, not strict).
+        if modes_changed {
+            self.emit(seq, MutationKind::ModeChange);
+        }
+        let bells = self
+            .term_events
+            .bell_count
+            .load(Ordering::Relaxed)
+            .saturating_sub(bells_before);
+        for _ in 0..bells {
+            self.emit(seq, MutationKind::Bell);
+        }
         Ok(())
     }
 
     fn snapshot(&self) -> EngineSnapshot {
         let s = self.state.lock().expect("engine state lock poisoned");
-        Self::build_snapshot(&s)
+        Self::build_snapshot(&s, &self.term_events)
     }
 
     fn dimensions(&self) -> (u16, u16) {

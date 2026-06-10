@@ -39,6 +39,8 @@ pub enum MutationKind {
     /// A DEC/ANSI mode flag changed (alt-screen toggle, bracketed paste,
     /// KKP push/pop, mouse mode change).
     ModeChange,
+    /// The child rang the terminal bell (BEL / `\x07`).
+    Bell,
 }
 
 /// Emitted on every mutation, *after* the change is observable via
@@ -62,6 +64,11 @@ pub struct EngineSnapshot {
     pub modes: ModeFlags,
     /// Sequence number that produced this snapshot.
     pub sequence: Sequence,
+    /// Whether the cursor is visible (DECTCEM, DECSET 25). Defaults to
+    /// `true` — terminals show the cursor unless the program hides it.
+    pub cursor_visible: bool,
+    /// Window title most recently set via OSC 0/2, if any.
+    pub title: Option<String>,
 }
 
 impl EngineSnapshot {
@@ -141,6 +148,8 @@ mod tests {
     #[test]
     fn canonical_hash_is_deterministic() {
         let snap = EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols: 1,
                 rows: 1,
@@ -165,6 +174,8 @@ mod tests {
     #[test]
     fn canonical_hash_distinguishes_cells() {
         let mk = |ch: &str| EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols: 1,
                 rows: 1,

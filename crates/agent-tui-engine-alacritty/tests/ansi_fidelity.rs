@@ -212,3 +212,82 @@ async fn resize_updates_dimensions_and_emits_event() {
     assert_eq!(snap.grid.rows, 40);
     assert_eq!(snap.grid.cells.len(), 132 * 40, "cells len = cols*rows");
 }
+
+// ---- screen-model query support (snapshot/events verbs) -------------------
+
+#[test]
+fn bel_increments_nothing_visible_but_emits_bell_event() {
+    let eng = AlacrittyEngine::new(20, 4);
+    let mut sub = eng.subscribe();
+    eng.feed(b"ding\x07dong").expect("feed ok");
+    // One feed → one Output event, then one Bell event at the same sequence.
+    let first = sub.try_recv().expect("output event");
+    assert_eq!(first.kind, MutationKind::Output);
+    let second = sub.try_recv().expect("bell event");
+    assert_eq!(second.kind, MutationKind::Bell, "BEL surfaces as Bell");
+    assert_eq!(second.sequence, first.sequence, "same mutation, two facets");
+}
+
+#[test]
+fn two_bells_in_one_chunk_emit_two_bell_events() {
+    let eng = AlacrittyEngine::new(20, 4);
+    let mut sub = eng.subscribe();
+    eng.feed(b"\x07\x07").expect("feed ok");
+    let kinds: Vec<MutationKind> = std::iter::from_fn(|| sub.try_recv().ok())
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| matches!(k, MutationKind::Bell))
+            .count(),
+        2,
+        "each BEL rings once: {kinds:?}"
+    );
+}
+
+#[test]
+fn osc_title_lands_in_snapshot_and_resets() {
+    let eng = AlacrittyEngine::new(20, 4);
+    assert_eq!(eng.snapshot().title, None, "no title initially");
+    // OSC 0 (icon+title) terminated by BEL — the common shell form.
+    eng.feed(b"\x1b]0;my title\x07").expect("feed ok");
+    assert_eq!(eng.snapshot().title.as_deref(), Some("my title"));
+    // OSC 2 (title only) terminated by ST.
+    eng.feed(b"\x1b]2;second\x1b\\").expect("feed ok");
+    assert_eq!(eng.snapshot().title.as_deref(), Some("second"));
+}
+
+#[test]
+fn dectcem_hides_and_shows_cursor() {
+    let eng = AlacrittyEngine::new(20, 4);
+    assert!(eng.snapshot().cursor_visible, "cursor visible by default");
+    eng.feed(b"\x1b[?25l").expect("hide cursor");
+    assert!(!eng.snapshot().cursor_visible, "DECTCEM reset hides");
+    eng.feed(b"\x1b[?25h").expect("show cursor");
+    assert!(eng.snapshot().cursor_visible, "DECTCEM set shows");
+}
+
+#[test]
+fn alt_screen_flip_emits_mode_change_event() {
+    let eng = AlacrittyEngine::new(20, 4);
+    let mut sub = eng.subscribe();
+    eng.feed(b"\x1b[?1049h").expect("enter alt-screen");
+    let kinds: Vec<MutationKind> = std::iter::from_fn(|| sub.try_recv().ok())
+        .map(|e| e.kind)
+        .collect();
+    assert!(
+        kinds.contains(&MutationKind::ModeChange),
+        "alt-screen enter must broadcast ModeChange: {kinds:?}"
+    );
+    // Plain output with no mode flip must NOT emit ModeChange.
+    let mut sub2 = eng.subscribe();
+    eng.feed(b"hello").expect("feed ok");
+    let kinds2: Vec<MutationKind> = std::iter::from_fn(|| sub2.try_recv().ok())
+        .map(|e| e.kind)
+        .collect();
+    assert!(
+        !kinds2.contains(&MutationKind::ModeChange),
+        "no mode flip → no ModeChange: {kinds2:?}"
+    );
+}

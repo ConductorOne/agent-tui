@@ -57,6 +57,27 @@ agent-tui wait --idle 500          # ❌ what does "500ms" mean for THIS program
 agent-tui snapshot
 ```
 
+## Push instead of poll: `agent-tui events`
+<!-- tested-by: events_init_then_screen_changed_then_child_exited -->
+
+`wait` blocks for ONE condition; `agent-tui events` streams EVERY
+state change as NDJSON until the child exits. Use it when you're
+driving a long-lived TUI (a harness, a REPL) and want to react to
+each frame instead of re-running `snapshot` on a timer:
+
+```bash
+agent-tui events --pane p1 --debounce 200
+```
+
+emits `init` (baseline `screen_hash` + geometry + cursor + modes),
+then `screen_changed` (throttled; only when the canonical hash
+actually differs), `mode_changed` (alt-screen / bracketed-paste
+flips), `bell`, and a terminal `child_exited` with the exit code.
+See [commands.md](commands.md) for the per-event payloads. The
+`screen_hash` it carries is the same canonical hash `snapshot`
+returns, so a driver can `events` → notice a change → `snapshot`
+for the full frame, with no race: the hashes line up exactly.
+
 ## The sequence-number stream
 <!-- tested-by: untested (sequence-based wait is supported at the daemon level; no integration test asserts the cross-event ordering guarantee yet) -->
 

@@ -321,6 +321,15 @@ fn build_snapshot(
         generation,
         sequence: engine_snap.sequence,
         hash,
+        cols: engine_snap.grid.cols,
+        rows: engine_snap.grid.rows,
+        cursor: agent_tui_protocol::CursorInfo {
+            row: engine_snap.grid.cursor.0,
+            col: engine_snap.grid.cursor.1,
+            visible: engine_snap.cursor_visible,
+        },
+        title: engine_snap.title.clone(),
+        last_output_ms_ago: pane.pty.last_output_ms_ago(),
         outline,
         cells,
         text,
@@ -545,6 +554,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols: u16::try_from(cells.len()).unwrap(),
                 rows: 1,

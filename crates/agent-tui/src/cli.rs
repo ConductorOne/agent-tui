@@ -416,6 +416,29 @@ pub enum Command {
         #[arg(long, value_name = "ms", num_args = 0..=1, default_missing_value = "3000")]
         grace: Option<u64>,
     },
+    /// Stream a pane's state changes as NDJSON: an `init` baseline, then
+    /// `screen_changed` (throttled by `--debounce`, carries the canonical
+    /// screen hash + cursor), `mode_changed` (alt-screen / bracketed-paste
+    /// flips), `bell`, and a terminal `child_exited` (carries the exit
+    /// code), after which the stream ends. Closes the poll loop: drivers
+    /// block on this instead of re-running `snapshot` on a timer.
+    Events {
+        /// Pane id; defaults to focused.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Throttle window for `screen_changed` in milliseconds (clamped
+        /// to 10..=5000 by the daemon). Bells and `child_exited` are
+        /// never throttled.
+        #[arg(long, value_name = "MS", default_value_t = 150)]
+        debounce: u64,
+    },
+    /// Print this binary's feature surface as JSON:
+    /// `{"version", "protocol", "verbs": [...]}`. For callers that drive a
+    /// mixed-version fleet and need to feature-detect (e.g. "does this
+    /// agent-tui have `events`?") without parsing `--help`. Purely local —
+    /// works with no daemon running; pair with `daemon status` to learn a
+    /// live daemon's version.
+    Capabilities,
     /// Pane focus management (`pane focus <id>`).
     Pane(PaneArgs),
     /// Wait for a state-change condition.

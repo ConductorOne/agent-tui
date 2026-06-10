@@ -505,6 +505,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols: u16::try_from(cells.len()).unwrap(),
                 rows: 1,

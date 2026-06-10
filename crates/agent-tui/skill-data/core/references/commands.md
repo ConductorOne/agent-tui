@@ -94,6 +94,14 @@ Snapshot the focused pane (or a specific one with `--pane`).
 | `adapter` | Adapter-specific tree (vim's mode + filename, shell's state, …) |
 | `hybrid` | All three concatenated |
 
+Every mode's JSON payload also carries the screen-model header fields:
+`cols` / `rows` (live geometry), `cursor` (`{row, col, visible}` —
+`visible` reflects DECTCEM), `title` (the OSC 0/2 window title, when
+set), `last_output_ms_ago` (milliseconds since the child last produced
+output; absent before any output), alongside the existing `hash`
+(canonical SHA-256 of the frame), `sequence`, `state`, and `modes`
+(`alt_screen`, `bracketed_paste`, …).
+
 `--png <path>` rasterizes the screen to a real PNG: one fixed-size cell
 per grid cell, anti-aliased glyphs from an embedded monospace font
 (JetBrains Mono) drawn with each cell's resolved fg/bg colors (wide CJK
@@ -286,6 +294,60 @@ is a visible alias**), `--idle <ms>` (no output for N ms),
 `--exit` (child process exits). `--max <ms>` caps the wait (default
 25000). See [wait-and-events.md](wait-and-events.md).
 
+**Exit codes:** `0` = condition matched, `124` = condition not met
+within `--max` (the coreutils `timeout(1)` convention — the JSON
+envelope carries `error.code = "WAIT_TIMEOUT"`), `2` = any other
+failure (bad selector, dead pane, …). Shell drivers can branch
+"not settled yet" vs "actually broken" without parsing JSON.
+
+### `events`
+
+```
+agent-tui events [--pane <id>] [--debounce <ms>]
+```
+
+Stream the pane's state changes as NDJSON — one event object per line
+(full envelopes under `--json`). The settling/observation primitive for
+closed-loop drivers: instead of polling `snapshot` on a timer, block on
+this stream and react. Events:
+
+| `type` | When | Carries |
+|---|---|---|
+| `init` | First line, always | `sequence`, `screen_hash`, `cols`, `rows`, `cursor{row,col,visible}`, `alt_screen`, `bracketed_paste`, `title` — the baseline to diff against |
+| `screen_changed` | Visible frame changed (throttled by `--debounce`, default 150ms, clamped 10..=5000) | `sequence`, `screen_hash` (canonical SHA-256, same as `snapshot.hash`), `cursor` |
+| `mode_changed` | Alt-screen or bracketed-paste flipped | `alt_screen`, `bracketed_paste`, `sequence` |
+| `bell` | Child rang BEL (never throttled) | `sequence` |
+| `child_exited` | Child exited (terminal — the stream ends after this) | `exit_code` (shell-style; signal death = 128+sig) |
+
+The throttle is leading-edge with a trailing flush: the first change
+after a quiet period emits promptly; a sustained redraw burst coalesces
+into one event per window, and the final frame of a burst is never
+lost. `screen_changed` only fires when the canonical hash actually
+differs — a redraw that paints the identical frame is silent.
+
+```bash
+agent-tui events --pane p1 --debounce 200 | while read -r ev; do
+  case "$(jq -r .type <<<"$ev")" in
+    screen_changed) handle_new_frame "$(jq -r .screen_hash <<<"$ev")" ;;
+    child_exited)   break ;;
+  esac
+done
+```
+
+### `capabilities`
+
+```
+agent-tui capabilities
+```
+
+Print this binary's feature surface as JSON:
+`{"version": "<semver>", "protocol": <wire-version>, "verbs": [...]}`.
+For callers driving a mixed-version fleet: check `verbs` for the verb
+you need (e.g. `events`) before using it, instead of parsing `--help`
+or pinning versions. Purely local — works with no daemon running; the
+response envelope of any RPC (or `daemon status`) reports a live
+daemon's version.
+
 ### `daemon`
 
 ```
@@ -379,6 +441,7 @@ Print embedded skill docs.
 | `2` | Argument / usage error |
 | `3` | Daemon unreachable |
 | `4` | Policy denied (allowlist / governance) |
+| `124` | `wait` timed out (`--max` elapsed before the condition matched) |
 
 ## Environment variables
 <!-- tested-by: navigation -->

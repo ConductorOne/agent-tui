@@ -291,6 +291,7 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
                     Ok(req) => match &req.command {
                         agent_tui_protocol::Command::Tail { follow: true, .. } => StreamKind::Tail,
                         agent_tui_protocol::Command::Attach { .. } => StreamKind::Attach,
+                        agent_tui_protocol::Command::Events { .. } => StreamKind::Events,
                         _ => StreamKind::None,
                     },
                     Err(_) => StreamKind::None,
@@ -326,6 +327,9 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
                         }
                         StreamKind::Attach => {
                             handle_streaming_attach(&state, req, &mut writer, &disconnected).await
+                        }
+                        StreamKind::Events => {
+                            handle_streaming_events(&state, req, &mut writer, &disconnected).await
                         }
                         StreamKind::None => Ok(()),
                     };
@@ -381,6 +385,7 @@ enum StreamKind {
     None,
     Tail,
     Attach,
+    Events,
 }
 
 async fn handle_streaming_tail(
@@ -547,6 +552,205 @@ async fn handle_streaming_attach(
         pane_arc.release_lease(my_token);
     }
     result
+}
+
+/// Default `screen_changed` throttle window for `events` when the caller
+/// doesn't pass `debounce_ms`. Sits in the middle of the 100–250ms band the
+/// verb contract names: long enough to coalesce a redraw burst into one
+/// event, short enough that a driver loop stays responsive.
+const EVENTS_DEBOUNCE_DEFAULT_MS: u64 = 150;
+
+/// `events`: stream a pane's state changes as NDJSON envelopes. Emits an
+/// `init` baseline, then `screen_changed` (throttled, leading edge + trailing
+/// flush — never starves under continuous output), `mode_changed`
+/// (alt-screen / bracketed-paste flips), `bell` (immediate), and a terminal
+/// `child_exited`, after which the stream ends.
+///
+/// Event-driven like [`stream_follow`]: blocks on the engine's mutation
+/// broadcast; a slow [`STREAM_IDLE_TICK`] keeps exit/disconnect checks live
+/// on a quiet pane.
+#[allow(clippy::too_many_lines)]
+async fn handle_streaming_events(
+    state: &DaemonState,
+    req: Request,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    disconnected: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
+    use agent_tui_engine::MutationKind;
+    use tokio::sync::broadcast::error::RecvError;
+
+    let agent_tui_protocol::Command::Events { pane, debounce_ms } = req.command else {
+        return Ok(());
+    };
+    state.touch_activity();
+    let pane_arc = match crate::pane::resolve_focused(&state.registry, pane.clone()).await {
+        Ok(p) => p,
+        Err(resp) => {
+            let env = wrap_envelope(state, req.id, resp);
+            return write_envelope(writer, &env).await;
+        }
+    };
+    let debounce = tokio::time::Duration::from_millis(
+        debounce_ms
+            .unwrap_or(EVENTS_DEBOUNCE_DEFAULT_MS)
+            .clamp(10, 5000),
+    );
+
+    // Subscribe BEFORE the baseline snapshot so a mutation landing between
+    // the two is never lost (it shows up as a pending event).
+    let mut sub = pane_arc.engine.subscribe();
+    let snap = pane_arc.engine.snapshot();
+    let mut last_hash = snap.canonical_hash();
+    let mut last_alt = snap.modes.alt_screen;
+    let mut last_bp = snap.modes.bracketed_paste;
+    let init = serde_json::json!({
+        "type": "init",
+        "pane": pane_arc.id,
+        "sequence": snap.sequence,
+        "screen_hash": last_hash,
+        "cols": snap.grid.cols,
+        "rows": snap.grid.rows,
+        "cursor": cursor_json(&snap),
+        "alt_screen": last_alt,
+        "bracketed_paste": last_bp,
+        "title": snap.title,
+    });
+    write_envelope(writer, &wrap_envelope(state, req.id, Response::ok(init))).await?;
+
+    // Throttle state: `dirty` = a mutation arrived since the last flush;
+    // `last_flush` anchors the window.
+    let mut dirty = false;
+    let mut last_flush = tokio::time::Instant::now();
+    loop {
+        if disconnected.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        state.touch_activity();
+
+        // Terminal: child exited and the reader drained its last bytes.
+        // Flush any pending screen change first so the final frame isn't
+        // lost, then emit `child_exited` and end the stream.
+        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
+            if dirty {
+                flush_screen_events(
+                    state,
+                    &pane_arc,
+                    req.id,
+                    writer,
+                    &mut last_hash,
+                    &mut last_alt,
+                    &mut last_bp,
+                )
+                .await?;
+            }
+            let payload = serde_json::json!({
+                "type": "child_exited",
+                "pane": pane_arc.id,
+                "exit_code": pane_arc.poll_exit(),
+            });
+            let env = wrap_envelope(state, req.id, Response::ok(payload));
+            return write_envelope(writer, &env).await;
+        }
+
+        // Flush a pending change once the throttle window has elapsed.
+        if dirty && last_flush.elapsed() >= debounce {
+            flush_screen_events(
+                state,
+                &pane_arc,
+                req.id,
+                writer,
+                &mut last_hash,
+                &mut last_alt,
+                &mut last_bp,
+            )
+            .await?;
+            dirty = false;
+            last_flush = tokio::time::Instant::now();
+        }
+
+        // Block until the next mutation, the pending flush comes due, or
+        // the idle tick fires to re-check exit/disconnect.
+        let wait = if dirty {
+            (last_flush + debounce)
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(STREAM_IDLE_TICK)
+        } else {
+            STREAM_IDLE_TICK
+        };
+        match tokio::time::timeout(wait, sub.recv()).await {
+            Ok(Ok(evt)) => match evt.kind {
+                // Bells are discrete one-shot signals — never coalesced.
+                MutationKind::Bell => {
+                    let payload = serde_json::json!({
+                        "type": "bell",
+                        "pane": pane_arc.id,
+                        "sequence": evt.sequence,
+                    });
+                    write_envelope(writer, &wrap_envelope(state, req.id, Response::ok(payload)))
+                        .await?;
+                }
+                _ => dirty = true,
+            },
+            Ok(Err(RecvError::Lagged(_))) => dirty = true,
+            Ok(Err(RecvError::Closed)) => {
+                // Engine gone (pane torn down). The exit check above drives
+                // the terminal path; don't busy-spin on a closed receiver.
+                tokio::time::sleep(STREAM_IDLE_TICK).await;
+            }
+            Err(_) => {} // timeout — loop re-checks flush/exit/disconnect
+        }
+    }
+}
+
+/// Compare the pane's current frame against the caller's last-seen state and
+/// emit `mode_changed` / `screen_changed` envelopes for any deltas, updating
+/// the trackers in place. Mode changes are emitted first so a driver sees
+/// "alt-screen entered" before the frame that uses it.
+async fn flush_screen_events(
+    state: &DaemonState,
+    pane_arc: &Arc<crate::pane::Pane>,
+    req_id: uuid::Uuid,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    last_hash: &mut String,
+    last_alt: &mut bool,
+    last_bp: &mut bool,
+) -> std::io::Result<()> {
+    let snap = pane_arc.engine.snapshot();
+    if snap.modes.alt_screen != *last_alt || snap.modes.bracketed_paste != *last_bp {
+        *last_alt = snap.modes.alt_screen;
+        *last_bp = snap.modes.bracketed_paste;
+        let payload = serde_json::json!({
+            "type": "mode_changed",
+            "pane": pane_arc.id,
+            "sequence": snap.sequence,
+            "alt_screen": *last_alt,
+            "bracketed_paste": *last_bp,
+        });
+        write_envelope(writer, &wrap_envelope(state, req_id, Response::ok(payload))).await?;
+    }
+    let hash = snap.canonical_hash();
+    if hash != *last_hash {
+        last_hash.clone_from(&hash);
+        let payload = serde_json::json!({
+            "type": "screen_changed",
+            "pane": pane_arc.id,
+            "sequence": snap.sequence,
+            "screen_hash": hash,
+            "cursor": cursor_json(&snap),
+        });
+        write_envelope(writer, &wrap_envelope(state, req_id, Response::ok(payload))).await?;
+    }
+    Ok(())
+}
+
+/// Render a snapshot's cursor as the `{row, col, visible}` JSON shape shared
+/// by `events` payloads (mirrors the snapshot payload's `cursor` field).
+fn cursor_json(snap: &agent_tui_engine::EngineSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "row": snap.grid.cursor.0,
+        "col": snap.grid.cursor.1,
+        "visible": snap.cursor_visible,
+    })
 }
 
 /// Build a chunk envelope payload (shared by `tail` + `attach`).
@@ -853,6 +1057,7 @@ fn op_name_of(cmd: &agent_tui_protocol::Command) -> &'static str {
         Command::CloseStdin { .. } => "close_stdin",
         Command::Tail { .. } => "tail",
         Command::Attach { .. } => "attach",
+        Command::Events { .. } => "events",
         Command::Resize { .. } => "resize",
         Command::Signal { .. } => "signal",
         Command::Die { .. } => "die",
@@ -875,6 +1080,7 @@ fn pane_hint_of(cmd: &agent_tui_protocol::Command) -> Option<agent_tui_protocol:
         | Command::Stdin { pane, .. }
         | Command::CloseStdin { pane, .. }
         | Command::Tail { pane, .. }
+        | Command::Events { pane, .. }
         | Command::Resize { pane, .. }
         | Command::Signal { pane, .. }
         | Command::Die { pane, .. }
@@ -980,11 +1186,16 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             bytes_hex,
             lease,
         } => handlers::raw::stdin(&state.registry, pane, bytes_hex, lease).await,
-        // `attach` is a streaming verb handled in `handle_conn` before
-        // dispatch; reaching here means a non-streaming caller used it.
+        // `attach` and `events` are streaming verbs handled in `handle_conn`
+        // before dispatch; reaching here means a non-streaming caller used one.
         Command::Attach { .. } => Response::err(agent_tui_protocol::ErrorBody::new(
             agent_tui_protocol::ErrorCode::InvalidArgs,
             "attach is a streaming verb",
+            "use a streaming client (the CLI does this automatically)",
+        )),
+        Command::Events { .. } => Response::err(agent_tui_protocol::ErrorBody::new(
+            agent_tui_protocol::ErrorCode::InvalidArgs,
+            "events is a streaming verb",
             "use a streaming client (the CLI does this automatically)",
         )),
         Command::CloseStdin { pane } => handlers::raw::close_stdin(&state.registry, pane).await,

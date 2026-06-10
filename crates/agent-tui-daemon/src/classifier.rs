@@ -145,6 +145,8 @@ mod tests {
             }
         }
         EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols,
                 rows,

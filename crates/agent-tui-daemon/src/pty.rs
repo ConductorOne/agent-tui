@@ -71,6 +71,10 @@ pub struct PtyChild {
     /// instead of polling, collapsing echo latency to the ring-freshness
     /// floor. The held sender keeps the channel alive for late subscribers.
     output_tx: watch::Sender<u64>,
+    /// Instant of the most recent output chunk the reader pushed. `None`
+    /// until the child produces its first output. Backs the snapshot's
+    /// `last_output_ms_ago` field.
+    last_output: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 /// The master end of the PTY, abstracted over the two ways a [`PtyChild`]
@@ -331,6 +335,8 @@ impl PtyChild {
         // streaming. The retained sender (`output_tx` below) keeps it open.
         let (output_tx, _output_rx) = watch::channel(0u64);
         let reader_output_tx = output_tx.clone();
+        let last_output = Arc::new(Mutex::new(None));
+        let reader_last_output = last_output.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(
                 reader,
@@ -341,6 +347,7 @@ impl PtyChild {
                 &reader_output_buf,
                 &reader_capture_lock,
                 &reader_output_tx,
+                &reader_last_output,
             );
             // Reader saw EOF/error and is exiting: every byte the child
             // wrote is now in the output ring. Publish *after* the loop so
@@ -366,6 +373,7 @@ impl PtyChild {
             last_osc133,
             reader_done,
             output_tx,
+            last_output,
         })
     }
 
@@ -426,6 +434,8 @@ impl PtyChild {
         // upgrade) wake on output instead of falling back to the 50ms poll.
         let (output_tx, _output_rx) = watch::channel(0u64);
         let reader_output_tx = output_tx.clone();
+        let last_output = Arc::new(Mutex::new(None));
+        let reader_last_output = last_output.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             pty_reader_loop(
                 reader,
@@ -436,6 +446,7 @@ impl PtyChild {
                 &reader_output_buf,
                 &reader_capture_lock,
                 &reader_output_tx,
+                &reader_last_output,
             );
             reader_done_signal.store(true, Ordering::Release);
         });
@@ -460,6 +471,7 @@ impl PtyChild {
             last_osc133,
             reader_done,
             output_tx,
+            last_output,
         })
     }
 
@@ -707,6 +719,14 @@ impl PtyChild {
     #[must_use]
     pub fn reader_finished(&self) -> bool {
         self.reader_done.load(Ordering::Acquire)
+    }
+
+    /// Milliseconds since the child last produced output, or `None` if it
+    /// has produced none yet. Backs the snapshot's `last_output_ms_ago`.
+    #[must_use]
+    pub fn last_output_ms_ago(&self) -> Option<u64> {
+        let at = (*self.last_output.lock().ok()?)?;
+        Some(u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))
     }
 
     /// Subscribe to output-append notifications. The returned `watch::Receiver`
@@ -1063,6 +1083,7 @@ fn pty_reader_loop(
     output_buf: &Arc<Mutex<OutputRing>>,
     capture_lock: &Arc<Mutex<()>>,
     output_tx: &watch::Sender<u64>,
+    last_output: &Arc<Mutex<Option<std::time::Instant>>>,
 ) {
     let mut buf = [0u8; 8192];
     let mut osc_scanner = crate::osc133::Scanner::new();
@@ -1101,6 +1122,9 @@ fn pty_reader_loop(
                 // even with zero current subscribers.
                 if let Some(total) = new_total {
                     output_tx.send_replace(total);
+                }
+                if let Ok(mut slot) = last_output.lock() {
+                    *slot = Some(std::time::Instant::now());
                 }
                 if let Some(rec) = recorder {
                     rec.push_output(&buf[..n]);
