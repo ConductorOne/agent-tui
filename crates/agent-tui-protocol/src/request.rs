@@ -347,6 +347,26 @@ pub enum Command {
         #[serde(default, with = "opt_duration_ms")]
         grace: Option<Duration>,
     },
+    /// Subscribe to a pane's state-change events as a stream.
+    ///
+    /// **Streaming mode.** Like `Tail { follow: true }` / `Attach`, the
+    /// daemon emits multiple `ResponseEnvelope` lines on the same
+    /// connection: an initial `{type:"init"}` baseline, then
+    /// `{type:"screen_changed"}` (throttled by `debounce_ms`, carrying the
+    /// canonical screen hash), `{type:"mode_changed"}` (alt-screen /
+    /// bracketed-paste flips), `{type:"bell"}`, and a terminal
+    /// `{type:"child_exited"}` carrying the exit code, after which the
+    /// stream ends. Clients NOT expecting streaming must not send this.
+    Events {
+        /// Pane id; `None` = focused.
+        #[serde(default)]
+        pane: Option<PaneId>,
+        /// Throttle window for `screen_changed` events in milliseconds.
+        /// `None` = the daemon default (150ms). Clamped server-side to
+        /// 10..=5000.
+        #[serde(default)]
+        debounce_ms: Option<u64>,
+    },
     /// Wait for a state-change condition.
     Wait {
         /// Pane id; `None` = focused.

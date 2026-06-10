@@ -201,6 +201,18 @@ pub struct Ref {
     pub binding: RefBinding,
 }
 
+/// Cursor position + visibility surfaced at the top level of a snapshot,
+/// so callers don't need `--mode cells` just to find the cursor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CursorInfo {
+    /// Cursor row (0-based, display rows).
+    pub row: u16,
+    /// Cursor column (0-based, display columns).
+    pub col: u16,
+    /// Whether the cursor is visible (DECTCEM, DECSET 25).
+    pub visible: bool,
+}
+
 /// Full snapshot payload returned from `snapshot`.
 ///
 /// Carried inside [`crate::Response`]'s `data` field, this is the canonical
@@ -217,6 +229,24 @@ pub struct Snapshot {
     pub sequence: Sequence,
     /// SHA-256 of the canonical cell-grid encoding, hex-encoded.
     pub hash: String,
+    /// Live grid geometry — columns. Present in every mode (previously
+    /// geometry was only discoverable via `--mode cells`).
+    #[serde(default)]
+    pub cols: u16,
+    /// Live grid geometry — rows.
+    #[serde(default)]
+    pub rows: u16,
+    /// Cursor position + visibility.
+    #[serde(default)]
+    pub cursor: CursorInfo,
+    /// Window title most recently set via OSC 0/2, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Milliseconds since the pane's child last produced output. `None`
+    /// when the child has produced no output yet. Lets callers judge
+    /// "is this screen still settling?" without a follow-up `wait`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output_ms_ago: Option<u64>,
     /// Adapter outline (always present for `--mode outline|hybrid`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<Outline>,

@@ -65,6 +65,8 @@ impl PlaceholderEngine {
             })
             .collect();
         EngineSnapshot {
+            cursor_visible: true,
+            title: None,
             grid: CellGrid {
                 cols: state.cols,
                 rows: state.rows,
