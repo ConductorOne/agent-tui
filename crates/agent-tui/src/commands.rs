@@ -112,7 +112,13 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // can branch "not settled yet" vs "actually broken" without
         // parsing the JSON envelope.
         CliCmd::Wait(a) => {
-            let cmd = cli_command_to_protocol(CliCmd::Wait(a))?;
+            let cmd = match cli_command_to_protocol(CliCmd::Wait(a)) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    std::process::exit(2);
+                }
+            };
             one_shot_print_with(&cli.globals, cmd, |env| {
                 let timed_out = env
                     .response
@@ -1027,7 +1033,13 @@ async fn one_shot_print_with(
     exit_override: impl Fn(&agent_tui_protocol::ResponseEnvelope) -> Option<i32>,
 ) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
-    let env = client::one_shot(&layout, cmd).await?;
+    let env = match client::one_shot(&layout, cmd).await {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(2);
+        }
+    };
     let out = serde_json::to_string(&env)?;
     println!("{out}");
     // Exit code: zero on success, non-zero on protocol failure.
