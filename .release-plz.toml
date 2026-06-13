@@ -13,6 +13,120 @@
 #   - Tag format `v<X>.<Y>.<Z>[-<prerelease>]`, which matches what
 #     cargo-dist's release.yml expects.
 
+# ---------------------------------------------------------------------------
+# Changelog generation (inline git-cliff config).
+#
+# release-plz drives git-cliff internally to build the changelog. With NO
+# `[changelog]` section it falls back to git-cliff's stock defaults, which
+# produced two defects in crates/agent-tui/CHANGELOG.md:
+#
+#   1. A noise `### Other` dump: release-plz's own `chore(agent-tui): release
+#      vX.Y.Z` commits, GitHub `Merge pull request #N ...` commits, and every
+#      pre-conventional historical commit were dumped together, ungrouped.
+#
+#   2. Full-history duplication: the entire commit history (back to the very
+#      first "initial scaffolding" commit) was re-listed verbatim under FOUR
+#      separate releases. Those four were exactly the releases whose Release PR
+#      was merged with a **merge commit** rather than squash/rebase. A
+#      merge-commit'd Release PR puts the release tag on a side branch instead
+#      of on the first-parent mainline, which breaks the "commits since the
+#      previous tag" range walk — the walk falls through to the root and
+#      re-dumps everything that was already released.
+#
+# This `[changelog]` block fixes the NOISE (defect 1) for good by skipping
+# merge + release commits in `commit_parsers`, and the body/header below
+# reproduce the existing Keep-a-Changelog format and `compare/vA...vB` links so
+# the file's look-and-feel is unchanged. The committed CHANGELOG.md was fully
+# regenerated from history under this config, which also wiped the historical
+# duplication (defect 2).
+#
+# RECURRENCE — IMPORTANT REPO SETTING:
+#   The range-walk bug (defect 2) is triggered by *merge-commit* Release PRs.
+#   To prevent it from coming back, Release PRs must be SQUASH-merged (so the
+#   release commit + its tag land directly on main's first-parent line). Set
+#   the repo to squash-merge (Settings -> General -> "Allow squash merging",
+#   and ideally disable "Allow merge commits" for the release flow), or always
+#   choose "Squash and merge" when merging a release-plz PR. Skipping merge
+#   commits below neutralizes the *noise* regardless, but only squash-merging
+#   the Release PR keeps the per-tag *ranges* correct going forward.
+# ---------------------------------------------------------------------------
+[changelog]
+# Keep-a-Changelog header (unchanged from the existing file).
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+"""
+
+# One H2 per release with a `compare/vA...vB` link (matches the existing file),
+# then conventional-commit groups. Only the commit subject line is rendered
+# (squashed PR bodies are dropped). `(#N)` references are linkified below.
+body = """
+{% if version %}\
+{% if previous.version %}\
+## [{{ version | trim_start_matches(pat="v") }}](https://github.com/ConductorOne/agent-tui/compare/{{ previous.version }}...{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% endif %}\
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = false
+
+# Don't let any commit_parser silently swallow a breaking change.
+protect_breaking_commits = true
+
+# Match the existing `v{{ version }}` tag scheme.
+tag_pattern = "v[0-9].*"
+
+# Stable within-section ordering.
+sort_commits = "oldest"
+
+# Linkify `(#123)` PR references into the project's pull-request URLs,
+# preserving the `([#123](.../pull/123))` style already in the file.
+commit_preprocessors = [
+  { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/ConductorOne/agent-tui/pull/${1}))" },
+]
+
+# Commit grouping. ORDER MATTERS: the skip rules MUST come first so a release
+# or merge commit is dropped before the catch-all `.*` bucket can claim it.
+commit_parsers = [
+  # --- noise: skip merge commits + release-plz's own release commits ---
+  { message = "^Merge ", skip = true },
+  { message = "^chore\\(.*\\): release", skip = true },   # chore(agent-tui): release vX.Y.Z
+  { message = "^chore\\(release\\)", skip = true },        # chore(release): ...
+  { message = "^chore: release", skip = true },            # chore: release ...
+  { message = "^.*: release v[0-9]", skip = true },        # any "...: release vX.Y.Z"
+  { message = "^release v[0-9]", skip = true },            # bare "release vX.Y.Z"
+
+  # --- real, conventional commits -> Keep-a-Changelog-ish groups ---
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "CI/CD" },
+  { message = "^build", group = "Build" },
+  { message = "^chore", group = "Other" },
+
+  # Catch-all: keep genuinely unparseable-but-real commits in a tidy "Other"
+  # bucket rather than dropping them (filter_commits stays off / default).
+  { message = ".*", group = "Other" },
+]
+
 [workspace]
 # Don't run `cargo publish` on inner crates. Top-level publishing is
 # also disabled below for v0.x.
