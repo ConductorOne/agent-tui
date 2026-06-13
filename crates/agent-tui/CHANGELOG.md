@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/ConductorOne/agent-tui/compare/v0.1.10...v0.1.11) - 2026-06-13
+
+### Fixed
+
+- *(wait)* exit 124 on timeout per the ratified contract ([#93](https://github.com/ConductorOne/agent-tui/pull/93))
+
 ## [0.1.10](https://github.com/ConductorOne/agent-tui/compare/v0.1.9...v0.1.10) - 2026-06-10
 
 ### Added
