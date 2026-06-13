@@ -7,23 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [Unreleased]
-
-### Other
-
-- Changelog config
-
-## [0.1.11](https://github.com/ConductorOne/agent-tui/compare/v0.1.10...v0.1.11) - 2026-06-13
+## [0.1.12](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.1.12) - 2026-06-13
 
 ### Fixed
 
 - *(wait)* Exit 124 on timeout per the ratified contract ([#93](https://github.com/ConductorOne/agent-tui/pull/93))
 
-## [0.1.9](https://github.com/ConductorOne/agent-tui/compare/v0.1.8...v0.1.9) - 2026-06-10
+## [0.1.11](https://github.com/ConductorOne/agent-tui/compare/v0.1.10...v0.1.11) - 2026-06-13
+
+## [0.1.10](https://github.com/ConductorOne/agent-tui/compare/v0.1.9...v0.1.10) - 2026-06-10
 
 ### Added
 
 - Screen-model query verbs (snapshot fields, events, capabilities, wait exit code)
+
+## [0.1.9](https://github.com/ConductorOne/agent-tui/compare/v0.1.8...v0.1.9) - 2026-06-10
 
 ## [0.1.8](https://github.com/ConductorOne/agent-tui/compare/v0.1.7...v0.1.8) - 2026-06-08
 
@@ -36,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add in-place daemon upgrade (Option-A re-exec) — U1 ([#86](https://github.com/ConductorOne/agent-tui/pull/86))
 
-## [0.1.6](https://github.com/ConductorOne/agent-tui/compare/v0.1.5...v0.1.6) - 2026-06-06
+## [0.1.7](https://github.com/ConductorOne/agent-tui/compare/v0.1.6...v0.1.7) - 2026-06-06
 
 ### Added
 
@@ -66,13 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(attach)* Many-viewer fan-out under concurrent load (cov-8) ([#76](https://github.com/ConductorOne/agent-tui/pull/76))
 - *(resize)* Resize-vs-live-stream race is safe (cov-9) ([#78](https://github.com/ConductorOne/agent-tui/pull/78))
 
-## [0.1.5](https://github.com/ConductorOne/agent-tui/compare/v0.1.4...v0.1.5) - 2026-06-04
+## [0.1.6](https://github.com/ConductorOne/agent-tui/compare/v0.1.5...v0.1.6) - 2026-06-06
 
 ### CI/CD
 
 - *(release-plz)* Let cargo-dist own the GitHub Release (git_release_enable=false)
 
-## [0.1.4](https://github.com/ConductorOne/agent-tui/compare/v0.1.3...v0.1.4) - 2026-06-04
+## [0.1.5](https://github.com/ConductorOne/agent-tui/compare/v0.1.4...v0.1.5) - 2026-06-04
 
 ### CI/CD
 
@@ -83,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(readme)* Full revamp for the released product
 - *(readme)* Scrub self-congratulatory / AI-slop phrasing
 
-## [0.1.3](https://github.com/ConductorOne/agent-tui/compare/v0.1.2...v0.1.3) - 2026-06-03
+## [0.1.4](https://github.com/ConductorOne/agent-tui/compare/v0.1.3...v0.1.4) - 2026-06-04
 
 ### Added
 
@@ -111,11 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(replay,edit)* Real-system e2e for the `replay` and `edit` verbs ([#29](https://github.com/ConductorOne/agent-tui/pull/29))
 - *(gc,ring)* Real-system e2e for `session gc` CLI + OutputRing eviction ([#31](https://github.com/ConductorOne/agent-tui/pull/31))
 
-## [0.1.1](https://github.com/ConductorOne/agent-tui/compare/v0.1.0...v0.1.1) - 2026-05-28
+## [0.1.3](https://github.com/ConductorOne/agent-tui/compare/v0.1.2...v0.1.3) - 2026-06-03
+
+## [0.1.2](https://github.com/ConductorOne/agent-tui/compare/v0.1.1...v0.1.2) - 2026-05-29
 
 ### Documentation
 
 - *(readme)* Install via prebuilt release artifacts ([#16](https://github.com/ConductorOne/agent-tui/pull/16))
+
+## [0.1.1](https://github.com/ConductorOne/agent-tui/compare/v0.1.0...v0.1.1) - 2026-05-28
 
 ## [0.1.0] - 2026-05-28
 
