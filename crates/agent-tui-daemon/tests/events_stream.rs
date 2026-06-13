@@ -300,6 +300,7 @@ async fn snapshot_carries_geometry_cursor_and_output_age() {
             mode: SnapshotMode::Text,
             png: None,
             annotate: None,
+            chrome: None,
             select: None,
             all: false,
             keep_color: false,

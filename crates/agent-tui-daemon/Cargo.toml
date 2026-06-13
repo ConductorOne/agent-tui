@@ -55,6 +55,11 @@ interprocess = { workspace = true }
 # Both are lean and avoid the full `image` codec stack.
 png = "0.17"
 fontdue = "0.9"
+# Window-chrome post-process pass for `snapshot --png --chrome` (BSD-3-Clause,
+# pure-Rust 2D raster — no system libs, cross-compiles cleanly). Used only to
+# composite the marketing frame (padding, rounded corners, title bar, drop
+# shadow) over the already-rasterized cell grid; the cell renderer is untouched.
+tiny-skia = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

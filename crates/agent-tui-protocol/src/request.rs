@@ -183,6 +183,13 @@ pub enum Command {
         /// without `png` (the handler rejects it).
         #[serde(default)]
         annotate: Option<String>,
+        /// With `png`, composite a marketing-grade window frame (padding,
+        /// rounded corners, title bar + traffic lights, drop shadow, brand-dark
+        /// backdrop). `Some(title)` sets the title-bar text; `Some("")` uses
+        /// the terminal's OSC title (or no text). `None` renders the bare grid.
+        /// Meaningless without `png` (the handler rejects it).
+        #[serde(default)]
+        chrome: Option<String>,
         /// Optional selector to filter the outline (RFC §2.2). When
         /// present, the response's `outline.nodes` is restricted to
         /// matching nodes; non-matching parents are pruned. Forces

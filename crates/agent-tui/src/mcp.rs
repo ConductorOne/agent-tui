@@ -211,6 +211,13 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 Some(Value::String(s)) => Some(s.clone()),
                 _ => None,
             };
+            // `chrome` accepts a boolean (true = frame, OSC/no title) or a
+            // string (the title-bar text); absent = bare grid.
+            let chrome = match obj.get("chrome") {
+                Some(Value::Bool(true)) => Some(String::new()),
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            };
             let select = obj
                 .get("select")
                 .and_then(Value::as_str)
@@ -225,6 +232,7 @@ fn build_command(name: &str, args: &Value) -> Result<Command, String> {
                 mode,
                 png,
                 annotate,
+                chrome,
                 select,
                 all,
                 keep_color,
@@ -375,7 +383,8 @@ fn tool_schemas() -> Vec<Value> {
                         "enum": ["outline", "text", "cells", "adapter", "hybrid"]
                     },
                     "png": { "type": "string", "description": "Path to write a real PNG render of the screen (monospace glyphs + cell colors)." },
-                    "annotate": { "type": ["boolean", "string"], "description": "With `png`, overlay ref bounding boxes + labels. `true` annotates all refs; a selector string annotates only matching refs (e.g. `@vim.*`). Requires `png`." },
+                    "annotate": { "type": ["boolean", "string"], "description": "With `png`, overlay ref bounding boxes + numbered badges. `true` annotates all refs; a selector string annotates only matching refs (e.g. `@vim.*`). Requires `png`." },
+                    "chrome": { "type": ["boolean", "string"], "description": "With `png`, composite a marketing-grade window frame (padding, rounded corners, title bar + traffic lights, drop shadow, brand-dark backdrop). `true` frames with the terminal's own title; a string sets the title-bar text. Default off. Requires `png`." },
                     "select": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
                     "all": { "type": "boolean", "description": "With `select`, return every match instead of just the first." }
                 }

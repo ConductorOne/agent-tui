@@ -1143,6 +1143,7 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
             keep_color,
             png,
             annotate,
+            chrome,
         } => {
             let params = handlers::snapshot::SnapshotParams {
                 mode,
@@ -1151,6 +1152,7 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
                 keep_color,
                 png,
                 annotate,
+                chrome,
             };
             dispatch_snapshot(state, pane, params).await
         }
