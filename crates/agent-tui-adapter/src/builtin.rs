@@ -119,10 +119,15 @@ impl Adapter for GenericAdapter {
     }
 }
 
-/// AI-CLI adapter: covers the Claude/Codex/Pi/Aider/opencode family of
-/// interactive CLI agents. Adapter `name()` is `"claude-code"` for
-/// registry stability; refs are scoped under `@ai-cli` since the
-/// same adapter handles every member of the family.
+/// AI-CLI region adapter: a shared fallback for interactive AI CLIs
+/// that render a response area above a prompt/input row.
+///
+/// Adapter `name()` is `"claude-code"` for registry stability; refs
+/// are scoped under `@ai-cli` because the same region contract can be
+/// useful for multiple CLI frontends. Binary detection here means
+/// "attach prompt/response refs if the screen has this shape"; it does
+/// not imply provider-specific stream, permission, tool, file-change,
+/// compaction, or finality semantics.
 ///
 /// Outline shape (every frame, durable refs):
 ///
@@ -139,7 +144,7 @@ impl Adapter for GenericAdapter {
 /// split flagged in `docs/design/addressing-rfc.md` §7.8 is a follow-up.
 pub struct ClaudeCodeAdapter;
 
-const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "pi", "aider", "opencode"];
+const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "aider", "opencode"];
 
 #[async_trait::async_trait]
 impl Adapter for ClaudeCodeAdapter {
@@ -906,10 +911,19 @@ mod tests {
 
     #[tokio::test]
     async fn claude_code_detects_known_binaries() {
-        for name in ["claude", "claude-code", "codex", "pi", "aider", "opencode"] {
+        for name in ["claude", "claude-code", "codex", "aider", "opencode"] {
             let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
             assert!(score >= 0.9, "{name}: {score}");
         }
+    }
+
+    #[tokio::test]
+    async fn claude_code_does_not_promote_unverified_pi_live_adapter() {
+        let score = ClaudeCodeAdapter.detect(&info_for("pi")).await;
+        assert!(
+            score < f32::EPSILON,
+            "Pi has a one-shot recipe, but live Pi detection needs a real interactive fixture"
+        );
     }
 
     #[tokio::test]
