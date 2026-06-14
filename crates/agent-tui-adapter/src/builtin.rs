@@ -1,9 +1,9 @@
 //! Built-in adapters shipped with the daemon.
 //!
-//! v1 ships three: `generic` (sectioned outline fallback), `claude-code`
-//! (pattern-matcher for the Ink/Claude family of CLI agents), and `shell`
-//! (last-line prompt heuristic + argv hint). nvim and tmux adapters live
-//! in this module too once the live-RPC plumbing is ready (P3).
+//! v1 ships `generic` (sectioned outline fallback), `shell` (last-line
+//! prompt heuristic + argv hint), and `vim`. Provider-shaped AI CLIs are
+//! described with v2 TOML manifests so each emits its own durable root refs
+//! instead of a shared fallback namespace.
 
 #![allow(clippy::cast_possible_truncation)]
 
@@ -117,137 +117,6 @@ impl Adapter for GenericAdapter {
     async fn shutdown(&self) -> Result<(), AdapterError> {
         Ok(())
     }
-}
-
-/// AI-CLI region adapter: a legacy shared fallback for interactive AI CLIs
-/// that render a response area above a prompt/input row but do not yet have a
-/// provider-specific manifest.
-///
-/// Adapter `name()` is `"claude-code"` for registry stability; refs
-/// are scoped under `@ai-cli` because this is only the generic fallback.
-/// Claude Code, Codex, and Pi are covered by v2 manifests that emit
-/// provider-specific refs (`@claude`, `@codex`, `@pi`). Binary detection here means
-/// "attach prompt/response refs if the screen has this shape"; it does
-/// not imply provider-specific stream, permission, tool, file-change,
-/// compaction, or finality semantics.
-///
-/// Outline shape (every frame, durable refs):
-///
-/// ```text
-/// @ai-cli                  role=root
-/// ├── @ai-cli.response     role=response  (everything above the input line)
-/// └── @ai-cli.input        role=input     focused=true while waiting on user
-/// ```
-///
-/// This fallback keeps things pragmatic: it has no way to tell
-/// streaming-vs-final apart without OSC 133-style markers from the
-/// CLI itself, so `@ai-cli.response` is a single node covering all
-/// non-input rows.
-pub struct ClaudeCodeAdapter;
-
-const AI_CLI_FALLBACK_BINS: &[&str] = &["aider", "opencode"];
-
-#[async_trait::async_trait]
-impl Adapter for ClaudeCodeAdapter {
-    fn name(&self) -> &'static str {
-        "claude-code"
-    }
-
-    async fn detect(&self, info: &PaneInfo) -> f32 {
-        if AI_CLI_FALLBACK_BINS.contains(&info.comm.as_str()) {
-            return 0.9;
-        }
-        // Argv-substring fallback for wrapper scripts.
-        if info
-            .argv
-            .iter()
-            .any(|a| AI_CLI_FALLBACK_BINS.iter().any(|n| a.contains(n)))
-        {
-            return 0.6;
-        }
-        0.0
-    }
-
-    async fn initialize(&self) -> Result<Capabilities, AdapterError> {
-        Ok(default_caps())
-    }
-
-    async fn outline(&self, snap: &EngineSnapshot) -> Result<Outline, AdapterError> {
-        let rows = grid_rows(snap);
-        let input_idx = find_input_row(&rows);
-        let input_text = input_idx.map(|i| rows[i].clone());
-        let response_rows: Vec<String> = rows
-            .iter()
-            .enumerate()
-            .filter(|(i, r)| !r.is_empty() && Some(*i) != input_idx)
-            .map(|(_, r)| r.clone())
-            .collect();
-        let response_body = response_rows.join("\n");
-
-        let mut children = Vec::new();
-        if !response_body.is_empty() {
-            children.push(OutlineNode {
-                r#ref: "@ai-cli.response".into(),
-                role: "response".into(),
-                name: response_body,
-                focused: false,
-                anchor: Some((0, 0)),
-                durable: true,
-                ..OutlineNode::default()
-            });
-        }
-        if let Some(t) = input_text {
-            children.push(OutlineNode {
-                r#ref: "@ai-cli.input".into(),
-                role: "input".into(),
-                name: t,
-                // Input is "focused" when alt-screen is off; if the
-                // CLI flipped to alt-screen (some tool overlays do
-                // this) something has stolen the input. Same shape as
-                // ShellAdapter, intentionally — these are isomorphic
-                // cases (interactive line + scrollback above).
-                focused: !snap.modes.alt_screen,
-                anchor: input_idx.map(|i| (i as u16, 0)),
-                durable: true,
-                ..OutlineNode::default()
-            });
-        }
-
-        let root = OutlineNode {
-            r#ref: "@ai-cli".into(),
-            role: "root".into(),
-            durable: true,
-            children,
-            ..OutlineNode::default()
-        };
-
-        Ok(Outline {
-            adapter: "claude-code".into(),
-            nodes: vec![root],
-        })
-    }
-
-    async fn eval(&self, _expr: &str) -> Result<serde_json::Value, AdapterError> {
-        Err(AdapterError::Refused(
-            "claude-code adapter does not support eval".into(),
-        ))
-    }
-
-    async fn shutdown(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-}
-
-/// Heuristic: find the row that looks like an input prompt.
-///
-/// The Ink/TUI family of AI CLIs draws a fenced bottom-of-screen input
-/// box. Detecting it precisely from rendered cells would need per-CLI
-/// pattern matching; instead we use the same rule the shell adapter
-/// uses — the last non-empty row is where input lands. Good enough for
-/// agents that just want to `wait --ref '@ai-cli.input[focused]'`
-/// before sending the next prompt.
-fn find_input_row(rows: &[String]) -> Option<usize> {
-    last_non_empty(rows)
 }
 
 /// Shell adapter: detects POSIX shells by argv and exposes a prompt-aware
@@ -899,83 +768,6 @@ mod tests {
             .await
             .unwrap();
         let refs_of = |o: &Outline| -> Vec<String> {
-            let mut out: Vec<String> = o.nodes[0]
-                .children
-                .iter()
-                .map(|n| n.r#ref.clone())
-                .collect();
-            out.sort();
-            out
-        };
-        assert_eq!(refs_of(&a), refs_of(&b));
-    }
-
-    #[tokio::test]
-    async fn claude_code_fallback_detects_unmanifested_ai_cli_binaries() {
-        for name in ["aider", "opencode"] {
-            let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
-            assert!(score >= 0.9, "{name}: {score}");
-        }
-    }
-
-    #[tokio::test]
-    async fn claude_code_fallback_does_not_claim_manifested_providers() {
-        for name in ["claude", "claude-code", "codex", "pi"] {
-            let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
-            assert!(
-                score < f32::EPSILON,
-                "{name} should be handled by a provider-specific manifest, got {score}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn claude_code_skips_unrelated() {
-        let score = ClaudeCodeAdapter.detect(&info_for("bash")).await;
-        assert!(score < f32::EPSILON, "got {score}");
-    }
-
-    #[tokio::test]
-    async fn claude_code_outline_emits_ai_cli_root_with_input_and_response() {
-        let outline = ClaudeCodeAdapter
-            .outline(&snap("claude > welcome\nworking on your request...\n\n> _"))
-            .await
-            .unwrap();
-        assert_eq!(outline.adapter, "claude-code");
-        assert_eq!(outline.nodes.len(), 1, "expected single @ai-cli root");
-        let root = &outline.nodes[0];
-        assert_eq!(root.r#ref, "@ai-cli");
-        assert!(root.durable);
-
-        let kids = &root.children;
-        let input = kids.iter().find(|n| n.role == "input").expect("input node");
-        assert_eq!(input.r#ref, "@ai-cli.input");
-        assert!(input.focused, "input is focused when not in alt-screen");
-        let response = kids
-            .iter()
-            .find(|n| n.role == "response")
-            .expect("response node");
-        assert_eq!(response.r#ref, "@ai-cli.response");
-        assert!(response.name.contains("welcome"));
-        // Input row should NOT be duplicated into the response.
-        assert!(
-            !response.name.contains("> _"),
-            "response should exclude the input row; got {:?}",
-            response.name
-        );
-    }
-
-    #[tokio::test]
-    async fn claude_code_refs_stable_across_frames() {
-        let a = ClaudeCodeAdapter
-            .outline(&snap("frame 1\n\n> "))
-            .await
-            .unwrap();
-        let b = ClaudeCodeAdapter
-            .outline(&snap("frame 1\nframe 2\nframe 3\n> "))
-            .await
-            .unwrap();
-        let refs_of = |o: &Outline| {
             let mut out: Vec<String> = o.nodes[0]
                 .children
                 .iter()

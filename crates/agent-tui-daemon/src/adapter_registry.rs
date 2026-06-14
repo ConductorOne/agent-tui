@@ -13,9 +13,7 @@
 
 use std::sync::Arc;
 
-use agent_tui_adapter::{
-    Adapter, ClaudeCodeAdapter, GenericAdapter, PaneInfo, ShellAdapter, VimAdapter,
-};
+use agent_tui_adapter::{Adapter, GenericAdapter, PaneInfo, ShellAdapter, VimAdapter};
 
 const MIN_CONFIDENCE: f32 = 0.05;
 
@@ -33,7 +31,6 @@ impl AdapterRegistry {
         let mut reg = Self {
             adapters: vec![
                 Arc::new(GenericAdapter),
-                Arc::new(ClaudeCodeAdapter),
                 Arc::new(ShellAdapter),
                 Arc::new(VimAdapter),
             ],
@@ -130,6 +127,10 @@ impl AdapterRegistry {
         // ranks them at use time.
         const BUNDLED: &[(&str, &str)] = &[
             (
+                "aider",
+                include_str!("../../agent-tui-adapter/manifests/aider.toml"),
+            ),
+            (
                 "claude-code",
                 include_str!("../../agent-tui-adapter/manifests/claude-code.toml"),
             ),
@@ -140,6 +141,10 @@ impl AdapterRegistry {
             (
                 "pi",
                 include_str!("../../agent-tui-adapter/manifests/pi.toml"),
+            ),
+            (
+                "opencode",
+                include_str!("../../agent-tui-adapter/manifests/opencode.toml"),
             ),
             (
                 "lazygit",
@@ -358,9 +363,11 @@ mod tests {
     async fn builtins_pick_provider_manifests_for_ai_agents() {
         let reg = AdapterRegistry::with_builtins();
         for (comm, adapter) in [
+            ("aider", "aider"),
             ("claude", "claude-code"),
             ("claude-code", "claude-code"),
             ("codex", "codex"),
+            ("opencode", "opencode"),
             ("pi", "pi"),
         ] {
             let picked = reg
@@ -382,6 +389,7 @@ mod tests {
         for (comm, argv) in [
             ("claude", vec!["/usr/bin/claude", "--print", "say hi"]),
             ("codex", vec!["/usr/bin/codex", "exec", "say hi"]),
+            ("opencode", vec!["/usr/bin/opencode", "run", "say hi"]),
             ("pi", vec!["/usr/bin/pi", "--print", "say hi"]),
         ] {
             let picked = reg

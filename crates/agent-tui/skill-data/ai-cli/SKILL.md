@@ -18,7 +18,7 @@ make detection robust.
 
 ## Outline shape
 
-Claude Code, Codex, and Pi have provider-specific terminal manifests.
+Claude Code, Codex, Pi, Aider, and OpenCode have provider-specific terminal manifests.
 They share a prompt/response shape, but their refs are intentionally
 not collapsed into one namespace:
 
@@ -36,6 +36,12 @@ not collapsed into one namespace:
 
 @pi                      role=root
 └── same child refs under @pi
+
+@aider                   role=root
+└── same child refs under @aider
+
+@opencode                role=root
+└── same child refs under @opencode
 ```
 
 The signal refs are regex-derived from the visible terminal screen.
@@ -59,10 +65,6 @@ patterns:
 | Wait for a file edit | `@codex.file-change` |
 | Wait for completion | `@codex.done` |
 | Get the input prompt's current line | `@codex.input` (read `.name`) |
-
-For Aider/opencode-style screens that do not yet have provider
-manifests, the older shared fallback may expose `@ai-cli.response`
-and `@ai-cli.input`. Prefer provider refs when they exist.
 
 ## Agents controlling agents
 <!-- tested-by: drives_long_running_inner_agent_to_file_change_and_done -->
