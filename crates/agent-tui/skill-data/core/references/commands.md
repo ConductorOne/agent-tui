@@ -152,15 +152,15 @@ agent-tui type "<text>"
 
 Type literal text. No key-notation parsing — `<cr>` types `<cr>`
 not a newline. Use `press` for keys, `type` for literal text, and
-`send-ansi` for escape sequences.
+`send-ansi` for hex-encoded byte sequences.
 
 ### `send-ansi`
 
 ```
-agent-tui send-ansi "<bytes>"
+agent-tui send-ansi <bytes_hex>
 ```
 
-Send raw bytes to the PTY. Useful for slash-search in less,
+Send raw bytes to the PTY as hex. Useful for slash-search in less,
 mode-switching in apps that bypass readline, etc.
 
 ### `stdin`

@@ -2,7 +2,7 @@
 //!
 //! Built-in adapters live alongside the daemon. Third-party adapters are
 //! sub-processes speaking **JSON-RPC over stdio** (the language-neutral
-//! plug-in protocol from `docs/RFC.md` §9.1).
+//! plug-in protocol from `docs/design/RFC.md` §9.1).
 
 #![forbid(unsafe_code)]
 
@@ -84,7 +84,7 @@ pub enum Notification {
 /// `Delay` is an escape hatch for adapters that don't yet have a
 /// real observable to wait on; prefer `WaitFor` whenever possible.
 ///
-/// See `docs/addressing-rfc.md` §2.3.
+/// See `docs/design/addressing-rfc.md` §2.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoutedStep {
@@ -165,7 +165,7 @@ pub trait Adapter: Send + Sync {
 
     /// Translate `(target, keys)` into PTY-bound bytes + optional
     /// inter-chunk gates. See [`RoutedStep`] for the step types and
-    /// `docs/addressing-rfc.md` §2.3 for the design.
+    /// `docs/design/addressing-rfc.md` §2.3 for the design.
     ///
     /// Default impl is the **identity routing**: returns one `Write`
     /// step containing `keys` regardless of `target`. Adapters that

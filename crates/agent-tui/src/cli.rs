@@ -1,6 +1,6 @@
 //! Clap-derived CLI surface.
 //!
-//! Mirrors `docs/RFC.md` §5. The grammar is locked; commands wire to the
+//! Mirrors `docs/design/RFC.md` §5. The grammar is locked; commands wire to the
 //! daemon as their handlers land per phase (see `tracker.md`).
 
 use std::path::PathBuf;
@@ -165,7 +165,7 @@ pub enum Command {
         #[arg(long, value_name = "TITLE", num_args = 0..=1, default_missing_value = "")]
         chrome: Option<String>,
         /// Filter the outline by a CSS-subset selector (see
-        /// `docs/addressing-rfc.md` §2.2). Example:
+        /// `docs/design/addressing-rfc.md` §2.2). Example:
         /// `--select '[role=buffer][focused]'`.
         #[arg(long, value_name = "SELECTOR")]
         select: Option<String>,
@@ -560,7 +560,7 @@ pub struct WaitArgs {
     /// Block until a selector matches a node in the outline. With
     /// `--gone`, block until no node matches.
     /// Example: `--ref '[role=cmdline][focused]'`.
-    /// See `docs/addressing-rfc.md` §2.2 for the selector grammar.
+    /// See `docs/design/addressing-rfc.md` §2.2 for the selector grammar.
     #[arg(long = "ref", group = "wait_mode", value_name = "SELECTOR")]
     pub ref_selector: Option<String>,
     /// Inverts `--ref`: wait until the selector matches NOTHING.

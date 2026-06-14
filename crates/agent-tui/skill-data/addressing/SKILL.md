@@ -199,5 +199,5 @@ The selector grammar covers most cases but not all:
 agent-tui skills get addressing --full
 ```
 
-See also: `docs/addressing-rfc.md` for the design rationale and the
+See also: `docs/design/addressing-rfc.md` for the design rationale and the
 formal grammar.

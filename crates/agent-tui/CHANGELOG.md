@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(daemon)* Event-driven low-latency follower streaming (bd pqprime-x0l) ([#87](https://github.com/ConductorOne/agent-tui/pull/87))
+- *(daemon)* Event-driven low-latency follower streaming ([#87](https://github.com/ConductorOne/agent-tui/pull/87))
 - *(daemon)* Reconcile adopt path with output_tx watch channel (broken main) ([#90](https://github.com/ConductorOne/agent-tui/pull/90))
 
 ### Other

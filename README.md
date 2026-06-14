@@ -8,6 +8,8 @@ Headless terminal automation for AI agents — the
 PTYs. Drive any terminal app (`vim`, `htop`, `psql`, a REPL, `claude`) and
 read its screen back as structured, addressable text.
 
+![agent-tui reads htop as structured terminal text](docs/assets/agent-tui-hero.gif)
+
 ## Read any screen as text
 
 `htop` is a full-screen ncurses dashboard — no headless mode, no `--json`.
@@ -26,8 +28,8 @@ agent-tui --json snapshot --mode text | jq -r .data.text
   Swp[                           0K/0K] Load average: 0.68 0.82 0.69
 
     PID USER       PRI  NI  VIRT   RES   SHR S  CPU%-MEM%   TIME+  Command
-  50386 squire      20   0  4900  3336  2456 R 160.0  0.0  0:00.02 htop
-      1 squire      20   0 3831M  274M 38368 S   0.0  0.2  0:55.95 squire-envmgr
+  50386 alice      20   0  4900  3336  2456 R 160.0  0.0  0:00.02 htop
+      1 root       20   0 3831M  274M 38368 S   0.0  0.2  0:55.95 systemd
 ```
 
 No screen-scraping, no terminal-byte parsing, no coordinates.
@@ -84,6 +86,21 @@ tar -xf agent-tui-aarch64-unknown-linux-gnu.tar.xz
 ```
 
 Pin a version by swapping `latest` for a tag — e.g. `download/v0.1.0/`.
+
+**Docker / GHCR** — a binary-only multi-arch image (linux/amd64 + linux/arm64)
+is published to the GitHub Container Registry. Run it directly, or copy the
+binary into your own image:
+
+```bash
+docker run --rm ghcr.io/conductorone/agent-tui --help
+```
+
+```dockerfile
+COPY --from=ghcr.io/conductorone/agent-tui /usr/local/bin/agent-tui /usr/local/bin/agent-tui
+```
+
+**`cargo install`** — not yet published to crates.io. Build from source for now
+(below).
 
 **From source:**
 
@@ -170,7 +187,7 @@ If you've used agent-browser, the model maps over almost directly:
 | `click` / `type` | `press` / `type` (route with `--to '<selector>'`) |
 | `waitForSelector` | `wait --ref '<selector>'` (+ `--gone`) |
 | `textContent` / `innerText` | `snapshot --mode text` / `--select` |
-| `screenshot` | `snapshot --mode cells` — the structured grid as data (`--png` raster is planned, RFC §7.3) |
+| `screenshot` | `snapshot --png screen.png` — rasterized PNG output, optionally with `--annotate` / `--chrome` |
 
 The two ways to drive a child (above) are the terminal analogue of "fetch a URL"
 vs "automate a page": **`run`** for stdout-shaped work, the
@@ -277,9 +294,14 @@ agent-tui --json run --stdin "what is 40+2" -- claude -p
 
 ## Learn more
 
-- **Docs** — [`docs/RFC.md`](docs/RFC.md) (architecture), [`docs/ux-rfc.md`](docs/ux-rfc.md)
-  (the UX surface), [`docs/addressing-rfc.md`](docs/addressing-rfc.md) (the
-  selector grammar), [`docs/skills-rfc.md`](docs/skills-rfc.md).
+- **Quickstart** — [`docs/quickstart.md`](docs/quickstart.md) (install →
+  `spawn` → `snapshot` → `wait`/`press` in a few minutes).
+- **Adapters** — [`docs/adapters.md`](docs/adapters.md) (write your own TOML
+  adapter). **MCP** — [`docs/mcp.md`](docs/mcp.md) (Claude Desktop / Claude
+  Code / generic MCP client setup).
+- **Design notes** — [`docs/design/`](docs/design/) holds the original design
+  RFCs (architecture, UX, addressing, skills). These predate the public release
+  and may not match current behavior.
 - **Built-in skills** — the binary ships its own docs: `agent-tui skills list`,
   then `agent-tui skills get core --full` for the canonical guide (or
   `addressing`, `vim`, `shell`, `ai-cli`, `tui-apps`).

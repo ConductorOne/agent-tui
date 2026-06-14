@@ -288,7 +288,7 @@ impl PtyChild {
                     // uses ptsname + dup + setsid. On Windows the spawn
                     // returns an error pointing at the limitation; the
                     // Windows port will land separately (see
-                    // `docs/windows-strategy.md`).
+                    // `docs/design/windows-strategy.md`).
                     #[cfg(unix)]
                     {
                         spawn_with_custom_stdin(
@@ -303,7 +303,7 @@ impl PtyChild {
                     {
                         let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
                         return Err(anyhow!(
-                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/windows-strategy.md",
+                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/design/windows-strategy.md",
                             stdin_mode
                         ));
                     }

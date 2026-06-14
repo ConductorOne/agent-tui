@@ -2,8 +2,9 @@
 //! Docker backend in `scenario.rs`.
 //!
 //! Why this exists: the Docker backend can't run in environments where
-//! nested containers are blocked (Squire EKS dev pods can't `mount proc`
-//! inside the container runtime). bwrap dodges that wall by sharing the
+//! nested containers are blocked (some restricted / nested-container CI
+//! environments can't `mount proc` inside the container runtime). bwrap
+//! dodges that wall by sharing the
 //! host's `/proc` read-only instead of remounting it, while still
 //! providing user/net/IPC/UTS namespaces + a rebased rootfs.
 //!
@@ -483,7 +484,7 @@ impl BwrapScenario {
             "--ro-bind".into(),
             self.rootfs.to_string_lossy().into_owned(),
             "/".into(),
-            // Share host /proc (the trick that dodges Squire EKS's mount-proc ban).
+            // Share host /proc (the trick that dodges a restricted CI runtime's mount-proc ban).
             "--ro-bind".into(),
             "/proc".into(),
             "/proc".into(),

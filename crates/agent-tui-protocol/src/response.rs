@@ -7,7 +7,7 @@ use crate::{ErrorCode, Generation, PaneId, Sequence, SessionId};
 
 /// Per-snapshot content-boundary delimiters for prompt-injection defense.
 ///
-/// See `docs/RFC.md` §11.3.
+/// See `docs/design/RFC.md` §11.3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutputDelim {
     /// Opening delimiter, e.g. `"<<<AGENT_TUI_OUTPUT_a7b3c91d>>>"`.
@@ -133,7 +133,7 @@ impl Response {
 
 /// The full wire envelope written back to the client.
 ///
-/// See `docs/RFC.md` §5.3.
+/// See `docs/design/RFC.md` §5.3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseEnvelope {
     /// Correlation id of the matching request.

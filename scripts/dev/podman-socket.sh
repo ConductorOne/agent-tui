@@ -2,8 +2,8 @@
 # Bring up a Docker-API-compatible socket via rootful podman, suitable for
 # pointing `DOCKER_HOST` at from the agent-tui integration test harness.
 #
-# Why this exists: in sandboxed dev environments (Squire pods on EKS,
-# corp Linux laptops with restrictive seccomp, etc.) rootless podman's
+# Why this exists: in restricted / nested-container dev environments
+# (corp Linux laptops with restrictive seccomp, etc.) rootless podman's
 # user-namespace setup hits `newuidmap`/`uid_map` permission denials we
 # can't undo without privileged pod flags. Rootful podman sidesteps the
 # whole story; we just need to make the socket reachable from the dev

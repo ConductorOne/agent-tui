@@ -128,7 +128,7 @@ impl DaemonHandle {
     /// shutdown`) **before the process exits**.
     ///
     /// This is the load-bearing guarantee behind `--monitor-parent` — the
-    /// RFC's #1 adoption hazard: when the owner (e.g. Squire's env-manager)
+    /// RFC's #1 adoption hazard: when the owner (e.g. an external env-manager process)
     /// dies, the daemon must take its PTY children (and any forked
     /// grandchildren) down with it, or an owner crash orphans a daemon's worth
     /// of PTY processes. It cannot be done from `Drop`: when the foreground
@@ -1242,7 +1242,7 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
         Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,
             "`eval` is not implemented in this build",
-            "to read structured screen state use `snapshot --select <selector>` (e.g. `--select '@vim.statusline'`); see docs/RFC.md §17 for the eval roadmap",
+            "to read structured screen state use `snapshot --select <selector>` (e.g. `--select '@vim.statusline'`); see docs/design/RFC.md §17 for the eval roadmap",
         )),
     }
 }

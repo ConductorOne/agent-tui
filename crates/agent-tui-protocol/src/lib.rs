@@ -4,7 +4,7 @@
 //! daemon is the server; the CLI (and `mcp serve` mode) is the client. The
 //! schemas here are the source of truth for both ends.
 //!
-//! See `docs/RFC.md` §5.3 (envelope) and §5.4 (error codes).
+//! See `docs/design/RFC.md` §5.3 (envelope) and §5.4 (error codes).
 
 #![forbid(unsafe_code)]
 

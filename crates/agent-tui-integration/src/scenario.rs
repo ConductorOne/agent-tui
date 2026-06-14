@@ -81,8 +81,8 @@ impl Scenario {
         // `NetworkMode = "none"` because our scenarios are hermetic by
         // design — the daemon inside the container only talks to its
         // local Unix socket. Avoids `slirp4netns` / TUN-device
-        // requirements that don't exist inside sandboxed dev pods
-        // (Squire EKS, etc). We set this via `host_config_modifier`
+        // requirements that don't exist inside restricted /
+        // nested-container CI environments. We set this via `host_config_modifier`
         // because testcontainers' `with_network(...)` treats the arg as
         // a named network to attach to, not as a NetworkMode literal.
         let img = GenericImage::new(image_name, tag)
@@ -179,7 +179,7 @@ impl Scenario {
 
     /// `agent-tui wait --ref <selector>`. Blocks until the selector
     /// matches a node in the outline (or, when `gone` is true, until
-    /// it matches none). See `docs/addressing-rfc.md` §2.2.
+    /// it matches none). See `docs/design/addressing-rfc.md` §2.2.
     pub async fn wait_ref(&mut self, selector: &str) -> Result<Value> {
         self.run_cli(
             "wait_ref",

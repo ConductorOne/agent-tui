@@ -2,10 +2,13 @@
 type: plan
 title: "agent-tui — Follow-on Plan (post P-UX1 + P-UX2)"
 status: draft
-author: Paul Querna (with claude-opus)
+author: Paul Querna
 created: 2026-05-27
 parent_rfc: ux-rfc.md
 ---
+
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
 
 # Follow-on Plan: post P-UX1 + P-UX2
 

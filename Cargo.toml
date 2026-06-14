@@ -61,7 +61,7 @@ tokio = { version = "1.43", features = [
 ] }
 
 # Cross-platform IPC: Unix domain sockets on Linux/macOS, named pipes on
-# Windows, behind one async API. See docs/windows-strategy.md.
+# Windows, behind one async API. See docs/design/windows-strategy.md.
 interprocess = { version = "2.4", features = ["tokio"] }
 
 # Serde + JSON-RPC line protocol.

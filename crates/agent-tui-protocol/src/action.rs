@@ -1,6 +1,6 @@
 //! Typed `Action` records that flow through the governance interceptor.
 //!
-//! See `docs/RFC.md` §11.1.
+//! See `docs/design/RFC.md` §11.1.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -118,7 +118,7 @@ pub struct CallerInfo {
 }
 
 /// One row in the audit firehose. Emitted for every governance decision
-/// regardless of verdict. See `docs/RFC.md` §11.6.
+/// regardless of verdict. See `docs/design/RFC.md` §11.6.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
     /// Session id (string; empty when not pane-scoped).

@@ -4,7 +4,7 @@
 //! the daemon talks to. Each `feed` runs bytes through `vte::ansi::Processor`,
 //! bumps the per-engine sequence number, and broadcasts a `MutationEvent`.
 //!
-//! See `docs/RFC.md` §3.3 for the Engine contract and `LEARN-TA-005` for the
+//! See `docs/design/RFC.md` §3.3 for the Engine contract and `LEARN-TA-005` for the
 //! substrate flip from `wezterm-term` to `alacritty_terminal`.
 
 #![forbid(unsafe_code)]

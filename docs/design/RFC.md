@@ -4,10 +4,10 @@ title: "agent-tui — Clean-Room Headless Terminal Browser for LLM Agents (Rust)
 status: draft
 author: Paul Querna
 created: 2026-05-24
-supersedes: rfc-v2.md
-
-harness: claude
 ---
+
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
 
 # RFC v3: `agent-tui` — A Clean-Room Headless Terminal Browser for LLM Agents
 
@@ -15,7 +15,7 @@ harness: claude
 - **Plan:** `tui-agent`
 - **Working name:** `agent-tui` (TBD; parallels Vercel's `agent-browser`)
 - **Related:** `research/import-1.md` … `research/import-6.md`
-- **Changes from v2:** Reframes the product as a **standalone clean-room implementation** — no Squire substrate dependency. Rust + `tokio` core (drops Go), distribution parity with `agent-browser` (npm, brew, cargo install, Homebrew bottles), substrate selected by comparison among `alacritty-terminal`, `wezterm-term`, and `libghostty-vt` rather than by reuse. Squire integration becomes one of many supported agent harnesses, not the architectural anchor. The production-readiness wins from v2 (concurrency model, sequence-based wait, refs with adapter-durable IDs, nonced delimiters, observability, etc.) carry forward verbatim — they are language-agnostic.
+- **Changes from v2:** Reframes the product as a **standalone clean-room implementation** — no dependency on any single host substrate. Rust + `tokio` core (drops Go), distribution parity with `agent-browser` (npm, brew, cargo install, Homebrew bottles), substrate selected by comparison among `alacritty-terminal`, `wezterm-term`, and `libghostty-vt` rather than by reuse. Host-environment integration becomes one of many supported agent harnesses, not the architectural anchor. The production-readiness wins from v2 (concurrency model, sequence-based wait, refs with adapter-durable IDs, nonced delimiters, observability, etc.) carry forward verbatim — they are language-agnostic.
 
 ## 0. TL;DR
 
@@ -34,7 +34,7 @@ harness: claude
 
 **Effort:** ~22 person-weeks (P0–P5) for two senior Rust engineers. Internal beta after P0+P1+P2 (~12 weeks).
 
-**This is not coupled to Squire.** Squire is one of many host environments; the design composes with Claude Code's `Bash(...)` allowlist, Codex CLI's tool config, OpenCode's MCP catalogue, and any harness that can shell out or speak MCP-stdio. The benefit to Squire is real — `agent-tui` is the natural tool to ship in every env — but it is not the architectural justification.
+**This is not coupled to any single host.** An agent orchestration platform is one of many host environments; the design composes with Claude Code's `Bash(...)` allowlist, Codex CLI's tool config, OpenCode's MCP catalogue, and any harness that can shell out or speak MCP-stdio. The benefit to an embedding host is real — `agent-tui` is a natural tool to ship in every env — but it is not the architectural justification.
 
 ---
 
@@ -67,7 +67,7 @@ A single Rust binary `agent-tui` with the subcommands in §5, a daemon, asciicas
 
 - A new VT engine. We pick from existing Rust crates (§3).
 - Rendering TUIs as actual screenshot images into the agent's context by default. Optional `--png` artifact only.
-- Cross-machine session replication. Solved at the orchestrator layer above (Squire arenas, Cursor background agents, etc.).
+- Cross-machine session replication. Solved at the orchestrator layer above (agent arenas, Cursor background agents, etc.).
 - A new agent harness. We are a tool the existing harnesses drive.
 
 ### 1.4 Non-goals
@@ -725,7 +725,7 @@ Binaries are static (musl on Linux); no system dependencies beyond libc on glibc
 
 The CLI is the contract. Each harness gets a thin recipe:
 
-- **Claude Code:** add `Bash(agent-tui:*)` to the skill's `allowed-tools` (mirrors `agent-browser`'s skill front-matter at `/data/squire/src/agent-browser/skill-data/core/SKILL.md` line 4).
+- **Claude Code:** add `Bash(agent-tui:*)` to the skill's `allowed-tools` (mirrors `agent-browser`'s skill front-matter `allowed-tools` entry).
 - **Codex CLI:** add to the project's `tool_use_filter`.
 - **OpenCode:** advertise via the local MCP catalogue (see 13.4).
 - **Gemini CLI:** built-in MCP loader; add `agent-tui mcp serve` as an MCP server entry.
@@ -735,7 +735,7 @@ The CLI is the contract. Each harness gets a thin recipe:
 
 `agent-tui mcp serve` runs the JSON-RPC-over-stdio MCP server protocol. Each CLI subcommand becomes an MCP tool with the same name (`agent_tui_snapshot`, `agent_tui_press`, `agent_tui_wait`, etc.). The MCP server is purely a protocol bridge — it shells out to the local daemon over the same socket the CLI uses.
 
-This is the only integration story needed for any host that speaks MCP, including Squire (via `mcpbridge`), Claude Code's MCP loader, OpenCode's MCP catalogue, Cursor's MCP support, etc.
+This is the only integration story needed for any host that speaks MCP, including an embedding host's MCP bridge, Claude Code's MCP loader, OpenCode's MCP catalogue, Cursor's MCP support, etc.
 
 ### 13.5 Telemetry
 
@@ -841,7 +841,7 @@ skill-data/
 
 `agent-tui skills get core` prints `core/SKILL.md`; `--full` includes references. Skills versioned with the binary; no runtime overrides.
 
-Core skill modeled on `/data/squire/src/agent-browser/skill-data/core/SKILL.md`. Same Markdown-with-frontmatter format Claude Code and Codex already consume.
+Core skill modeled on `agent-browser`'s `skill-data/core/SKILL.md`. Same Markdown-with-frontmatter format Claude Code and Codex already consume.
 
 ---
 
@@ -861,7 +861,7 @@ Core skill modeled on `/data/squire/src/agent-browser/skill-data/core/SKILL.md`.
 The estimate is longer than v2's Go RFC (18 weeks) by ~4 weeks because:
 
 - Rust compile times + cargo workspace bring-up cost ~1 week of incidental friction in P0.
-- `cargo-dist` + Homebrew + npm postinstall is real release-engineering work, ~1 week in P4 we didn't account for when targeting an internal Squire-only deploy.
+- `cargo-dist` + Homebrew + npm postinstall is real release-engineering work, ~1 week in P4 we didn't account for when targeting an internal-only deploy.
 - We commit to two engines (`wezterm-term` default + `alacritty-terminal` lean) in P5, adding ~1 week of abstraction-validation work.
 - OPA-WASM integration is ~1 week harder than in-process-Go evaluation; Rego adoption is more credible from Rust because the crate ecosystem is more mature.
 
@@ -900,7 +900,7 @@ Plus TerminalWorld-Verified (`research/import-3.md` §TerminalWorld) as a genera
 ## 20. References
 
 **Codebases studied:**
-- `/data/squire/src/agent-browser/` — Vercel Labs `agent-browser` (Rust, MIT). `cli/src/native/daemon.rs`, `snapshot.rs`, `actions.rs`, `connection.rs`; `agent-browser.schema.json`; `skill-data/core/SKILL.md`.
+- Vercel Labs `agent-browser` (Rust, MIT). `cli/src/native/daemon.rs`, `snapshot.rs`, `actions.rs`, `connection.rs`; `agent-browser.schema.json`; `skill-data/core/SKILL.md`.
 
 **Rust crates referenced:**
 - `wezterm-term` — primary engine candidate (https://crates.io/crates/wezterm-term)
@@ -917,19 +917,19 @@ Plus TerminalWorld-Verified (`research/import-3.md` §TerminalWorld) as a genera
 - `research/import-6.md` — vercel-labs/agent-browser deep dive
 
 **Prior RFCs:**
-- `rfc-v1.md` — initial Squire-coupled Go design
-- `rfc-v2.md` — production-ready Squire-coupled Go design (resolved 8 blockers + 12 gaps from v1 critique)
+- `rfc-v1.md` — initial host-coupled Go design
+- `rfc-v2.md` — production-ready host-coupled Go design (resolved 8 blockers + 12 gaps from v1 critique)
 
 ---
 
 ## A. Decisions log against v2
 
-| Item | v2 (Squire-coupled, Go) | v3 (clean-room, Rust) | Reason for change |
+| Item | v2 (host-coupled, Go) | v3 (clean-room, Rust) | Reason for change |
 |---|---|---|---|
 | Language | Go | Rust | Standalone product; distribution parity with agent-browser; no Go substrate to reuse |
-| Substrate | `pkg/envmgr/terminal.SharedSession` (`charmbracelet/x/vt`) | `wezterm-term` default + `alacritty-terminal` lean + `libghostty-vt` future | No upstream code to reuse; pick best-in-class Rust crate |
-| Distribution | `make build` into Squire env | `cargo-dist` matrix + npm + brew + cargo install + Docker | Standalone product needs install channels |
-| Squire integration | First-class (§9 of v2) | One of many harnesses (§13.3 of v3) | Decoupling |
+| Substrate | host env-manager terminal session (`charmbracelet/x/vt`) | `wezterm-term` default + `alacritty-terminal` lean + `libghostty-vt` future | No upstream code to reuse; pick best-in-class Rust crate |
+| Distribution | `make build` into host env | `cargo-dist` matrix + npm + brew + cargo install + Docker | Standalone product needs install channels |
+| Host integration | First-class (§9 of v2) | One of many harnesses (§13.3 of v3) | Decoupling |
 | Supervisor | Confused (v1) → none (v2) | None | Lazy CLI-spawn matches agent-browser |
 | Adapter plug-ins | Sub-process JSON-RPC over stdio | Same | Already language-agnostic in v2; preserved |
 | Concurrency model | Per-pane queue + atomic snapshot + barrier | Same | Language-agnostic; tokio mpsc cleanly maps |
@@ -939,8 +939,8 @@ Plus TerminalWorld-Verified (`research/import-3.md` §TerminalWorld) as a genera
 | Auth vault | mlock + keyring/keychain | Same; `nix::sys::mman::mlock` | Same |
 | Observability | Prometheus + OTel | Same; `tracing` + `opentelemetry-otlp` | Same |
 | Effort | 18 weeks (Go) | 22 weeks (Rust) | +4 weeks for cargo-dist, npm postinstall, two-engine abstraction, OPA-WASM |
-| MCP integration | Via `pkg/envmgr/mcpbridge` | `agent-tui mcp serve` standalone server | Standalone needs its own MCP server, not a Squire bridge |
-| Tunnel protobuf extension | Yes (Squire-specific) | Removed | Not Squire-specific |
+| MCP integration | Via host env-manager MCP bridge | `agent-tui mcp serve` standalone server | Standalone needs its own MCP server, not a host bridge |
+| Tunnel protobuf extension | Yes (host-specific) | Removed | Not host-specific |
 | Cold start target | ≤ 200 ms | ≤ 50 ms | Rust binary expectations |
 
 The hard architectural wins from v2 — concurrency model, sequence-based wait, ref-durable-ID binding, nonced delimiters, governance Action struct, observability, asciicast-extended log, adapter plug-in protocol — are all language-agnostic and carry forward unchanged. v3 is a re-platforming, not a redesign.

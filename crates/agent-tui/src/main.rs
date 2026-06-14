@@ -1,6 +1,6 @@
 //! `agent-tui` — entry point.
 //!
-//! Parses the CLI surface defined in `docs/RFC.md` §5, then either spawns /
+//! Parses the CLI surface defined in `docs/design/RFC.md` §5, then either spawns /
 //! talks to the per-session daemon (most subcommands) or hosts the daemon
 //! itself (`daemon` subcommand).
 

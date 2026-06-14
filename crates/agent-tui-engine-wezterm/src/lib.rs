@@ -1,7 +1,7 @@
 //! `wezterm-term`-backed [`Engine`] implementation.
 //!
 //! The actual `wezterm-term` integration is the first deliverable of P0
-//! (see `docs/RFC.md` §17). This file ships a placeholder that:
+//! (see `docs/design/RFC.md` §17). This file ships a placeholder that:
 //!
 //! - validates the trait-bound layout end-to-end so the daemon can wire up
 //!   an engine even before the substrate lands, and

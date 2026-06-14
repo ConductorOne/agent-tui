@@ -1,5 +1,8 @@
 # Mini-RFC: Windows support strategy
 
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
+
 **Status:** Draft. Targets v1 (P4 distribution).
 **Author:** generated from PR #1 conversation.
 

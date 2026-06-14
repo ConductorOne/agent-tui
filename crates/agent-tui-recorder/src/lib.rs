@@ -13,7 +13,7 @@
 //! | `s`  | `{"seq", "hash"}`                      | Sequence checkpoint (every N events)  |
 //! | `p`  | `{"name"}`                             | User-defined marker                   |
 //!
-//! See `docs/RFC.md` §10.
+//! See `docs/design/RFC.md` §10.
 
 #![forbid(unsafe_code)]
 

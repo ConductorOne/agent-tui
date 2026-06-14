@@ -1,5 +1,5 @@
-//! Real-system test for the in-place daemon upgrade (Option-A re-exec, bd
-//! `pqprime-yhw`, U1 / level L1: "session survives").
+//! Real-system test for the in-place daemon upgrade (Option-A re-exec):
+//! a session must survive a daemon binary upgrade in place.
 //!
 //! This exercises the **real** daemon re-exec against the **real** built
 //! `agent-tui` binary — no shim, no mock. It drives the daemon directly on the
