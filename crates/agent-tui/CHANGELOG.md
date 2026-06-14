@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- *(adapters)* Avoid top-row dynamic selector underflow in manifest refs
 - *(release)* Configure git-cliff changelog generation (dedup + skip merge/release noise)
 - *(release)* Correct off-by-one version attribution + doubled Unreleased in CHANGELOG
 
