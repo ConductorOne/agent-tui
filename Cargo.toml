@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.12"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -38,13 +38,13 @@ multiple_crate_versions = "allow"
 
 [workspace.dependencies]
 # In-workspace crates, all pinned to the workspace version.
-agent-tui-protocol = { path = "crates/agent-tui-protocol", version = "0.1.0" }
-agent-tui-engine = { path = "crates/agent-tui-engine", version = "0.1.0" }
-agent-tui-engine-wezterm = { path = "crates/agent-tui-engine-wezterm", version = "0.1.0" }
-agent-tui-engine-alacritty = { path = "crates/agent-tui-engine-alacritty", version = "0.1.0" }
-agent-tui-daemon = { path = "crates/agent-tui-daemon", version = "0.1.0" }
-agent-tui-recorder = { path = "crates/agent-tui-recorder", version = "0.1.0" }
-agent-tui-adapter = { path = "crates/agent-tui-adapter", version = "0.1.0" }
+agent-tui-protocol = { path = "crates/agent-tui-protocol", version = "0.2.0" }
+agent-tui-engine = { path = "crates/agent-tui-engine", version = "0.2.0" }
+agent-tui-engine-wezterm = { path = "crates/agent-tui-engine-wezterm", version = "0.2.0" }
+agent-tui-engine-alacritty = { path = "crates/agent-tui-engine-alacritty", version = "0.2.0" }
+agent-tui-daemon = { path = "crates/agent-tui-daemon", version = "0.2.0" }
+agent-tui-recorder = { path = "crates/agent-tui-recorder", version = "0.2.0" }
+agent-tui-adapter = { path = "crates/agent-tui-adapter", version = "0.2.0" }
 
 # Async runtime + IO. Pinned to a single tokio feature set we add to as needed.
 tokio = { version = "1.43", features = [
