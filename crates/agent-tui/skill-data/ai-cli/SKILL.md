@@ -18,9 +18,13 @@ make detection robust.
 
 ## Outline shape
 
-The Claude/Codex/Pi/Aider/opencode family shares a common interactive
-layout: a streaming response area on top of a fenced input box. The
-`claude-code` adapter exposes that as durable refs:
+The live `@ai-cli` adapter is a shared prompt/response region fallback
+for AI CLIs whose screen has the right shape: response text above an
+input row. It currently recognizes Claude/Codex/Aider/opencode-style
+frontends. Pi is covered by the bundled one-shot recipe below; live Pi
+detection waits on a real interactive Pi fixture or a provider-specific
+adapter. The `claude-code` adapter exposes compatible screens as
+durable refs:
 
 ```
 @ai-cli                  role=root
@@ -38,10 +42,11 @@ patterns:
 | Wait for the CLI to start generating (input loses focus) | `@ai-cli.input[focused]` + `--gone` |
 | Get the input prompt's current line | `@ai-cli.input` (read `.name`) |
 
-The v1 adapter doesn't yet distinguish *streaming* from *final* —
-both land in `@ai-cli.response`. The
-`[role=response-streaming]` / `[role=response-final]` split is a
-follow-up; track in `tracker.md`.
+The v1 adapter doesn't yet distinguish *streaming* from *final*, and it
+does not expose provider-specific permission/tool/file-change events.
+Rendered output lands in `@ai-cli.response`. The
+`[role=response-streaming]` / `[role=response-final]` split and
+provider-specific state refs are follow-ups; track in `tracker.md`.
 
 ## Read [core](../core/SKILL.md) first
 <!-- tested-by: navigation -->

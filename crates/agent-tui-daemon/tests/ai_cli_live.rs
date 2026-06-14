@@ -1,9 +1,10 @@
 //! Live AI-CLI driving regression tests.
 //!
-//! These tests use local executables named like common agent harness CLIs so
-//! real Claude/Codex/Pi credentials and network are not part of CI. The point
-//! is the terminal contract: spawn an AI CLI under a PTY, address its input and
-//! response regions, type into the prompt, and wait on rendered state.
+//! These tests use local executables named like common AI CLIs so real
+//! credentials and network are not part of CI. The point is the shared
+//! prompt/response region contract: spawn an AI CLI-shaped process under a PTY,
+//! address its input and response regions, type into the prompt, and wait on
+//! rendered state. Provider-specific semantics require provider fixtures.
 
 #![cfg(unix)]
 
@@ -212,8 +213,8 @@ async fn assert_response_snapshot(cfg: &DaemonConfig) {
 }
 
 #[tokio::test]
-async fn drives_live_ai_sdk_harness_cli_names_by_ai_cli_refs() {
-    for name in ["claude", "codex", "pi"] {
+async fn drives_shared_ai_cli_region_contract_for_fake_known_binaries() {
+    for name in ["claude", "codex"] {
         drive_fake_ai_cli(name).await;
     }
 }
