@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/ConductorOne/agent-tui/compare/v0.1.12...v0.2.0) - 2026-06-14
+
+### Added
+
+- *(snapshot)* Ship-nice PNG renders — palette, chrome frame, attrs, restyled annotate
+
+### Fixed
+
+- *(release)* Configure git-cliff changelog generation (dedup + skip merge/release noise)
+- *(release)* Correct off-by-one version attribution + doubled Unreleased in CHANGELOG
+
+
 ## [0.1.12](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.1.12) - 2026-06-13
 
 ### Fixed
@@ -179,4 +191,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Testing
 
 - Headline scenario — MCP drives vim through bwrap end-to-end
-
