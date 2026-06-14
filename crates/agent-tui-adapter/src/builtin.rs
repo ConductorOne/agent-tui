@@ -119,7 +119,7 @@ impl Adapter for GenericAdapter {
     }
 }
 
-/// AI-CLI adapter: covers the Claude/Codex/Aider/opencode family of
+/// AI-CLI adapter: covers the Claude/Codex/Pi/Aider/opencode family of
 /// interactive CLI agents. Adapter `name()` is `"claude-code"` for
 /// registry stability; refs are scoped under `@ai-cli` since the
 /// same adapter handles every member of the family.
@@ -139,7 +139,7 @@ impl Adapter for GenericAdapter {
 /// split flagged in `docs/design/addressing-rfc.md` §7.8 is a follow-up.
 pub struct ClaudeCodeAdapter;
 
-const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "aider", "opencode"];
+const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "pi", "aider", "opencode"];
 
 #[async_trait::async_trait]
 impl Adapter for ClaudeCodeAdapter {
@@ -906,7 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_code_detects_known_binaries() {
-        for name in ["claude", "claude-code", "codex", "aider", "opencode"] {
+        for name in ["claude", "claude-code", "codex", "pi", "aider", "opencode"] {
             let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
             assert!(score >= 0.9, "{name}: {score}");
         }

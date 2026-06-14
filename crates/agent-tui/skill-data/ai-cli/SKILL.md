@@ -18,7 +18,7 @@ make detection robust.
 
 ## Outline shape
 
-The Claude/Codex/Aider/opencode family shares a common interactive
+The Claude/Codex/Pi/Aider/opencode family shares a common interactive
 layout: a streaming response area on top of a fenced input box. The
 `claude-code` adapter exposes that as durable refs:
 
