@@ -81,7 +81,8 @@ until the session is GC'd / the daemon restarts.
 
 ```
 agent-tui snapshot [--pane <id>] [--mode outline|text|cells|adapter|hybrid]
-                   [--png <path>] [--annotate [<selector>]] [--keep-color]
+                   [--png <path>] [--annotate [<selector>]] [--chrome [<title>]]
+                   [--keep-color]
 ```
 
 Snapshot the focused pane (or a specific one with `--pane`).
@@ -114,8 +115,17 @@ not a full Unicode/emoji renderer.
 box (drawn from its `anchor`→`anchor+extent` cell rect) plus an `@ref`
 label; refs without a computable extent get a point marker instead. Pass a
 selector (e.g. `--annotate '@vim.*'`) to overlay only matching refs; bare
-`--annotate` overlays all. This is the terminal analog of an annotated
-browser screenshot.
+`--annotate` overlays all. Each box gets a numbered badge placed just
+outside its top-left corner (so it never covers the labelled content) plus
+a number→`@ref` legend in the top-right margin. This is the terminal analog
+of an annotated browser screenshot.
+
+`--chrome [<title>]` (requires `--png`) composites a window frame around the
+render: outer padding, a rounded-corner window body, a title bar with
+traffic-light dots, a drop shadow, and a dark backdrop — the polished
+look for a README or blog still. Pass a title (e.g. `--chrome 'git log'`)
+to set the title-bar text; bare `--chrome` uses the terminal's own title.
+Default off — without it, `--png` writes the bare `cols*cw × rows*ch` grid.
 
 `--keep-color` (with `--mode text` or `hybrid`) reconstructs per-cell
 SGR escape sequences from each cell's color/attributes instead of

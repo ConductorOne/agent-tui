@@ -92,6 +92,7 @@ async fn windows_spawn_cmd_echoes() {
             mode: SnapshotMode::Outline,
             png: None,
             annotate: None,
+            chrome: None,
             select: None,
             all: false,
             keep_color: false,

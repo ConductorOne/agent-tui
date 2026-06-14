@@ -67,6 +67,10 @@ pub struct SnapshotParams {
     /// matching `sel`; `Some("")` annotates all; `None` disables. Rejected
     /// without `png`.
     pub annotate: Option<String>,
+    /// With `png`, composite a window-chrome frame. `Some(title)` sets the
+    /// title text; `Some("")` uses the OSC title; `None` renders the bare
+    /// grid. Rejected without `png`.
+    pub chrome: Option<String>,
 }
 
 /// Snapshot a pane in the requested mode.
@@ -84,14 +88,11 @@ pub async fn run(
         keep_color,
         png,
         annotate,
+        chrome,
     } = params;
-    // `--annotate` overlays the PNG; it's meaningless on its own.
-    if annotate.is_some() && png.is_none() {
-        return Response::err(ErrorBody::new(
-            ErrorCode::InvalidArgs,
-            "--annotate requires --png",
-            "pass --png <path> to write the annotated image",
-        ));
+    // `--annotate` / `--chrome` decorate a PNG; both are meaningless alone.
+    if let Some(r) = reject_png_only_flags(png.as_deref(), annotate.as_deref(), chrome.as_deref()) {
+        return r;
     }
     let pane_arc = match resolve_focused(registry, pane).await {
         Ok(p) => p,
@@ -144,11 +145,15 @@ pub async fn run(
         full_outline.clone(),
     );
 
-    // `--png`: rasterize the grid (optionally overlaying ref annotations) and
-    // write it to disk. Done before the snapshot is serialized so the response
-    // can report the path + dims.
+    // `--png`: rasterize the grid (+ optional annotate overlay / chrome frame)
+    // before serializing, so the response can report the path + dims.
     if let Some(path) = png.as_ref() {
-        match render_png_artifact(&engine_snap, &full_outline, path, annotate.as_deref()).await {
+        let opts = PngArtifactOpts {
+            path,
+            annotate: annotate.as_deref(),
+            chrome: chrome.as_deref(),
+        };
+        match render_png_artifact(&engine_snap, &full_outline, opts).await {
             Ok(info) => snapshot.png = Some(info),
             Err(resp) => return resp,
         }
@@ -213,16 +218,59 @@ fn filter_outline(outline: Outline, sel: &Selector, all: bool) -> Outline {
     }
 }
 
-/// Rasterize `engine_snap` to a PNG at `path`, optionally overlaying ref
-/// annotations from `full_outline`. `annotate`: `None` = no overlay,
-/// `Some("")` = annotate all refs, `Some(sel)` = annotate refs matching `sel`.
+/// `--annotate` and `--chrome` only decorate a PNG render; reject either when
+/// `--png` is absent. Returns the error [`Response`] to surface, or `None` if
+/// the flag combination is valid.
+fn reject_png_only_flags(
+    png: Option<&str>,
+    annotate: Option<&str>,
+    chrome: Option<&str>,
+) -> Option<Response> {
+    if png.is_some() {
+        return None;
+    }
+    if annotate.is_some() {
+        return Some(Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            "--annotate requires --png",
+            "pass --png <path> to write the annotated image",
+        )));
+    }
+    if chrome.is_some() {
+        return Some(Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            "--chrome requires --png",
+            "pass --png <path> to write the framed image",
+        )));
+    }
+    None
+}
+
+/// Inputs to [`render_png_artifact`] beyond the snapshot/outline.
+struct PngArtifactOpts<'a> {
+    /// On-disk destination path for the PNG.
+    path: &'a str,
+    /// `--annotate`: `None` = no overlay, `Some("")` = all refs, `Some(sel)` =
+    /// refs matching `sel`.
+    annotate: Option<&'a str>,
+    /// `--chrome`: `None` = bare grid, `Some(title)` = framed (title text), or
+    /// `Some("")` = framed using the terminal's OSC title.
+    chrome: Option<&'a str>,
+}
+
+/// Rasterize `engine_snap` to a PNG at `opts.path`, optionally overlaying ref
+/// annotations from `full_outline` and/or compositing a window-chrome frame.
 /// On failure returns the [`Response`] error to surface to the caller.
 async fn render_png_artifact(
     engine_snap: &EngineSnapshot,
     full_outline: &Outline,
-    path: &str,
-    annotate: Option<&str>,
+    opts: PngArtifactOpts<'_>,
 ) -> Result<PngInfo, Response> {
+    let PngArtifactOpts {
+        path,
+        annotate,
+        chrome,
+    } = opts;
     // Resolve the annotate selector: Some(None) = all, Some(Some) = filtered.
     let annotate_selector: Option<Option<Selector>> = match annotate {
         None => None,
@@ -242,13 +290,15 @@ async fn render_png_artifact(
         outline: full_outline,
         selector: inner.as_ref(),
     });
-    let rendered = render::render_png(engine_snap, annotate_arg).map_err(|e| {
-        Response::err(ErrorBody::new(
-            ErrorCode::Internal,
-            format!("PNG rasterization failed: {e}"),
-            "report a bug",
-        ))
-    })?;
+    let chrome_opts = chrome.map(render::ChromeOptions::from_title_arg);
+    let rendered =
+        render::render_png(engine_snap, annotate_arg, chrome_opts.as_ref()).map_err(|e| {
+            Response::err(ErrorBody::new(
+                ErrorCode::Internal,
+                format!("PNG rasterization failed: {e}"),
+                "report a bug",
+            ))
+        })?;
     tokio::fs::write(path, &rendered.bytes).await.map_err(|e| {
         Response::err(ErrorBody::new(
             ErrorCode::Internal,

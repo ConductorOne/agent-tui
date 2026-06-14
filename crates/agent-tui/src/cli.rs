@@ -156,6 +156,14 @@ pub enum Command {
         /// Requires `--png`.
         #[arg(long, value_name = "SELECTOR", num_args = 0..=1, default_missing_value = "")]
         annotate: Option<String>,
+        /// With `--png`, composite a marketing-grade window frame around the
+        /// render: outer padding, a rounded-corner window body, a title bar
+        /// with traffic-light dots, a drop shadow, and a brand-dark backdrop.
+        /// Pass a title (e.g. `--chrome 'git log'`) to set the title-bar text;
+        /// bare `--chrome` uses the terminal's own title (or none). Default
+        /// off — the bare grid render is unchanged. Requires `--png`.
+        #[arg(long, value_name = "TITLE", num_args = 0..=1, default_missing_value = "")]
+        chrome: Option<String>,
         /// Filter the outline by a CSS-subset selector (see
         /// `docs/addressing-rfc.md` §2.2). Example:
         /// `--select '[role=buffer][focused]'`.

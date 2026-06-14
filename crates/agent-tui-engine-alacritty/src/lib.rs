@@ -341,7 +341,8 @@ fn encode_color(color: Color) -> u32 {
 }
 
 /// Pack alacritty `Flags` into our `u8` attribute byte:
-/// bit 0 = bold, 1 = italic, 2 = underline (any), 3 = inverse, 4 = strikeout.
+/// bit 0 = bold, 1 = italic, 2 = underline (any), 3 = inverse, 4 = strikeout,
+/// bit 5 = dim/faint.
 fn pack_attrs(flags: Flags) -> u8 {
     let mut a = 0u8;
     if flags.contains(Flags::BOLD) {
@@ -358,6 +359,9 @@ fn pack_attrs(flags: Flags) -> u8 {
     }
     if flags.contains(Flags::STRIKEOUT) {
         a |= 1 << 4;
+    }
+    if flags.contains(Flags::DIM) {
+        a |= 1 << 5;
     }
     a
 }
