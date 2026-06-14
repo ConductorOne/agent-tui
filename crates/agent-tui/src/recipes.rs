@@ -278,4 +278,21 @@ mod tests {
         assert!(reg.get("opencode").is_some());
         assert!(reg.get("pi").is_some());
     }
+
+    #[test]
+    fn ai_sdk_harness_cli_recipes_pin_expected_binaries() {
+        let reg = RecipeRegistry::load();
+        assert_eq!(
+            reg.get("claude").expect("claude recipe").argv,
+            vec!["claude", "-p"]
+        );
+        assert_eq!(
+            reg.get("codex").expect("codex recipe").argv,
+            vec!["codex", "exec"]
+        );
+        assert_eq!(
+            reg.get("pi").expect("pi recipe").argv,
+            vec!["pi", "--print"]
+        );
+    }
 }

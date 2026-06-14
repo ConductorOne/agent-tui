@@ -1,9 +1,9 @@
 //! Live AI-CLI driving regression tests.
 //!
-//! These tests use a local executable named `claude` so the real
-//! Claude/Codex credentials and network are not part of CI. The point is the
-//! terminal contract: spawn a Claude-like TUI under a PTY, address its input
-//! and response regions, type into the prompt, and wait on rendered state.
+//! These tests use local executables named like common agent harness CLIs so
+//! real Claude/Codex/Pi credentials and network are not part of CI. The point
+//! is the terminal contract: spawn an AI CLI under a PTY, address its input and
+//! response regions, type into the prompt, and wait on rendered state.
 
 #![cfg(unix)]
 
@@ -65,14 +65,15 @@ async fn rt(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
     serde_json::from_str(&line).expect("decode response")
 }
 
-fn write_fake_claude(dir: &Path) -> PathBuf {
+fn write_fake_ai_cli(dir: &Path, name: &str) -> PathBuf {
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir bin");
-    let path = bin_dir.join("claude");
+    let path = bin_dir.join(name);
     std::fs::write(
         &path,
-        r#"#!/bin/sh
-printf 'Claude Code test shell\n'
+        format!(
+            r#"#!/bin/sh
+printf '{name} test shell\n'
 printf '> '
 while IFS= read -r line; do
   printf '\nthinking about %s\n' "$line"
@@ -80,22 +81,23 @@ while IFS= read -r line; do
   printf 'answer: LIVE_AI_CLI_MARKER\n'
   printf '> '
 done
-"#,
+"#
+        ),
     )
-    .expect("write fake claude");
+    .expect("write fake ai cli");
     let mut perms = std::fs::metadata(&path)
-        .expect("fake claude metadata")
+        .expect("fake ai cli metadata")
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod fake claude");
+    std::fs::set_permissions(&path, perms).expect("chmod fake ai cli");
     path
 }
 
-async fn spawn_fake_claude(cfg: &DaemonConfig, fake_claude: &Path) {
+async fn spawn_fake_ai_cli(cfg: &DaemonConfig, fake_cli: &Path) {
     let spawned = rt(
         cfg,
         Command::Spawn {
-            argv: vec![fake_claude.to_string_lossy().into_owned()],
+            argv: vec![fake_cli.to_string_lossy().into_owned()],
             cwd: None,
             size: Some((60, 8)),
             stdin: agent_tui_protocol::request::StdinMode::Pty,
@@ -210,11 +212,17 @@ async fn assert_response_snapshot(cfg: &DaemonConfig) {
 }
 
 #[tokio::test]
-async fn drives_live_claude_like_screen_by_ai_cli_refs() {
-    let (cfg, _h, root) = boot().await;
-    let fake_claude = write_fake_claude(&root);
+async fn drives_live_ai_sdk_harness_cli_names_by_ai_cli_refs() {
+    for name in ["claude", "codex", "pi"] {
+        drive_fake_ai_cli(name).await;
+    }
+}
 
-    spawn_fake_claude(&cfg, &fake_claude).await;
+async fn drive_fake_ai_cli(name: &str) {
+    let (cfg, _h, root) = boot().await;
+    let fake_cli = write_fake_ai_cli(&root, name);
+
+    spawn_fake_ai_cli(&cfg, &fake_cli).await;
     wait_for_input(&cfg).await;
     type_prompt(&cfg).await;
     submit_prompt(&cfg).await;
