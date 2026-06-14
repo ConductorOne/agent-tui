@@ -18,35 +18,69 @@ make detection robust.
 
 ## Outline shape
 
-The live `@ai-cli` adapter is a shared prompt/response region fallback
-for AI CLIs whose screen has the right shape: response text above an
-input row. It currently recognizes Claude/Codex/Aider/opencode-style
-frontends. Pi is covered by the bundled one-shot recipe below; live Pi
-detection waits on a real interactive Pi fixture or a provider-specific
-adapter. The `claude-code` adapter exposes compatible screens as
-durable refs:
+Claude Code, Codex, and Pi have provider-specific terminal manifests.
+They share a prompt/response shape, but their refs are intentionally
+not collapsed into one namespace:
 
 ```
-@ai-cli                  role=root
-├── @ai-cli.response     role=response   (everything above the input)
-└── @ai-cli.input        role=input      focused=true while waiting for you
+@claude                  role=root
+├── @claude.response     role=response
+├── @claude.input        role=input      focused=true when the cursor is there
+├── @claude.approval     role=approval-request
+├── @claude.tool         role=tool-call
+├── @claude.file-change  role=file-change
+└── @claude.done         role=done
+
+@codex                   role=root
+└── same child refs under @codex
+
+@pi                      role=root
+└── same child refs under @pi
 ```
+
+The signal refs are regex-derived from the visible terminal screen.
+They are enough for supervising a live session, but they are not the
+same thing as SDK/harness event streams with structured permission or
+tool-result objects.
 
 Read `agent-tui skills get addressing` for selector syntax. Common
 patterns:
 
 | Goal | Selector |
 |---|---|
-| Wait for the CLI to be ready for input | `@ai-cli.input[focused]` |
-| Snapshot just the assistant's reply | `@ai-cli.response` |
-| Wait for the CLI to start generating (input loses focus) | `@ai-cli.input[focused]` + `--gone` |
-| Get the input prompt's current line | `@ai-cli.input` (read `.name`) |
+| Wait for Codex to be ready for input | `@codex.input[focused]` |
+| Snapshot just the Codex reply | `@codex.response` |
+| Wait for approval | `@codex.approval` |
+| Wait for a file edit | `@codex.file-change` |
+| Wait for completion | `@codex.done` |
+| Get the input prompt's current line | `@codex.input` (read `.name`) |
 
-The v1 adapter doesn't yet distinguish *streaming* from *final*, and it
-does not expose provider-specific permission/tool/file-change events.
-Rendered output lands in `@ai-cli.response`. The
-`[role=response-streaming]` / `[role=response-final]` split and
-provider-specific state refs are follow-ups; track in `tracker.md`.
+For Aider/opencode-style screens that do not yet have provider
+manifests, the older shared fallback may expose `@ai-cli.response`
+and `@ai-cli.input`. Prefer provider refs when they exist.
+
+## Agents controlling agents
+<!-- tested-by: drives_long_running_inner_agent_to_file_change_and_done -->
+
+The useful case is a live session over time: prompt, wait for a plan,
+approve, verify a file change, run checks, and wait for done.
+
+```bash {test=ai-cli-codex-long-session}
+agent-tui spawn -- codex
+agent-tui wait --ref '@codex.input[focused]'
+agent-tui type --to '@codex.input' 'plan the release note and wait for approval'
+agent-tui press --to '@codex.input' '<cr>'
+
+agent-tui wait --ref '@codex.approval'
+agent-tui type --to '@codex.input' 'approve'
+agent-tui press --to '@codex.input' '<cr>'
+
+agent-tui wait --ref '@codex.file-change'
+agent-tui type --to '@codex.input' 'run checks'
+agent-tui press --to '@codex.input' '<cr>'
+
+agent-tui wait --ref '@codex.done'
+```
 
 ## Read [core](../core/SKILL.md) first
 <!-- tested-by: navigation -->

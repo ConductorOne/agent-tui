@@ -1,0 +1,49 @@
+version = 2
+name = "codex"
+root = "codex"
+
+[detect]
+argv0 = ["codex"]
+argv_contains = ["codex"]
+
+# Provider-specific screen contract for driving a live Codex CLI session from
+# another agent. The refs are intentionally not shared with Claude/Pi so
+# provider drift can be tested and fixed independently.
+[[regions]]
+id = "response"
+role = "response"
+rows = "above-last-non-empty"
+
+[[regions]]
+id = "input"
+role = "input"
+rows = "last-non-empty"
+focus = "cursor"
+
+[[signals]]
+id = "approval"
+role = "approval-request"
+source = "response"
+regex = "(?im)(approval:.*|permission required.*|approve.*continue.*)"
+name = "approval requested"
+
+[[signals]]
+id = "tool"
+role = "tool-call"
+source = "response"
+regex = "(?im)(?:tool|command):\\s*([^\\n]+)"
+name = "tool call"
+
+[[signals]]
+id = "file-change"
+role = "file-change"
+source = "response"
+regex = "(?im)(?:status:\\s*)?file-change\\s+([^\\n]+)"
+name = "file changed"
+
+[[signals]]
+id = "done"
+role = "done"
+source = "response"
+regex = "(?im)(?:status:\\s*)?done\\b"
+name = "done"

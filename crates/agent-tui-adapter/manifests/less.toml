@@ -1,4 +1,6 @@
+version = 2
 name = "less"
+root = "less"
 
 [detect]
 argv0 = ["less", "more"]
@@ -6,11 +8,11 @@ argv_contains = ["less"]
 
 # less layout: scrolling body, status/cmd line at bottom.
 [[regions]]
-name = "body"
+id = "body"
 role = "buffer"
 rows = [0, -2]
 
 [[regions]]
-name = "status"
+id = "status"
 role = "cmdline"
 rows = [-1, -1]

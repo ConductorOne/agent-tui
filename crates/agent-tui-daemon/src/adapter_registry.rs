@@ -130,6 +130,18 @@ impl AdapterRegistry {
         // ranks them at use time.
         const BUNDLED: &[(&str, &str)] = &[
             (
+                "claude-code",
+                include_str!("../../agent-tui-adapter/manifests/claude-code.toml"),
+            ),
+            (
+                "codex",
+                include_str!("../../agent-tui-adapter/manifests/codex.toml"),
+            ),
+            (
+                "pi",
+                include_str!("../../agent-tui-adapter/manifests/pi.toml"),
+            ),
+            (
                 "lazygit",
                 include_str!("../../agent-tui-adapter/manifests/lazygit.toml"),
             ),
@@ -340,5 +352,27 @@ mod tests {
         };
         let picked = reg.detect_best(&unknown_info).await.expect("some");
         assert_eq!(picked.name(), "generic");
+    }
+
+    #[tokio::test]
+    async fn builtins_pick_provider_manifests_for_ai_agents() {
+        let reg = AdapterRegistry::with_builtins();
+        for (comm, adapter) in [
+            ("claude", "claude-code"),
+            ("claude-code", "claude-code"),
+            ("codex", "codex"),
+            ("pi", "pi"),
+        ] {
+            let picked = reg
+                .detect_best(&PaneInfo {
+                    argv: vec![format!("/usr/bin/{comm}")],
+                    comm: comm.into(),
+                    first_bytes: Vec::new(),
+                    env: std::collections::BTreeMap::new(),
+                })
+                .await
+                .expect("some");
+            assert_eq!(picked.name(), adapter, "{comm}");
+        }
     }
 }

@@ -207,6 +207,8 @@ vs "automate a page": **`run`** for stdout-shaped work, the
   replay it through a fresh engine for ground-truth regression checks.
 - **Pluggable adapters** — teach agent-tui a new TUI's structure with a drop-in
   TOML manifest; no Rust required.
+- **Agents driving agents** — provider manifests for Claude Code, Codex, and
+  Pi expose prompt, response, approval, file-change, tool, and done refs.
 - **MCP server** — `agent-tui mcp serve` exposes the whole surface as MCP tools
   so Claude (Desktop / Code) can drive any terminal app.
 

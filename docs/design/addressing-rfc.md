@@ -169,8 +169,14 @@ listing well-known schemes:
 | `vim.buffer.bufnr`  | integer  | vim `bufnr`.                         |
 | `vim.window.winnr`  | integer  | vim `winnr`.                         |
 | `nvim.buffer.bufnr` | integer  | nvim equivalent.                     |
-| `ai-cli.input`      | (none)   | bottom-line input prompt for the Claude/Codex/Aider/opencode family. |
-| `ai-cli.response`   | (none)   | scrollback above the input line.     |
+| `claude.input`      | (none)   | Claude Code prompt row.              |
+| `claude.response`   | (none)   | Claude Code scrollback above prompt. |
+| `codex.input`       | (none)   | Codex prompt row.                    |
+| `codex.response`    | (none)   | Codex scrollback above prompt.       |
+| `pi.input`          | (none)   | Pi prompt row.                       |
+| `pi.response`       | (none)   | Pi scrollback above prompt.          |
+| `ai-cli.input`      | (none)   | legacy fallback prompt row.          |
+| `ai-cli.response`   | (none)   | legacy fallback scrollback.          |
 | `generic.path`      | string   | adapter-defined; not portable.       |
 
 Adapters MAY invent new schemes; they SHOULD prefix with the adapter
@@ -802,8 +808,9 @@ the whole point. Every skill page needs review.
   lands.
 - `shell` — once shell adapter emits `@shell.prompt`, the OSC 133
   state guidance becomes "watch the ref, not the state enum."
-- `ai-cli` — `claude-code` examples gain `@claude-code.response`
-  selectors. Exposes the streaming/final grammar gap from §7.8.
+- `ai-cli` — Claude/Codex/Pi examples use provider refs such as
+  `@claude.response`, `@codex.approval`, and `@pi.input`; `@ai-cli`
+  remains the fallback namespace for unmanifested AI CLI screens.
 
 **New skill (proposed):** `addressing` — single-page reference for
 the ref grammar, selector syntax, and `--to` routing. Linked from

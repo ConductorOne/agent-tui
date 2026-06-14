@@ -119,12 +119,14 @@ impl Adapter for GenericAdapter {
     }
 }
 
-/// AI-CLI region adapter: a shared fallback for interactive AI CLIs
-/// that render a response area above a prompt/input row.
+/// AI-CLI region adapter: a legacy shared fallback for interactive AI CLIs
+/// that render a response area above a prompt/input row but do not yet have a
+/// provider-specific manifest.
 ///
 /// Adapter `name()` is `"claude-code"` for registry stability; refs
-/// are scoped under `@ai-cli` because the same region contract can be
-/// useful for multiple CLI frontends. Binary detection here means
+/// are scoped under `@ai-cli` because this is only the generic fallback.
+/// Claude Code, Codex, and Pi are covered by v2 manifests that emit
+/// provider-specific refs (`@claude`, `@codex`, `@pi`). Binary detection here means
 /// "attach prompt/response refs if the screen has this shape"; it does
 /// not imply provider-specific stream, permission, tool, file-change,
 /// compaction, or finality semantics.
@@ -137,14 +139,13 @@ impl Adapter for GenericAdapter {
 /// └── @ai-cli.input        role=input     focused=true while waiting on user
 /// ```
 ///
-/// v1 keeps things pragmatic: the adapter has no way to tell
+/// This fallback keeps things pragmatic: it has no way to tell
 /// streaming-vs-final apart without OSC 133-style markers from the
 /// CLI itself, so `@ai-cli.response` is a single node covering all
-/// non-input rows. The `[role=response-streaming]` / `[role=response-final]`
-/// split flagged in `docs/design/addressing-rfc.md` §7.8 is a follow-up.
+/// non-input rows.
 pub struct ClaudeCodeAdapter;
 
-const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "aider", "opencode"];
+const AI_CLI_FALLBACK_BINS: &[&str] = &["aider", "opencode"];
 
 #[async_trait::async_trait]
 impl Adapter for ClaudeCodeAdapter {
@@ -153,14 +154,14 @@ impl Adapter for ClaudeCodeAdapter {
     }
 
     async fn detect(&self, info: &PaneInfo) -> f32 {
-        if CLAUDE_LIKE_BINS.contains(&info.comm.as_str()) {
+        if AI_CLI_FALLBACK_BINS.contains(&info.comm.as_str()) {
             return 0.9;
         }
         // Argv-substring fallback for wrapper scripts.
         if info
             .argv
             .iter()
-            .any(|a| CLAUDE_LIKE_BINS.iter().any(|n| a.contains(n)))
+            .any(|a| AI_CLI_FALLBACK_BINS.iter().any(|n| a.contains(n)))
         {
             return 0.6;
         }
@@ -910,20 +911,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_code_detects_known_binaries() {
-        for name in ["claude", "claude-code", "codex", "aider", "opencode"] {
+    async fn claude_code_fallback_detects_unmanifested_ai_cli_binaries() {
+        for name in ["aider", "opencode"] {
             let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
             assert!(score >= 0.9, "{name}: {score}");
         }
     }
 
     #[tokio::test]
-    async fn claude_code_does_not_promote_unverified_pi_live_adapter() {
-        let score = ClaudeCodeAdapter.detect(&info_for("pi")).await;
-        assert!(
-            score < f32::EPSILON,
-            "Pi has a one-shot recipe, but live Pi detection needs a real interactive fixture"
-        );
+    async fn claude_code_fallback_does_not_claim_manifested_providers() {
+        for name in ["claude", "claude-code", "codex", "pi"] {
+            let score = ClaudeCodeAdapter.detect(&info_for(name)).await;
+            assert!(
+                score < f32::EPSILON,
+                "{name} should be handled by a provider-specific manifest, got {score}"
+            );
+        }
     }
 
     #[tokio::test]
