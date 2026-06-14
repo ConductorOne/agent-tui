@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.13](https://github.com/ConductorOne/agent-tui/compare/0.1.12...0.1.13) - 2026-06-14
+## [0.2.0](https://github.com/ConductorOne/agent-tui/compare/v0.1.12...v0.2.0) - 2026-06-14
 
 ### Added
 
@@ -199,4 +199,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Testing
 
 - Headline scenario — MCP drives vim through bwrap end-to-end
-
