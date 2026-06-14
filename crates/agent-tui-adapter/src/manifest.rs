@@ -15,6 +15,7 @@
 //!
 //! [detect]
 //! argv0 = ["lazygit"]             # exact basename matches → confidence 0.95
+//! argv_excludes = ["--help"]      # any match here rejects this manifest
 //! banner_regex = '^lazygit '      # optional: first-bytes regex
 //!
 //! [[regions]]
@@ -88,6 +89,11 @@ pub struct DetectSpec {
     /// Substring matches against any element of `PaneInfo::argv`.
     #[serde(default)]
     pub argv_contains: Vec<String>,
+    /// Substring matches against any element of `PaneInfo::argv` that reject
+    /// this manifest before positive signals are scored. Use this for
+    /// non-interactive subcommands/flags such as `--print`, `exec`, `--help`.
+    #[serde(default)]
+    pub argv_excludes: Vec<String>,
     /// Regex to match against the first ~512 bytes of PTY output.
     /// Compiled at load time; bad regexes fail the manifest.
     #[serde(default)]
@@ -313,6 +319,16 @@ impl Adapter for ManifestAdapter {
     }
 
     async fn detect(&self, info: &PaneInfo) -> f32 {
+        if self
+            .manifest
+            .detect
+            .argv_excludes
+            .iter()
+            .any(|needle| info.argv.iter().any(|a| a.contains(needle)))
+        {
+            return 0.0;
+        }
+
         let mut confidence: f32 = 0.0;
         // Strongest signal: argv-basename exact match.
         if self.manifest.detect.argv0.iter().any(|s| s == &info.comm) {
@@ -575,6 +591,7 @@ mod tests {
         assert_eq!(m.name, "demo");
         assert_eq!(m.root, "demo");
         assert_eq!(m.detect.argv0, vec!["demo".to_string()]);
+        assert!(m.detect.argv_excludes.is_empty());
         assert_eq!(m.regions.len(), 1);
         assert_eq!(m.regions[0].rows, RowSpec::Range([0, 1]));
         assert_eq!(m.regions[0].cols, [0, -1]);
@@ -732,6 +749,38 @@ mod tests {
             .find(|n| n.r#ref == "@demo.file-change")
             .expect("file-change signal");
         assert_eq!(file_change.value.as_deref(), Some("release-note.md"));
+    }
+
+    #[tokio::test]
+    async fn detect_rejects_excluded_argv_shape() {
+        let manifest = AdapterManifest::from_toml(
+            r#"
+            version = 2
+            name = "pi"
+            root = "pi"
+
+            [detect]
+            argv0 = ["pi"]
+            argv_contains = ["pi"]
+            argv_excludes = ["--print"]
+            "#,
+        )
+        .unwrap();
+        let adapter = ManifestAdapter::new(manifest);
+        let info = PaneInfo {
+            argv: vec![
+                "/usr/bin/pi".into(),
+                "--provider".into(),
+                "fake".into(),
+                "--print".into(),
+                "say hello".into(),
+            ],
+            comm: "pi".into(),
+            first_bytes: Vec::new(),
+            env: BTreeMap::new(),
+        };
+
+        assert!(adapter.detect(&info).await <= f32::EPSILON);
     }
 
     #[test]

@@ -5,6 +5,7 @@ root = "codex"
 [detect]
 argv0 = ["codex"]
 argv_contains = ["codex"]
+argv_excludes = ["exec", "--help", "--version"]
 
 # Provider-specific screen contract for driving a live Codex CLI session from
 # another agent. The refs are intentionally not shared with Claude/Pi so

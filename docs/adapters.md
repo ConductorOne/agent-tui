@@ -19,6 +19,11 @@ signal:
   wrapper scripts like `bash -c "lazygit ..."`).
 - `0.85` — `detect.banner_regex` matches the first ~512 bytes of PTY output.
 
+`detect.argv_excludes` is a negative guard: if any listed string appears in
+any argv element, the manifest scores `0.0` no matter what else matches. Use it
+to keep a live-screen manifest from claiming non-interactive modes such as
+`pi --print`, `codex exec`, or `--help`.
+
 An empty `detect` section means the adapter never auto-matches.
 
 ## Where manifests live
@@ -43,6 +48,7 @@ root = "lazygit"                # durable root ref: @lazygit
 [detect]
 argv0 = ["lazygit"]             # exact process-basename matches
 argv_contains = ["lazygit"]     # substring matches against any argv element
+argv_excludes = ["--help"]      # optional negative argv guards
 banner_regex = '^lazygit '      # optional; matched against the first ~512 bytes
 
 [[regions]]

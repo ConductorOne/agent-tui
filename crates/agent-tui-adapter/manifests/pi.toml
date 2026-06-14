@@ -5,6 +5,7 @@ root = "pi"
 [detect]
 argv0 = ["pi"]
 argv_contains = ["pi"]
+argv_excludes = ["--print", "--help", "--version"]
 
 # Provider-specific screen contract for driving a live Pi CLI session from
 # another agent. This is a terminal-screen adapter, not a replacement for Pi's

@@ -5,6 +5,7 @@ root = "claude"
 [detect]
 argv0 = ["claude", "claude-code"]
 argv_contains = ["claude", "claude-code"]
+argv_excludes = ["--print", "--help", "--version"]
 
 # Provider-specific screen contract for driving a live Claude Code-like
 # session from another agent. These refs describe the visible terminal UI;

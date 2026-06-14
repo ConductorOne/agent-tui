@@ -43,6 +43,11 @@ They are enough for supervising a live session, but they are not the
 same thing as SDK/harness event streams with structured permission or
 tool-result objects.
 
+Batch modes are intentionally different. `pi --print`, `codex exec`,
+and Claude print/help/version invocations are stdout-producing commands,
+not long-lived live agent screens, so the bundled provider manifests do
+not claim them. Capture those with the generic shell/stdout path.
+
 Read `agent-tui skills get addressing` for selector syntax. Common
 patterns:
 

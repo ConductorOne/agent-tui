@@ -375,4 +375,25 @@ mod tests {
             assert_eq!(picked.name(), adapter, "{comm}");
         }
     }
+
+    #[tokio::test]
+    async fn provider_manifests_do_not_claim_batch_agent_invocations() {
+        let reg = AdapterRegistry::with_builtins();
+        for (comm, argv) in [
+            ("claude", vec!["/usr/bin/claude", "--print", "say hi"]),
+            ("codex", vec!["/usr/bin/codex", "exec", "say hi"]),
+            ("pi", vec!["/usr/bin/pi", "--print", "say hi"]),
+        ] {
+            let picked = reg
+                .detect_best(&PaneInfo {
+                    argv: argv.into_iter().map(String::from).collect(),
+                    comm: comm.into(),
+                    first_bytes: Vec::new(),
+                    env: std::collections::BTreeMap::new(),
+                })
+                .await
+                .expect("generic fallback");
+            assert_eq!(picked.name(), "generic", "{comm}");
+        }
+    }
 }
