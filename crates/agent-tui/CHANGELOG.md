@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.13](https://github.com/ConductorOne/agent-tui/compare/0.1.12...0.1.13) - 2026-06-14
+## [0.2.0](https://github.com/ConductorOne/agent-tui/compare/v0.1.12...v0.2.0) - 2026-06-14
 
 ### Added
 
+- *(adapters)* Manifest v2 durable refs, dynamic row selectors, and signal refs for agents driving agents.
 - *(snapshot)* Ship-nice PNG renders — palette, chrome frame, attrs, restyled annotate
 
 ### Documentation
@@ -30,11 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Testing
 
 - *(ai-cli)* Cover AI SDK harness CLI names ([#109](https://github.com/ConductorOne/agent-tui/pull/109))
-
-
-### Added
-
-- *(adapters)* Manifest v2 durable refs, dynamic row selectors, and signal refs for agents driving agents.
 
 ## [0.1.12](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.1.12) - 2026-06-13
 
