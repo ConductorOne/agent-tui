@@ -169,8 +169,16 @@ listing well-known schemes:
 | `vim.buffer.bufnr`  | integer  | vim `bufnr`.                         |
 | `vim.window.winnr`  | integer  | vim `winnr`.                         |
 | `nvim.buffer.bufnr` | integer  | nvim equivalent.                     |
-| `ai-cli.input`      | (none)   | bottom-line input prompt for the Claude/Codex/Aider/opencode family. |
-| `ai-cli.response`   | (none)   | scrollback above the input line.     |
+| `claude.input`      | (none)   | Claude Code prompt row.              |
+| `claude.response`   | (none)   | Claude Code scrollback above prompt. |
+| `codex.input`       | (none)   | Codex prompt row.                    |
+| `codex.response`    | (none)   | Codex scrollback above prompt.       |
+| `pi.input`          | (none)   | Pi prompt row.                       |
+| `pi.response`       | (none)   | Pi scrollback above prompt.          |
+| `aider.input`       | (none)   | Aider prompt row.                    |
+| `aider.response`    | (none)   | Aider scrollback above prompt.       |
+| `opencode.input`    | (none)   | OpenCode prompt row.                 |
+| `opencode.response` | (none)   | OpenCode scrollback above prompt.    |
 | `generic.path`      | string   | adapter-defined; not portable.       |
 
 Adapters MAY invent new schemes; they SHOULD prefix with the adapter
@@ -707,20 +715,18 @@ wants to send a prompt and wait for the response to stop streaming.
 **With addressing model:**
 ```bash
 spawn -- claude
-wait --ref '@claude-code.input[focused]'
+wait --ref '@claude.input[focused]'
 type 'explain this codebase'
 press '<cr>'
-wait --ref '@claude-code.response[streaming=false]'
-snapshot --select '@claude-code.response'
+wait --ref '@claude.response[name~=/done|ready|finished/i]'
+snapshot --select '@claude.response'
 ```
 
-**Friction:** requires a `claude-code` adapter (it exists in
-built-ins as `ClaudeCodeAdapter`, but probably needs ref scheme
-work). The `[streaming=false]` predicate doesn't exist in §2.2 — we
-have `=`, `~=`, `^=`, `$=` but no boolean. Two options: add a
-boolean predicate, or fold it into the role (`role=response-final`
-vs `role=response-streaming`). Lean toward role-as-state — simpler
-grammar, more discoverable.
+**Friction:** the v2 Claude Code manifest gives screen-level prompt
+and response refs, but it does not know provider-level finality. The
+`[streaming=false]` predicate doesn't exist in §2.2, and a regex on
+rendered text is only a fallback. Rich finality needs provider events
+or a provider-specific adapter that can emit `role=response-final`.
 
 **Score:** ⚠️ Exposes a grammar gap. Captured in §4.
 
@@ -802,8 +808,10 @@ the whole point. Every skill page needs review.
   lands.
 - `shell` — once shell adapter emits `@shell.prompt`, the OSC 133
   state guidance becomes "watch the ref, not the state enum."
-- `ai-cli` — `claude-code` examples gain `@claude-code.response`
-  selectors. Exposes the streaming/final grammar gap from §7.8.
+- `ai-cli` — Claude/Codex/Pi/Aider/OpenCode examples use provider refs
+  such as `@claude.response`, `@codex.approval`, and `@pi.input`.
+  Unknown agent CLIs fall back to `@generic` until they get a v2
+  manifest or a richer provider adapter.
 
 **New skill (proposed):** `addressing` — single-page reference for
 the ref grammar, selector syntax, and `--to` routing. Linked from

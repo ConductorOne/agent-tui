@@ -13,9 +13,7 @@
 
 use std::sync::Arc;
 
-use agent_tui_adapter::{
-    Adapter, ClaudeCodeAdapter, GenericAdapter, PaneInfo, ShellAdapter, VimAdapter,
-};
+use agent_tui_adapter::{Adapter, GenericAdapter, PaneInfo, ShellAdapter, VimAdapter};
 
 const MIN_CONFIDENCE: f32 = 0.05;
 
@@ -33,7 +31,6 @@ impl AdapterRegistry {
         let mut reg = Self {
             adapters: vec![
                 Arc::new(GenericAdapter),
-                Arc::new(ClaudeCodeAdapter),
                 Arc::new(ShellAdapter),
                 Arc::new(VimAdapter),
             ],
@@ -129,6 +126,26 @@ impl AdapterRegistry {
         // manifests/`. Order doesn't matter — detect-confidence
         // ranks them at use time.
         const BUNDLED: &[(&str, &str)] = &[
+            (
+                "aider",
+                include_str!("../../agent-tui-adapter/manifests/aider.toml"),
+            ),
+            (
+                "claude-code",
+                include_str!("../../agent-tui-adapter/manifests/claude-code.toml"),
+            ),
+            (
+                "codex",
+                include_str!("../../agent-tui-adapter/manifests/codex.toml"),
+            ),
+            (
+                "pi",
+                include_str!("../../agent-tui-adapter/manifests/pi.toml"),
+            ),
+            (
+                "opencode",
+                include_str!("../../agent-tui-adapter/manifests/opencode.toml"),
+            ),
             (
                 "lazygit",
                 include_str!("../../agent-tui-adapter/manifests/lazygit.toml"),
@@ -340,5 +357,51 @@ mod tests {
         };
         let picked = reg.detect_best(&unknown_info).await.expect("some");
         assert_eq!(picked.name(), "generic");
+    }
+
+    #[tokio::test]
+    async fn builtins_pick_provider_manifests_for_ai_agents() {
+        let reg = AdapterRegistry::with_builtins();
+        for (comm, adapter) in [
+            ("aider", "aider"),
+            ("claude", "claude-code"),
+            ("claude-code", "claude-code"),
+            ("codex", "codex"),
+            ("opencode", "opencode"),
+            ("pi", "pi"),
+        ] {
+            let picked = reg
+                .detect_best(&PaneInfo {
+                    argv: vec![format!("/usr/bin/{comm}")],
+                    comm: comm.into(),
+                    first_bytes: Vec::new(),
+                    env: std::collections::BTreeMap::new(),
+                })
+                .await
+                .expect("some");
+            assert_eq!(picked.name(), adapter, "{comm}");
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_manifests_do_not_claim_batch_agent_invocations() {
+        let reg = AdapterRegistry::with_builtins();
+        for (comm, argv) in [
+            ("claude", vec!["/usr/bin/claude", "--print", "say hi"]),
+            ("codex", vec!["/usr/bin/codex", "exec", "say hi"]),
+            ("opencode", vec!["/usr/bin/opencode", "run", "say hi"]),
+            ("pi", vec!["/usr/bin/pi", "--print", "say hi"]),
+        ] {
+            let picked = reg
+                .detect_best(&PaneInfo {
+                    argv: argv.into_iter().map(String::from).collect(),
+                    comm: comm.into(),
+                    first_bytes: Vec::new(),
+                    env: std::collections::BTreeMap::new(),
+                })
+                .await
+                .expect("generic fallback");
+            assert_eq!(picked.name(), "generic", "{comm}");
+        }
     }
 }

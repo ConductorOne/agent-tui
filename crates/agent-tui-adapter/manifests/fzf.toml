@@ -1,4 +1,6 @@
+version = 2
 name = "fzf"
+root = "fzf"
 
 [detect]
 argv0 = ["fzf"]
@@ -9,16 +11,17 @@ argv_contains = ["fzf"]
 #   Row 1    : counter (`23/45`)
 #   Rows 2-N : candidate list
 [[regions]]
-name = "query"
+id = "query"
 role = "input"
 rows = [0, 0]
+focus = "cursor"
 
 [[regions]]
-name = "counter"
+id = "counter"
 role = "status"
 rows = [1, 1]
 
 [[regions]]
-name = "candidates"
+id = "candidates"
 role = "list"
 rows = [2, -1]

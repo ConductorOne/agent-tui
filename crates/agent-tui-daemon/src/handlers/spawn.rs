@@ -121,7 +121,7 @@ pub async fn run(
 fn basename(path: &str) -> String {
     let stem = path.rsplit(['/', '\\']).next().unwrap_or(path);
     // Strip a trailing `.exe` (case-insensitive) so e.g. `claude.exe` ->
-    // `claude` and the ClaudeCodeAdapter recognizes it.
+    // `claude` and provider manifests recognize it.
     if stem.len() > 4 && stem[stem.len() - 4..].eq_ignore_ascii_case(".exe") {
         return stem[..stem.len() - 4].to_string();
     }

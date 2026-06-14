@@ -1,4 +1,6 @@
+version = 2
 name = "tig"
+root = "tig"
 
 [detect]
 argv0 = ["tig"]
@@ -6,16 +8,16 @@ argv_contains = ["tig"]
 
 # tig layout: title-bar at top, main scrollable view, status-line at bottom.
 [[regions]]
-name = "title"
+id = "title"
 role = "title-bar"
 rows = [0, 0]
 
 [[regions]]
-name = "body"
+id = "body"
 role = "buffer"
 rows = [1, -2]
 
 [[regions]]
-name = "status"
+id = "status"
 role = "status-bar"
 rows = [-1, -1]

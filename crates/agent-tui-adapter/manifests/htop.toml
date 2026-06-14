@@ -1,4 +1,6 @@
+version = 2
 name = "htop"
+root = "htop"
 
 [detect]
 argv0 = ["htop", "btop", "btop4linux"]
@@ -6,16 +8,16 @@ argv_contains = ["htop"]
 
 # htop layout: meters + summary at top, process table, F-key footer.
 [[regions]]
-name = "meters"
+id = "meters"
 role = "meters"
 rows = [0, 7]
 
 [[regions]]
-name = "processes"
+id = "processes"
 role = "table"
 rows = [8, -2]
 
 [[regions]]
-name = "fkeys"
+id = "fkeys"
 role = "footer"
 rows = [-1, -1]

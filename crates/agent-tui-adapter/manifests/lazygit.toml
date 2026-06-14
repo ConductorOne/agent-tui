@@ -1,4 +1,6 @@
+version = 2
 name = "lazygit"
+root = "lazygit"
 
 [detect]
 argv0 = ["lazygit"]
@@ -14,23 +16,23 @@ argv_contains = ["lazygit"]
 # We carve four outline nodes: status, left-panel, main-panel, footer.
 
 [[regions]]
-name = "status"
+id = "status"
 role = "status-bar"
 rows = [0, 0]
 
 [[regions]]
-name = "panels"
+id = "panels"
 role = "list"
 rows = [1, -3]
 cols = [0, 40]
 
 [[regions]]
-name = "main"
+id = "main"
 role = "detail"
 rows = [1, -3]
 cols = [41, -1]
 
 [[regions]]
-name = "footer"
+id = "footer"
 role = "footer"
 rows = [-2, -1]
