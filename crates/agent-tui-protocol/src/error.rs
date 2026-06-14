@@ -4,7 +4,7 @@
 //! Agents are encouraged to branch on `numeric_code`, which never changes
 //! within the v1 series; new codes are added in a new range.
 //!
-//! See `docs/RFC.md` §5.4.
+//! See `docs/design/RFC.md` §5.4.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,10 +29,10 @@ pub enum ErrorCode {
     /// Adapter was attached but the program identity has since changed.
     AdapterUnattached,
     /// `press --to` named a target the attached adapter does not
-    /// recognize. See `docs/addressing-rfc.md` §2.3.
+    /// recognize. See `docs/design/addressing-rfc.md` §2.3.
     RoutingUnsupported,
     /// A `WaitFor` step in a routed write did not fire within its
-    /// `max_wait_ms` budget. See `docs/addressing-rfc.md` §2.3.
+    /// `max_wait_ms` budget. See `docs/design/addressing-rfc.md` §2.3.
     RoutingGateTimeout,
     /// `wait` did not satisfy its condition within `--timeout`.
     WaitTimeout,

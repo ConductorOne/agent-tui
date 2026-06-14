@@ -1,6 +1,6 @@
 //! Snapshot payload types — what the daemon returns to a `snapshot` request.
 //!
-//! See `docs/RFC.md` §5 (envelope) and §7 (observation layer).
+//! See `docs/design/RFC.md` §5 (envelope) and §7 (observation layer).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -95,7 +95,7 @@ pub struct CellGridRle {
     /// Number of rows.
     pub rows: u16,
     /// Base64-packed RLE-compressed cell records. Format defined in
-    /// `docs/RFC.md` §7.2.
+    /// `docs/design/RFC.md` §7.2.
     pub rows_b64: Vec<String>,
     /// Palette descriptor.
     pub palette: serde_json::Value,
@@ -141,13 +141,13 @@ pub struct OutlineNode {
     pub extent: Option<(u16, u16)>,
     /// Per-node pane state, when meaningful (e.g. a focused sub-pane
     /// inside a multiplexer). When unset, consult the snapshot-level
-    /// `state` field instead. See `docs/addressing-rfc.md` §2.5.
+    /// `state` field instead. See `docs/design/addressing-rfc.md` §2.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<PaneState>,
     /// `true` if the ref is bound by an adapter-durable identifier
     /// (i.e. survives re-renders). Mirrors the binding kind in the
     /// snapshot's `refs` map; inlined here so selectors can filter
-    /// without joining against `refs`. See `docs/addressing-rfc.md`
+    /// without joining against `refs`. See `docs/design/addressing-rfc.md`
     /// §2.1 "Stability rule".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub durable: bool,

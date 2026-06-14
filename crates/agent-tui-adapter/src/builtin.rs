@@ -136,7 +136,7 @@ impl Adapter for GenericAdapter {
 /// streaming-vs-final apart without OSC 133-style markers from the
 /// CLI itself, so `@ai-cli.response` is a single node covering all
 /// non-input rows. The `[role=response-streaming]` / `[role=response-final]`
-/// split flagged in `docs/addressing-rfc.md` §7.8 is a follow-up.
+/// split flagged in `docs/design/addressing-rfc.md` §7.8 is a follow-up.
 pub struct ClaudeCodeAdapter;
 
 const CLAUDE_LIKE_BINS: &[&str] = &["claude", "claude-code", "codex", "aider", "opencode"];

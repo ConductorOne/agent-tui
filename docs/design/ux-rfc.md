@@ -2,10 +2,12 @@
 type: rfc
 title: "agent-tui — UX & Surface-Area Improvements for the Long Tail"
 status: draft
-author: Paul Querna (with claude-opus)
+author: Paul Querna
 created: 2026-05-27
-harness: claude
 ---
+
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
 
 # RFC: agent-tui — UX & Surface-Area Improvements for the Long Tail
 

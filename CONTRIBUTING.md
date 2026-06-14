@@ -24,12 +24,12 @@ just build    # full debug build
 - `crates/agent-tui` — the binary. CLI parsing + dispatch only.
 - `crates/agent-tui-protocol` — wire types shared between CLI and daemon.
 - `crates/agent-tui-engine` — the `Engine` trait the daemon talks to.
-- `crates/agent-tui-engine-wezterm` — default engine impl.
-- `crates/agent-tui-engine-alacritty` — lean alternative engine impl.
+- `crates/agent-tui-engine-alacritty` — the default engine impl (`alacritty-terminal`-backed); the daemon instantiates this.
+- `crates/agent-tui-engine-wezterm` — placeholder stub for a future `wezterm-term`-backed engine; not yet wired in.
 - `crates/agent-tui-daemon` — long-lived daemon, socket server, per-pane logic.
 - `crates/agent-tui-recorder` — asciicast-v3-extended event log.
 - `crates/agent-tui-adapter` — per-program adapter trait + plug-in IPC.
-- `docs/RFC.md` — the canonical architecture RFC. Read this first.
+- `docs/design/RFC.md` — the original architecture RFC (historical design note; may not match current behavior).
 
 ## Integration tests (Docker / Podman)
 
@@ -57,10 +57,10 @@ export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
 cargo test -p agent-tui-integration --features docker
 ```
 
-### Inside a nested-container dev env (e.g. Squire EKS pods)
+### Inside a restricted / nested-container dev env
 
-The Docker backend **can't run nested in restricted EKS pods**: even
-rootful podman fails with `crun: mount proc to proc: Operation not
+The Docker backend **can't run nested in some restricted container
+environments**: even rootful podman fails with `crun: mount proc to proc: Operation not
 permitted` because the host pod's `/proc` is read-only and the runtime
 can't manipulate the kernel namespaces it needs. Sysbox/Kata at the
 node level would fix this; without that, the Docker path is CI-only.
@@ -130,9 +130,11 @@ cargo xtask cli-coverage               # every CLI flag is documented
 - Tests live alongside the code in `#[cfg(test)] mod tests`. Integration tests go under `tests/`.
 - Clippy is enforced in CI at `-D warnings`. Pre-commit: `just ci`.
 
-## Working on the RFC
+## Design notes
 
-`docs/RFC.md` is the source of truth for the design. If you change behavior in a way that drifts from the RFC, update the RFC in the same PR.
+`docs/design/` holds the original design RFCs. They predate the public release
+and document the intended architecture; they may not match current behavior.
+Treat the code as the source of truth.
 
 ## License
 

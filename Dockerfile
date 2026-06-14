@@ -4,7 +4,7 @@
 #
 # Published to ghcr.io/conductorone/agent-tui by .github/workflows/ghcr.yml as a
 # single multi-arch (linux/amd64 + linux/arm64) manifest. The image exists so
-# downstream consumers (e.g. Squire) can bake the binary out of it via
+# downstream consumers can bake the binary out of it via
 #   COPY --from=ghcr.io/conductorone/agent-tui /usr/local/bin/agent-tui ...
 # so the runtime path `/usr/local/bin/agent-tui` is a hard contract.
 

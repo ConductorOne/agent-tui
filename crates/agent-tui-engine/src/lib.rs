@@ -5,7 +5,7 @@
 //! When `libghostty-vt` tags stable a third implementor can land without
 //! touching daemon code.
 //!
-//! See `docs/RFC.md` §3.3.
+//! See `docs/design/RFC.md` §3.3.
 
 #![forbid(unsafe_code)]
 
@@ -74,7 +74,7 @@ pub struct EngineSnapshot {
 impl EngineSnapshot {
     /// Compute the canonical SHA-256 hash of the visible cell grid.
     ///
-    /// The encoding is documented in `docs/RFC.md` §4.4: row-major
+    /// The encoding is documented in `docs/design/RFC.md` §4.4: row-major
     /// `(ch, fg, bg, attrs, width)` packing followed by alt-screen flag
     /// and cursor position. The output is hex-encoded (lowercase, no `0x`).
     #[must_use]

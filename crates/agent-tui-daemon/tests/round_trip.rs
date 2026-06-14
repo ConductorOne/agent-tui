@@ -2487,7 +2487,7 @@ async fn write_lease_gate_uniform_across_all_write_verbs() {
     .await;
 }
 
-// ---- attach/tail-follow under CONCURRENT load (cov-8, Squire-critical) ------
+// ---- attach/tail-follow under CONCURRENT load (cov-8, multi-viewer) ------
 
 /// Per-follower accounting collected by draining a follow stream to `eof`:
 /// total follow bytes received, the largest single-chunk `lost_bytes`, the
@@ -2563,7 +2563,7 @@ async fn drain_follow_accounting(
     stats
 }
 
-/// cov-8 (Squire-critical): the many-viewer fan-out. Fan one task-PTY out to
+/// cov-8 (multi-viewer): the many-viewer fan-out. Fan one task-PTY out to
 /// several concurrent followers — two FAST (drain promptly) and one SLOW (held
 /// unread so it falls behind the 1 MiB ring horizon) — plus a LATE JOINER that
 /// attaches mid-stream with a rendered prelude. Asserts:
@@ -2809,7 +2809,7 @@ async fn wait_for_dims(cfg: &DaemonConfig, cols: u64, rows: u64) -> bool {
 }
 
 /// cov-9 (gap #8, FINAL Phase-B gap): a `resize` arriving WHILE a follower is
-/// mid-stream. Squire's env-manager resizes the PTY when the browser viewport
+/// mid-stream. an external env-manager process resizes the PTY when the browser viewport
 /// changes during a live `tail`/`attach`. The alacritty engine wraps `Term`
 /// behind a single Mutex, so feed/resize/snapshot are serialized; this pins that
 /// the concurrent resize×stream interaction is safe: no panic, no daemon wedge,
@@ -3064,7 +3064,7 @@ fn absorb_chunk(line: &str, seen: &mut Vec<u8>) {
     }
 }
 
-/// Latency regression guard for the follower-broadcast path (bd `pqprime-x0l`).
+/// Latency regression guard for the follower-broadcast path for the original latency issue.
 ///
 /// Before the notify-on-append fix the daemon flushed ring bytes to streaming
 /// followers on a fixed ~50ms (≈20Hz) periodic tick, so an echoed keystroke
@@ -3198,7 +3198,7 @@ async fn follower_round_trip_is_low_latency() {
     assert!(
         median < 15.0,
         "follower round-trip median {median:.1}ms (max {max:.1}ms) exceeds the 15ms bound — \
-         the ~50ms periodic-flush regression is back (bd pqprime-x0l)"
+         the ~50ms periodic-flush regression is back "
     );
 
     let _ = round_trip(

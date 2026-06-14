@@ -193,8 +193,8 @@ agent-tui press "<c-c>"                         # cancel
 ```
 
 `type` is for literal text (no key-notation parsing). `press` is for
-key combinations. `send-ansi` is for raw escape sequences when you
-need to emit bytes the PTY isn't parsing through readline.
+key combinations. `send-ansi` is for hex-encoded byte sequences when
+you need to emit bytes the PTY isn't parsing through readline.
 
 ## Sending raw ANSI / escape sequences
 <!-- tested-by: bwrap_less_search_finds_anchor -->
@@ -202,15 +202,15 @@ need to emit bytes the PTY isn't parsing through readline.
 ```bash {test=send-ansi}
 agent-tui spawn -- less /work/log.txt
 agent-tui wait --text "log.txt"                 # less shows the FILENAME, not a ":" prompt
-agent-tui send-ansi "/needle\r"                 # send literal /, needle, CR
+agent-tui send-ansi 2f6e6565646c650d            # bytes for /needle<CR>
 agent-tui wait --text "needle"
 agent-tui snapshot
 agent-tui press "q"
 ```
 
-Use `send-ansi` for application-level escape codes (slash-search in
-less, OSC sequences, mode toggles). Anything you'd type at the
-terminal verbatim.
+Use `send-ansi` for application-level byte sequences (slash-search in
+less, OSC sequences, mode toggles). Pass bytes as hex; for ordinary
+typed text plus key tokens, prefer `press`.
 
 ## Waiting for screen state
 <!-- tested-by: bwrap_fzf_opens_with_candidate_list -->

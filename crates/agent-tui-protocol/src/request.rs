@@ -12,7 +12,7 @@ use crate::PaneId;
 
 /// Wait-condition discriminator for `wait`.
 ///
-/// See `docs/RFC.md` §4.5.
+/// See `docs/design/RFC.md` §4.5.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WaitCondition {
@@ -61,7 +61,7 @@ pub enum WaitCondition {
     Exit,
     /// Block until a selector matches a node in the outline (or, with
     /// `gone: true`, until no node matches). See
-    /// `docs/addressing-rfc.md` §2.2.
+    /// `docs/design/addressing-rfc.md` §2.2.
     Ref {
         /// Selector expression (CSS-subset; parsed by the daemon).
         selector: String,
@@ -134,7 +134,7 @@ pub enum PreludeKind {
 /// The set of commands the daemon accepts. Each enum variant maps 1:1 to a
 /// CLI subcommand.
 ///
-/// See `docs/RFC.md` §5.1.
+/// See `docs/design/RFC.md` §5.1.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Command {

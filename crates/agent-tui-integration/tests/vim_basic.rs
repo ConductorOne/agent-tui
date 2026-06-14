@@ -2,7 +2,7 @@
 //!
 //! Every assertion uses `wait --ref` against `@vim.*` durable refs
 //! instead of `wait --text` regex over rendered cells. See the
-//! `addressing` skill and `docs/addressing-rfc.md` §2.2.
+//! `addressing` skill and `docs/design/addressing-rfc.md` §2.2.
 
 #![cfg(feature = "docker")]
 

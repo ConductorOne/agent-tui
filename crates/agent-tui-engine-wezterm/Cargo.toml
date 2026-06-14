@@ -16,5 +16,5 @@ agent-tui-engine = { workspace = true }
 agent-tui-protocol = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-# wezterm-term lands in P0 follow-up; see docs/RFC.md §3.2.
+# wezterm-term lands in P0 follow-up; see docs/design/RFC.md §3.2.
 # wezterm-term = "0.x"

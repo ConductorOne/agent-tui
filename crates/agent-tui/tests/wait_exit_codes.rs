@@ -1,6 +1,6 @@
 //! End-to-end tests for the `wait` verb's exit-code contract.
 //!
-//! PR #93 ratified these codes as a squire-side interface contract:
+//! PR #93 ratified these codes as an interface contract for embedding hosts:
 //!
 //!   0   — condition satisfied within `--max`
 //!   124 — condition NOT satisfied within `--max` (mirrors GNU `timeout(1)`)
@@ -99,7 +99,7 @@ impl Drop for Harness {
 ///
 /// This is the #93 primary contract (mirrors GNU `timeout(1)`): shell
 /// callers branch "not settled yet" (124) vs "actually broken" (2) without
-/// parsing the JSON envelope. The squire side relies on this.
+/// parsing the JSON envelope. Embedding hosts rely on this.
 #[test]
 fn wait_exit_124_on_timeout() {
     let h = Harness::new("t124");
@@ -140,7 +140,7 @@ fn wait_exit_0_on_success() {
 /// flag" error propagated through `?` to `main()`, which exits 1 instead of
 /// the documented exit 2 for any non-timeout failure.
 ///
-/// The squire e2e validator observed `agent-tui wait --timeout 500` exiting
+/// An end-to-end validator observed `agent-tui wait --timeout 500` exiting
 /// 1 (not 124). In that invocation `--timeout` is the global flag (unwired
 /// per tracker.md P-UX6), no mode flag is given, so the command fails
 /// immediately with a bad-args error — exit must be 2, not 1.

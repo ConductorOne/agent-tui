@@ -385,7 +385,7 @@ fn tool_schemas() -> Vec<Value> {
                     "png": { "type": "string", "description": "Path to write a real PNG render of the screen (monospace glyphs + cell colors)." },
                     "annotate": { "type": ["boolean", "string"], "description": "With `png`, overlay ref bounding boxes + numbered badges. `true` annotates all refs; a selector string annotates only matching refs (e.g. `@vim.*`). Requires `png`." },
                     "chrome": { "type": ["boolean", "string"], "description": "With `png`, composite a marketing-grade window frame (padding, rounded corners, title bar + traffic lights, drop shadow, brand-dark backdrop). `true` frames with the terminal's own title; a string sets the title-bar text. Default off. Requires `png`." },
-                    "select": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
+                    "select": { "type": "string", "description": "CSS-subset selector. See docs/design/addressing-rfc.md §2.2." },
                     "all": { "type": "boolean", "description": "With `select`, return every match instead of just the first." }
                 }
             }
@@ -398,7 +398,7 @@ fn tool_schemas() -> Vec<Value> {
                 "properties": {
                     "pane": { "type": "string" },
                     "keys": { "type": "string" },
-                    "to": { "type": "string", "description": "Selector identifying the target node. See docs/addressing-rfc.md §2.3." }
+                    "to": { "type": "string", "description": "Selector identifying the target node. See docs/design/addressing-rfc.md §2.3." }
                 },
                 "required": ["keys"]
             }
@@ -430,7 +430,7 @@ fn tool_schemas() -> Vec<Value> {
                     "cursor_stable": { "type": "integer" },
                     "alt_screen": { "type": "boolean" },
                     "exit": { "type": "boolean" },
-                    "ref": { "type": "string", "description": "CSS-subset selector. See docs/addressing-rfc.md §2.2." },
+                    "ref": { "type": "string", "description": "CSS-subset selector. See docs/design/addressing-rfc.md §2.2." },
                     "gone": { "type": "boolean", "description": "With `ref`, fires when no node matches." },
                     "max": { "type": "integer" }
                 }

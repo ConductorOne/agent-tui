@@ -3,7 +3,7 @@
 //! Modeled on Vercel Labs' `agent-browser skills` system. The canonical
 //! content lives under `crates/agent-tui/skill-data/**` and is bundled
 //! into the binary via `include_str!` so skill text is always version-
-//! locked to the binary that serves it. See `docs/skills-rfc.md`.
+//! locked to the binary that serves it. See `docs/design/skills-rfc.md`.
 
 /// One skill package. `body` is the canonical SKILL.md; `references`
 /// and `templates` are sidecar files exposed when `--full` is set.

@@ -10,7 +10,7 @@
 //! bytes a terminal expects. Unknown `<...>` tokens are rejected — that's
 //! what `KEY_FORMAT_ERROR` is for upstream.
 //!
-//! See `docs/RFC.md` §5.1 and `skill-data/core/references/keymap.md`.
+//! See `docs/design/RFC.md` §5.1 and `skill-data/core/references/keymap.md`.
 
 use std::fmt;
 

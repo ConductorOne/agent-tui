@@ -200,7 +200,7 @@ The runtime is selected by the `DOCKER_HOST` env var:
 | Local dev w/ Docker Desktop | unset (default `unix:///var/run/docker.sock`) |
 | Local dev w/ Podman (rootless) | `unix:///run/user/$UID/podman/podman.sock` (after `podman system service --time=0`) |
 | Linux CI on GitHub Actions | unset (Docker pre-installed) |
-| Dev inside a sandboxed container (e.g. our Squire env) | Use Podman in rootless nested mode, or skip integration tests with `--features default` (i.e. don't enable the integration feature) |
+| Dev inside a restricted / nested-container env | Use Podman in rootless nested mode, or skip integration tests with `--features default` (i.e. don't enable the integration feature) |
 
 No code change in our harness: `testcontainers::runners::AsyncRunner` reads
 the env var. Document the Podman pattern in `CONTRIBUTING.md` so devs

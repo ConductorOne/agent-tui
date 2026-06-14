@@ -38,7 +38,7 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 - **PluginAdapter (sub-process JSON-RPC over stdio)** — Moved to P4 alongside `mcp serve`. Both speak stdio JSON-RPC; build the framework once.
 - **nvim / tmux built-in adapters** — Will land as external plug-ins via PluginAdapter once #2 ships. Avoids dragging `nvim --headless` / `tmux -CC` into CI.
 - **wezterm engine real impl** — Blocked on `wezterm-term` being published to crates.io. Track only.
-- **Windows runtime — cycle W2 (signal mapping + `.exe` strip in adapter comm + re-enable `windows-latest` in CI).** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; Windows-specific signal handling (`GenerateConsoleCtrlEvent` / `TerminateProcess` instead of `killpg`) is the next ~80 LOC cycle. See `docs/windows-strategy.md` for the full plan.
+- **Windows runtime — cycle W2 (signal mapping + `.exe` strip in adapter comm + re-enable `windows-latest` in CI).** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; Windows-specific signal handling (`GenerateConsoleCtrlEvent` / `TerminateProcess` instead of `killpg`) is the next ~80 LOC cycle. See `docs/design/windows-strategy.md` for the full plan.
 
 ### P-UX6 — timeout fix + small primitives (this PR)
 
@@ -110,7 +110,7 @@ on clean main). Per lesson §7, that's a standalone fix-up, not this PR.
 
 # Addressing-Model Implementation Tracker (`feat/addressing-model`)
 
-Live record of the addressing-model rollout. Spec: `docs/addressing-rfc.md`.
+Live record of the addressing-model rollout. Spec: `docs/design/addressing-rfc.md`.
 
 ## Phase plan
 

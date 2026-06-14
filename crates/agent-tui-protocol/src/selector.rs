@@ -1,6 +1,6 @@
 //! Selector grammar + matcher for the outline tree.
 //!
-//! Spec: `docs/addressing-rfc.md` §2.2. A selector is a CSS-subset
+//! Spec: `docs/design/addressing-rfc.md` §2.2. A selector is a CSS-subset
 //! expression that picks nodes out of an [`Outline`]. The parser
 //! is hand-written recursive-descent because the grammar is small
 //! and the error messages need to point at the offending byte.

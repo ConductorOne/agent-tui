@@ -50,7 +50,7 @@ pub async fn run(
             return Response::err(ErrorBody::new(
                 ErrorCode::InvalidArgs,
                 format_selector_parse_error(selector, &e),
-                "see docs/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
+                "see docs/design/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
             ));
         }
     }

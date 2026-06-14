@@ -76,7 +76,7 @@ agent-tui press "q"
 ```bash {test=less-search}
 agent-tui spawn -- less /work/big-file.txt
 agent-tui wait --text "big-file"            # filename in the status line (not ":")
-agent-tui send-ansi "/needle\r"             # send-ansi for the literal `/`
+agent-tui send-ansi 2f6e6565646c650d        # bytes for /needle<CR>
 agent-tui wait --text "needle"
 agent-tui snapshot
 agent-tui press "q"

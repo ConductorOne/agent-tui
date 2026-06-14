@@ -4,8 +4,10 @@ title: "agent-tui — Reference Docs + Skills System"
 status: draft
 author: Paul Querna
 created: 2026-05-27
-harness: claude
 ---
+
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
 
 # RFC: `agent-tui` Reference Docs + Skills System
 

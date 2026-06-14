@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest an agent-tui feature, adapter, or integration.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to automate or observe?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the CLI/API/docs behavior you want.
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Target app or workflow
+      description: If this is adapter-related, name the TUI/CLI and the screen regions you need.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing tools, shell scripts, or workarounds you tried.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be interested in testing this.
+        - label: I would be interested in contributing a PR.

@@ -119,7 +119,7 @@ async fn resolve_target_ref(pane: &Pane, selector: &str) -> Result<String, Respo
         Response::err(ErrorBody::new(
             ErrorCode::InvalidArgs,
             formatted,
-            "see docs/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
+            "see docs/design/addressing-rfc.md §2.2 or `agent-tui skills get addressing`",
         ))
     })?;
     let adapter = pane.adapter().await;

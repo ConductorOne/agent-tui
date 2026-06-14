@@ -5,6 +5,9 @@ created: 2026-05-27
 inputs: ux-rfc.md, ux-rfc-followups.md
 ---
 
+> **Historical design note.** This document predates the public release of
+> agent-tui and may not match current behavior. It is kept for design context.
+
 # Emergent topics + flow gaps
 
 Things that surfaced while building P-UX1 through P-UX5 + manifest

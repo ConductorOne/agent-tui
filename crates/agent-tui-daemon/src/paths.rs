@@ -1,6 +1,6 @@
 //! Socket-discovery hierarchy for the daemon (CLI ↔ daemon rendezvous).
 //!
-//! See `docs/RFC.md` §2.1: priority order is
+//! See `docs/design/RFC.md` §2.1: priority order is
 //! `AGENT_TUI_SOCKET_DIR` → `XDG_RUNTIME_DIR` → `~/.agent-tui` → `tmpdir`.
 
 use std::env;
