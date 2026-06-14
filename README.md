@@ -8,7 +8,7 @@ Headless terminal automation for AI agents — the
 PTYs. Drive any terminal app (`vim`, `htop`, `psql`, a REPL, `claude`) and
 read its screen back as structured, addressable text.
 
-![agent-tui reads htop as structured terminal text](docs/assets/agent-tui-hero.gif)
+<img src="docs/assets/agent-tui-hero.gif" alt="agent-tui reads htop as structured terminal text" width="790" height="520" />
 
 ## Read any screen as text
 
