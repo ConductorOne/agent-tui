@@ -29,38 +29,36 @@ fixes.
 
 agent-tui spawns and drives terminal programs on a PTY: it executes child
 processes and injects keystrokes into them. Treat it as a tool that runs code
-on the host with the privileges of the user who invokes it. Two mechanisms
-constrain what a caller can do; both are real today, with the caveats noted.
+on the host with the privileges of the user who invokes it. It is not a
+sandbox, container runtime, or permission boundary.
 
-### Typed-action governance + binary allowlist
+The `--allowed-binaries` option can restrict which program names `spawn` will
+launch. It does not constrain the behavior of a launched program, and it does
+not make an untrusted program safe to run. If the target program needs
+isolation, run agent-tui and the target inside a sandbox you already trust.
 
-Every mutating request (spawn, input, eval) funnels through a single governance
-choke point before it reaches the PTY. The daemon builds a typed action and
-runs it through a configured evaluator, which returns Allow or Deny; a Deny
-returns a `POLICY_DENIED` response without touching the PTY. Every decision is
-emitted on an audit event channel.
+The daemon exposes a local control surface for a session. If another process
+can access that session's socket and state as the same user, assume it can
+observe or drive the session. Screen snapshots, casts, and logs can contain
+anything the target program rendered; treat them as sensitive when the terminal
+session handles sensitive data.
 
-Two evaluators ship today:
+Valid security reports include:
 
-- A permissive evaluator that allows everything (the default when no allowlist
-  is configured). This is the development baseline — it imposes no restriction.
-- A binary allowlist evaluator (`--allowed-binaries`) that checks `spawn`
-  actions against a set of permitted binaries. An empty allowlist allows
-  everything; the explicit `*` wildcard allows any spawn but records it in the
-  audit log. Input and eval actions pass through.
+- bypassing `--allowed-binaries` to launch a disallowed program;
+- one session or user unexpectedly controlling another session;
+- unsafe permissions or storage behavior that exposes snapshots, casts, logs,
+  or socket access beyond the invoking user;
+- input routed to the wrong pane or target after a command was accepted;
+- crashes or unbounded resource use caused by terminal output that should be
+  handled as data.
 
-A policy-language evaluator (OPA/Rego) is planned but not yet shipped. The
-allowlist is therefore the only enforcing evaluator available today, and it
-gates spawns only — not the keystrokes sent to an already-running child. Run
-agent-tui against untrusted targets only inside a sandbox you already trust.
+The following are normally not security vulnerabilities in agent-tui:
 
-### Nonced content-boundary delimiters
-
-Snapshot output can be wrapped in per-snapshot content-boundary delimiters
-whose nonce is generated fresh for each snapshot (e.g.
-`<<<AGENT_TUI_OUTPUT_a7b3c91d>>>` … `<<<END_a7b3c91d>>>`). These let a calling
-agent distinguish tool output from instructions in its own context window — a
-prompt-injection mitigation. The nonce is unpredictable to the observed
-program, so on-screen text cannot forge a closing delimiter. This reduces, but
-does not eliminate, prompt-injection risk: the surrounding agent must actually
-honor the boundaries.
+- a spawned program can read, write, execute, or access the network as the
+  invoking user;
+- agent-tui can be instructed by an authorized caller to type destructive input
+  into a running program;
+- a target program can print misleading or instruction-shaped text on its
+  screen;
+- a sandbox escape in a sandbox that agent-tui did not provide.

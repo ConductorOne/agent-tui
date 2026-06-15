@@ -5,16 +5,14 @@
 //! either an `Allow` (handler proceeds) or a `Deny` (handler returns a
 //! `POLICY_DENIED` response without touching the PTY). Every decision —
 //! Allow, Deny, or `RequireConfirm` — emits an `AuditEvent` on a broadcast
-//! channel for downstream consumers (P5 ships an HTTP `/firehose` reader).
+//! channel for internal consumers.
 //!
-//! Two evaluators ship in v1:
+//! Two evaluators ship today:
 //!  - [`AllowAllEvaluator`] — always Allows. Useful in unsafe-by-default test
 //!    setups and as the trivial baseline.
 //!  - [`AllowlistEvaluator`] — checks `Spawn` actions against a binary
 //!    allowlist (CSV via `--allowed-binaries` or env). `Input`/`Eval` pass
 //!    through. Wildcards (`*`) are honored but audit-logged.
-//!
-//! OPA-WASM (`agent-tui --policy <file.rego>`) lands in a follow-on cycle.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -33,8 +31,8 @@ const AUDIT_CHANNEL_CAPACITY: usize = 1024;
 #[async_trait]
 pub trait Evaluator: Send + Sync {
     /// Score this action. Returning `Verdict::Deny` blocks the handler
-    /// (translated to `POLICY_DENIED`); `RequireConfirm` blocks similarly
-    /// until a future `policy confirm <id>` command (P3 follow-on).
+    /// (translated to `POLICY_DENIED`). `RequireConfirm` is represented in
+    /// the protocol but currently handled as a blocking verdict.
     async fn evaluate(&self, action: &Action) -> Decision;
 }
 
