@@ -22,6 +22,10 @@ pub enum ErrorCode {
     PaneDead,
     /// Per-pane queue rejected the request (callers in `--no-wait` mode).
     PaneBusy,
+    /// `spawn` could not start the child: the binary is missing, not
+    /// executable, or the PTY child failed to launch. A caller-fixable
+    /// error (wrong argv), distinct from an internal bug.
+    SpawnFailed,
     /// `eval` requested an adapter that isn't currently attached.
     AdapterMissing,
     /// An attached adapter returned an error.
@@ -79,6 +83,7 @@ impl ErrorCode {
             Self::NoActivePane => 1005,
             Self::PaneDead => 1006,
             Self::PaneBusy => 1007,
+            Self::SpawnFailed => 1008,
             Self::AdapterMissing => 2001,
             Self::AdapterFailed => 2002,
             Self::AdapterUnattached => 2003,
@@ -150,6 +155,7 @@ mod tests {
             ErrorCode::NoActivePane,
             ErrorCode::PaneDead,
             ErrorCode::PaneBusy,
+            ErrorCode::SpawnFailed,
             ErrorCode::AdapterMissing,
             ErrorCode::AdapterFailed,
             ErrorCode::AdapterUnattached,
