@@ -280,11 +280,11 @@ adapter's semantic regions instead of raw text:
 ```bash
 agent-tui spawn -- htop
 agent-tui wait --idle 500
-agent-tui --json snapshot --mode outline | jq -c '[.data.outline.nodes[] | {ref, role}]'
+agent-tui --json snapshot --mode outline | jq -c '[.data.outline.nodes[].children[] | {ref, role}]'
 ```
 
 ```json
-[{"ref":"@e1","role":"meters"},{"ref":"@e2","role":"table"},{"ref":"@e3","role":"footer"}]
+[{"ref":"@htop.meters","role":"meters"},{"ref":"@htop.processes","role":"table"},{"ref":"@htop.fkeys","role":"footer"}]
 ```
 
 **Ask an AI CLI — `claude -p`.** `ask` is sugar over `run` with per-provider
