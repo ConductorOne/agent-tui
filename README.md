@@ -111,6 +111,14 @@ cargo build --release
 ./target/release/agent-tui --help
 ```
 
+To put the binary on your `PATH`, install it from the workspace's binary crate
+into `~/.cargo/bin` (the workspace root is a virtual manifest, so point at the
+`agent-tui` crate rather than `.`):
+
+```bash
+cargo install --path crates/agent-tui
+```
+
 </details>
 
 ## Refs: bringing the DOM to the terminal
