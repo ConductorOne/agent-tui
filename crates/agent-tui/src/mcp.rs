@@ -16,7 +16,7 @@
 //!
 //! Each tool is a thin wrapper around the existing agent-tui CLI
 //! command path — the MCP layer parses the MCP envelope, builds the
-//! corresponding `Command`, dispatches via `client::one_shot`, and
+//! corresponding `Command`, dispatches via the daemon client, and
 //! returns the response envelope as the tool's result text. The
 //! daemon's lazy-spawn machinery is transparent: the first tool call
 //! that needs a daemon starts one.
@@ -33,7 +33,7 @@ use agent_tui_daemon::SocketLayout;
 use agent_tui_protocol::{Command, PaneId};
 use anyhow::Result;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::cli::GlobalArgs;
 use crate::client;
@@ -42,13 +42,24 @@ use crate::client;
 /// 2024-11-05 spec — broad enough that current Claude clients accept it.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Maximum bytes accepted for one MCP JSON-RPC line, including newline.
+const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
+
 /// Run the MCP server loop on stdio until EOF on stdin.
 pub async fn serve(globals: GlobalArgs) -> Result<()> {
     let stdin = tokio::io::stdin();
-    let mut reader = tokio::io::BufReader::new(stdin).lines();
+    let mut reader = BufReader::new(stdin);
     let layout = client::layout_for(&globals.session, globals.socket_dir.as_deref());
 
-    while let Some(line) = reader.next_line().await? {
+    loop {
+        let line = match read_mcp_line(&mut reader).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(e) => {
+                send_response(&parse_error(None, &format!("invalid MCP frame: {e}")))?;
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -82,6 +93,32 @@ pub async fn serve(globals: GlobalArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn read_mcp_line<R>(reader: &mut R) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let read = {
+        let mut limited = (&mut *reader).take((MAX_MCP_LINE_BYTES + 1) as u64);
+        limited.read_until(b'\n', &mut buf).await?
+    };
+    if read == 0 && buf.is_empty() {
+        return Ok(None);
+    }
+    if buf.len() > MAX_MCP_LINE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("MCP frame exceeds {MAX_MCP_LINE_BYTES} bytes"),
+        ));
+    }
+    String::from_utf8(buf).map(Some).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("MCP frame is not valid UTF-8: {e}"),
+        )
+    })
 }
 
 /// Dispatch one method. Returns the `result` field on success, or an
@@ -123,7 +160,7 @@ async fn dispatch(
 /// it via the daemon client, and wrap the response envelope in MCP
 /// `content` format.
 async fn call_tool(
-    _globals: &GlobalArgs,
+    globals: &GlobalArgs,
     layout: &SocketLayout,
     params: Value,
 ) -> Result<Value, McpError> {
@@ -137,7 +174,9 @@ async fn call_tool(
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
     let command = build_command(name, &args).map_err(McpError::invalid_params)?;
-    let envelope = client::one_shot(layout, command)
+    let lazy_spawn =
+        client::LazySpawnConfig::from_allowed_binaries(globals.allowed_binaries.as_deref());
+    let envelope = client::one_shot_with_config(layout, command, &lazy_spawn)
         .await
         .map_err(|e| McpError::internal(&e.to_string()))?;
 
@@ -526,6 +565,25 @@ fn send_response(value: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use agent_tui_protocol::request::SnapshotMode;
+
+    #[tokio::test]
+    async fn read_mcp_line_accepts_normal_line() {
+        let mut reader = BufReader::new(std::io::Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec()));
+        let line = read_mcp_line(&mut reader)
+            .await
+            .expect("read MCP line")
+            .expect("line");
+        assert_eq!(line, "{\"jsonrpc\":\"2.0\"}\n");
+    }
+
+    #[tokio::test]
+    async fn read_mcp_line_rejects_oversized_frame() {
+        let mut reader = BufReader::new(std::io::Cursor::new(vec![b'a'; MAX_MCP_LINE_BYTES + 1]));
+        let err = read_mcp_line(&mut reader)
+            .await
+            .expect_err("oversized MCP frame must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[test]
     fn build_command_spawn() {

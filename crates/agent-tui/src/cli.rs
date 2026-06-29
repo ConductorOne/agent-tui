@@ -50,8 +50,10 @@ pub struct GlobalArgs {
     /// Truncate snapshot payloads at N characters.
     #[arg(long, value_name = "N", global = true)]
     pub max_output: Option<usize>,
-    /// Comma-separated allowlist of binary basenames `spawn` will accept.
-    /// `*` allows everything (audit-only). Empty / unset = no restriction.
+    /// Comma-separated allowlist of binary basenames or executable paths
+    /// `spawn` will accept. Bare names only match bare argv[0] values; path
+    /// invocations require an exact canonical path entry. `*` allows
+    /// everything (audit-only). Empty / unset = no restriction.
     /// Env: `AGENT_TUI_ALLOWED_BINARIES`.
     #[arg(
         long,

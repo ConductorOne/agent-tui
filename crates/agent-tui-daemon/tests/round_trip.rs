@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use agent_tui_daemon::{DaemonConfig, SocketLayout, run_daemon};
 use agent_tui_protocol::request::SnapshotMode;
-use agent_tui_protocol::{Command, PROTOCOL_VERSION, PaneId, Request, ResponseEnvelope, SessionId};
+use agent_tui_protocol::{
+    Command, ErrorCode, PROTOCOL_VERSION, PaneId, Request, ResponseEnvelope, SessionId,
+};
 use base64::Engine as _;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
@@ -63,6 +65,14 @@ fn short_temp_root(prefix: &str) -> PathBuf {
     let mut h = Uuid::new_v4().simple().to_string();
     h.truncate(8);
     PathBuf::from(format!("/tmp/{prefix}-{h}"))
+}
+
+fn relative_artifact_dir(prefix: &str) -> PathBuf {
+    let mut h = Uuid::new_v4().simple().to_string();
+    h.truncate(8);
+    PathBuf::from("target")
+        .join("test-artifacts")
+        .join(format!("{prefix}-{h}"))
 }
 
 async fn round_trip(cfg: &DaemonConfig, command: Command) -> ResponseEnvelope {
@@ -1201,7 +1211,10 @@ async fn snapshot_png_writes_valid_image() {
     )
     .await;
 
-    let dir = short_temp_root("at-png");
+    let abs_dir = short_temp_root("at-png-abs");
+    std::fs::create_dir_all(&abs_dir).expect("mkdir absolute png dir");
+    let abs_path = abs_dir.join("shot.png");
+    let dir = relative_artifact_dir("at-png");
     std::fs::create_dir_all(&dir).expect("mkdir png dir");
     let path = dir.join("shot.png");
 
@@ -1209,6 +1222,29 @@ async fn snapshot_png_writes_valid_image() {
     assert!(
         wait_for_text(&cfg, "hello").await,
         "pane never displayed 'hello'"
+    );
+
+    let rejected = round_trip(
+        &cfg,
+        Command::Snapshot {
+            pane: None,
+            mode: SnapshotMode::Outline,
+            png: Some(abs_path.to_string_lossy().into_owned()),
+            annotate: None,
+            chrome: None,
+            select: None,
+            all: false,
+            keep_color: false,
+        },
+    )
+    .await;
+    assert!(
+        rejected.response.is_failure(),
+        "absolute PNG path should be rejected: {rejected:?}"
+    );
+    assert_eq!(
+        rejected.response.error.expect("error").code,
+        ErrorCode::InvalidArgs
     );
 
     let snap = round_trip(
@@ -1250,6 +1286,7 @@ async fn snapshot_png_writes_valid_image() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&abs_dir);
     let _ = round_trip(
         &cfg,
         Command::Die {
@@ -1282,7 +1319,7 @@ async fn snapshot_png_annotate_overlays_refs() {
     )
     .await;
 
-    let dir = short_temp_root("at-png-an");
+    let dir = relative_artifact_dir("at-png-an");
     std::fs::create_dir_all(&dir).expect("mkdir png dir");
     let plain = dir.join("plain.png");
     let annot = dir.join("annot.png");

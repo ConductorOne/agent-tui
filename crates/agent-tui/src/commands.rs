@@ -203,6 +203,35 @@ async fn run_foreground_daemon(
     Ok(())
 }
 
+fn lazy_spawn_config(g: &crate::cli::GlobalArgs) -> client::LazySpawnConfig {
+    client::LazySpawnConfig::from_allowed_binaries(g.allowed_binaries.as_deref())
+}
+
+async fn client_one_shot(
+    g: &crate::cli::GlobalArgs,
+    layout: &agent_tui_daemon::SocketLayout,
+    cmd: Command,
+) -> Result<agent_tui_protocol::ResponseEnvelope> {
+    if g.allowed_binaries.is_none() {
+        return client::one_shot(layout, cmd).await;
+    }
+    let lazy_spawn = lazy_spawn_config(g);
+    client::one_shot_with_config(layout, cmd, &lazy_spawn).await
+}
+
+async fn client_stream(
+    g: &crate::cli::GlobalArgs,
+    layout: &agent_tui_daemon::SocketLayout,
+    cmd: Command,
+    on_envelope: impl FnMut(&agent_tui_protocol::ResponseEnvelope) -> Result<bool>,
+) -> Result<()> {
+    if g.allowed_binaries.is_none() {
+        return client::stream(layout, cmd, on_envelope).await;
+    }
+    let lazy_spawn = lazy_spawn_config(g);
+    client::stream_with_config(layout, cmd, &lazy_spawn, on_envelope).await
+}
+
 #[allow(clippy::too_many_lines)]
 /// Orchestrate the `run` sugar verb. Bundles:
 ///   spawn --stdin pipe → optionally stdin --text + close-stdin →
@@ -261,7 +290,8 @@ async fn run_orchestrate(
         StdinMode::Closed
     };
     let env_pairs = parse_env_pairs(&env)?;
-    let spawn_env = client::one_shot(
+    let spawn_env = client_one_shot(
+        g,
         &layout,
         Command::Spawn {
             argv: argv.clone(),
@@ -287,7 +317,8 @@ async fn run_orchestrate(
 
     // 2. Optionally write stdin bytes + close-stdin.
     if let Some(bytes) = &stdin_bytes {
-        let write_env = client::one_shot(
+        let write_env = client_one_shot(
+            g,
             &layout,
             Command::Stdin {
                 pane: pane.clone(),
@@ -298,7 +329,8 @@ async fn run_orchestrate(
         .await?;
         if write_env.response.is_failure() {
             // Best-effort cleanup before surfacing.
-            let _ = client::one_shot(
+            let _ = client_one_shot(
+                g,
                 &layout,
                 Command::Die {
                     pane: pane.clone(),
@@ -309,11 +341,12 @@ async fn run_orchestrate(
             println!("{}", serde_json::to_string(&write_env)?);
             std::process::exit(2);
         }
-        let _ = client::one_shot(&layout, Command::CloseStdin { pane: pane.clone() }).await?;
+        let _ = client_one_shot(g, &layout, Command::CloseStdin { pane: pane.clone() }).await?;
     }
 
     // 3. Wait for the child to exit.
-    let wait_env = client::one_shot(
+    let wait_env = client_one_shot(
+        g,
         &layout,
         Command::Wait {
             pane: pane.clone(),
@@ -330,7 +363,8 @@ async fn run_orchestrate(
         .and_then(serde_json::Value::as_i64);
 
     // 4. Tail the bytes the child wrote.
-    let tail_env = client::one_shot(
+    let tail_env = client_one_shot(
+        g,
         &layout,
         Command::Tail {
             pane: pane.clone(),
@@ -359,7 +393,8 @@ async fn run_orchestrate(
     };
 
     // 5. Cleanup: best-effort die on the pane.
-    let _ = client::one_shot(
+    let _ = client_one_shot(
+        g,
         &layout,
         Command::Die {
             pane: pane.clone(),
@@ -440,7 +475,7 @@ async fn tail_follow(
     };
     let mut stdout = std::io::stdout().lock();
     let mut child_exit: Option<i32> = None;
-    client::stream(&layout, cmd, |env| {
+    client_stream(g, &layout, cmd, |env| {
         if env.response.is_failure() {
             // Print the error envelope and stop.
             let line = serde_json::to_string(env)?;
@@ -524,7 +559,7 @@ async fn attach_stream(
     };
     let mut stdout = std::io::stdout().lock();
     let mut child_exit: Option<i32> = None;
-    client::stream(&layout, cmd, |env| {
+    client_stream(g, &layout, cmd, |env| {
         if env.response.is_failure() {
             writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
             return Ok(false);
@@ -883,7 +918,8 @@ async fn run_capture(
     } else {
         StdinMode::Closed
     };
-    let spawn_env = client::one_shot(
+    let spawn_env = client_one_shot(
+        g,
         &layout,
         Command::Spawn {
             argv: argv.clone(),
@@ -913,7 +949,8 @@ async fn run_capture(
         .map(|s| PaneId(s.to_string()));
 
     if let Some(bytes) = &stdin_bytes {
-        let _ = client::one_shot(
+        let _ = client_one_shot(
+            g,
             &layout,
             Command::Stdin {
                 pane: pane.clone(),
@@ -922,9 +959,10 @@ async fn run_capture(
             },
         )
         .await?;
-        let _ = client::one_shot(&layout, Command::CloseStdin { pane: pane.clone() }).await?;
+        let _ = client_one_shot(g, &layout, Command::CloseStdin { pane: pane.clone() }).await?;
     }
-    let _ = client::one_shot(
+    let _ = client_one_shot(
+        g,
         &layout,
         Command::Wait {
             pane: pane.clone(),
@@ -933,7 +971,8 @@ async fn run_capture(
         },
     )
     .await?;
-    let tail_env = client::one_shot(
+    let tail_env = client_one_shot(
+        g,
         &layout,
         Command::Tail {
             pane: pane.clone(),
@@ -951,7 +990,7 @@ async fn run_capture(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let _ = client::one_shot(&layout, Command::Die { pane, grace: None }).await;
+    let _ = client_one_shot(g, &layout, Command::Die { pane, grace: None }).await;
     Ok(text)
 }
 
@@ -983,7 +1022,8 @@ async fn watch_sugar(g: &crate::cli::GlobalArgs, argv: Vec<String>) -> Result<()
         return Err(anyhow!("watch requires at least one positional argv"));
     }
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
-    let spawn_env = client::one_shot(
+    let spawn_env = client_one_shot(
+        g,
         &layout,
         Command::Spawn {
             argv: argv.clone(),
@@ -1007,7 +1047,8 @@ async fn watch_sugar(g: &crate::cli::GlobalArgs, argv: Vec<String>) -> Result<()
         .map(str::to_string);
     tail_follow(g, pane.clone(), 0, true).await?;
     // Best-effort die when streaming ends.
-    let _ = client::one_shot(
+    let _ = client_one_shot(
+        g,
         &layout,
         Command::Die {
             pane: pane.map(agent_tui_protocol::PaneId),
@@ -1100,7 +1141,7 @@ async fn one_shot_print_with(
     exit_override: impl Fn(&agent_tui_protocol::ResponseEnvelope) -> Option<i32>,
 ) -> Result<()> {
     let layout = client::layout_for(&g.session, g.socket_dir.as_deref());
-    let env = match client::one_shot(&layout, cmd).await {
+    let env = match client_one_shot(g, &layout, cmd).await {
         Ok(e) => e,
         Err(e) => {
             eprintln!("{e:#}");
@@ -1133,7 +1174,7 @@ async fn events_stream(
         debounce_ms: Some(debounce),
     };
     let mut stdout = std::io::stdout().lock();
-    client::stream(&layout, cmd, |env| {
+    client_stream(g, &layout, cmd, |env| {
         if env.response.is_failure() {
             writeln!(stdout, "{}", serde_json::to_string(env)?).ok();
             return Ok(false);
@@ -1375,7 +1416,7 @@ async fn doctor(g: &crate::cli::GlobalArgs, args: &crate::cli::DoctorArgs) -> Re
         "diagnostic_bundle": args.diagnostic_bundle.as_ref().map(|p| p.display().to_string()),
     });
 
-    match client::one_shot(&layout, Command::DaemonStatus).await {
+    match client_one_shot(g, &layout, Command::DaemonStatus).await {
         Ok(env) if env.response.success => {
             report["daemon"] = serde_json::json!({
                 "reachable": true,
