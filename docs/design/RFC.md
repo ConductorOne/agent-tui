@@ -621,7 +621,7 @@ Default evaluator: in-process Rust predicate chain. v1 also ships a Rego adapter
 
 ### 11.2 Binary allowlist
 
-`--allowed-binaries <csv>` (or env `AGENT_TUI_ALLOWED_BINARIES`) gates `spawn`. Wildcard `*` allowed but audit-logged. Agent-mode default whitelist: `bash, zsh, fish, vim, nvim, nano, less, more, cat, grep, git, make, npm, pnpm, go, cargo, python, node, kubectl, k9s, lazygit, tmux, htop, btop, claude, codex, aider`.
+`--allowed-binaries <csv>` (or env `AGENT_TUI_ALLOWED_BINARIES`) gates `spawn`. Entries must be absolute executable paths; entries and spawn `argv[0]` are canonicalized before comparison. Wildcard `*` is allowed but audit-logged.
 
 ### 11.3 Content-boundary markers with per-snapshot nonces
 
