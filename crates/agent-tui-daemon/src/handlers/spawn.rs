@@ -4,7 +4,7 @@
 //! and registers the pane.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_tui_adapter::PaneInfo;
@@ -50,6 +50,7 @@ pub async fn run(
     if let Some(resp) = policy_response(&decision) {
         return resp;
     }
+    let argv = canonicalize_absolute_argv0(argv);
 
     let (cols, rows) = size.unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
     let engine: Arc<dyn Engine> = Arc::new(AlacrittyEngine::new(cols, rows));
@@ -129,6 +130,18 @@ fn basename(path: &str) -> String {
         return stem[..stem.len() - 4].to_string();
     }
     stem.to_string()
+}
+
+fn canonicalize_absolute_argv0(mut argv: Vec<String>) -> Vec<String> {
+    if let Some(first) = argv.first_mut() {
+        let path = Path::new(first);
+        if path.is_absolute() {
+            if let Ok(canonical) = path.canonicalize() {
+                *first = canonical.to_string_lossy().into_owned();
+            }
+        }
+    }
+    argv
 }
 
 /// Translate a non-Allow `Decision` into a `POLICY_*` Response. Allow returns

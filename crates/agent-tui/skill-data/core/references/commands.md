@@ -19,7 +19,7 @@ silently return.
 --timeout <MS>              Per-command timeout (ms)
 --content-boundaries        Wrap snapshot payloads in nonced boundary markers
 --max-output <N>            Truncate snapshot payloads at N chars
---allowed-binaries <CSV>    Allowlist of binary basenames `spawn` accepts (`*` = any)
+--allowed-binaries <CSV>    Allowlist of absolute executable paths `spawn` accepts (`*` = any)
 -h, --help                  Print help
 -V, --version               Print version
 ```

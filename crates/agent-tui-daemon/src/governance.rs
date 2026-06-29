@@ -10,9 +10,10 @@
 //! Two evaluators ship in v1:
 //!  - [`AllowAllEvaluator`] — always Allows. Useful in unsafe-by-default test
 //!    setups and as the trivial baseline.
-//!  - [`AllowlistEvaluator`] — checks `Spawn` actions against a binary
-//!    allowlist (CSV via `--allowed-binaries` or env). `Input`/`Eval` pass
-//!    through. Wildcards (`*`) are honored but audit-logged.
+//!  - [`AllowlistEvaluator`] — checks `Spawn` actions against a canonical
+//!    absolute-path binary allowlist (CSV via `--allowed-binaries` or env).
+//!    `Input`/`Eval` pass through. Wildcards (`*`) are honored but
+//!    audit-logged.
 //!
 //! OPA-WASM (`agent-tui --policy <file.rego>`) lands in a follow-on cycle.
 
@@ -54,16 +55,14 @@ impl Evaluator for AllowAllEvaluator {
 }
 
 /// Binary allowlist enforcement on `Spawn`; pass-through for other action
-/// kinds. Entries without path separators are command names and only match
-/// bare `argv[0]` values such as `git`; entries with path separators are
-/// canonical executable paths and only match path-style invocations such as
-/// `/usr/bin/git` or `./tool`. Empty allowlist means "everything allowed"
-/// (effective baseline for development); the explicit `*` wildcard means
-/// "anything but I want the audit log to know about it".
+/// kinds. Entries must be absolute paths and are canonicalized at daemon
+/// startup; spawn requests must also invoke an absolute path. Empty allowlist
+/// means "everything allowed" (effective baseline for development); the
+/// explicit `*` wildcard means "anything but I want the audit log to know
+/// about it".
 pub struct AllowlistEvaluator {
-    binaries: HashSet<String>,
     paths: HashSet<PathBuf>,
-    unresolved_paths: HashSet<String>,
+    invalid_entries: HashSet<String>,
     wildcard: bool,
 }
 
@@ -73,27 +72,24 @@ impl AllowlistEvaluator {
     #[must_use]
     pub fn new(binaries: Vec<String>) -> Self {
         let wildcard = binaries.iter().any(|s| s == "*");
-        let mut command_names = HashSet::new();
         let mut paths = HashSet::new();
-        let mut unresolved_paths = HashSet::new();
+        let mut invalid_entries = HashSet::new();
         for binary in binaries.into_iter().filter(|s| s != "*") {
-            if contains_path_separator(&binary) {
-                match canonicalize_allowlist_path(&binary) {
-                    Ok(path) => {
-                        paths.insert(path);
-                    }
-                    Err(_) => {
-                        unresolved_paths.insert(binary);
-                    }
+            match canonicalize_allowlist_path(&binary) {
+                Ok(path) => {
+                    paths.insert(path);
                 }
-            } else {
-                command_names.insert(binary);
+                Err(AllowlistPathError::NotAbsolute) => {
+                    invalid_entries.insert(format!("{binary} (not absolute)"));
+                }
+                Err(AllowlistPathError::Io) => {
+                    invalid_entries.insert(format!("{binary} (unresolved)"));
+                }
             }
         }
         Self {
-            binaries: command_names,
             paths,
-            unresolved_paths,
+            invalid_entries,
             wildcard,
         }
     }
@@ -115,7 +111,7 @@ impl AllowlistEvaluator {
 impl Evaluator for AllowlistEvaluator {
     async fn evaluate(&self, action: &Action) -> Decision {
         let audit_id = Uuid::new_v4();
-        if let ActionDetail::Spawn { argv, cwd } = &action.detail {
+        if let ActionDetail::Spawn { argv, .. } = &action.detail {
             let requested = argv.first().map(String::as_str).unwrap_or_default();
             let comm = spawn_display_name(requested);
             if self.wildcard {
@@ -125,9 +121,7 @@ impl Evaluator for AllowlistEvaluator {
                     reason: format!("wildcard allowlist; spawn={comm}"),
                 };
             }
-            let empty_allowlist = self.binaries.is_empty()
-                && self.paths.is_empty()
-                && self.unresolved_paths.is_empty();
+            let empty_allowlist = self.paths.is_empty() && self.invalid_entries.is_empty();
             if empty_allowlist {
                 return Decision {
                     audit_id,
@@ -135,43 +129,36 @@ impl Evaluator for AllowlistEvaluator {
                     reason: "empty allowlist (development mode)".into(),
                 };
             }
-            if contains_path_separator(requested) {
-                return match canonicalize_spawn_path(requested, cwd) {
-                    Ok(path) if self.paths.contains(&path) => Decision {
-                        audit_id,
-                        verdict: Verdict::Allow,
-                        reason: format!("allowlisted path: {}", path.display()),
-                    },
-                    Ok(path) => Decision {
-                        audit_id,
-                        verdict: Verdict::Deny,
-                        reason: format!(
-                            "binary path {} not in allowlist; permitted: {}",
-                            path.display(),
-                            self.allowed_summary()
-                        ),
-                    },
-                    Err(e) => Decision {
-                        audit_id,
-                        verdict: Verdict::Deny,
-                        reason: format!("binary path {requested} could not be resolved: {e}"),
-                    },
-                };
-            }
-            if self.binaries.contains(requested) {
+            if !Path::new(requested).is_absolute() {
                 return Decision {
                     audit_id,
-                    verdict: Verdict::Allow,
-                    reason: format!("allowlisted command: {requested}"),
+                    verdict: Verdict::Deny,
+                    reason: format!(
+                        "binary {comm} must be invoked by absolute path when allowlist is configured; permitted: {}",
+                        self.allowed_summary()
+                    ),
                 };
             }
-            return Decision {
-                audit_id,
-                verdict: Verdict::Deny,
-                reason: format!(
-                    "binary {comm} not in allowlist; permitted: {}",
-                    self.allowed_summary()
-                ),
+            return match canonicalize_spawn_path(requested) {
+                Ok(path) if self.paths.contains(&path) => Decision {
+                    audit_id,
+                    verdict: Verdict::Allow,
+                    reason: format!("allowlisted path: {}", path.display()),
+                },
+                Ok(path) => Decision {
+                    audit_id,
+                    verdict: Verdict::Deny,
+                    reason: format!(
+                        "binary path {} not in allowlist; permitted: {}",
+                        path.display(),
+                        self.allowed_summary()
+                    ),
+                },
+                Err(e) => Decision {
+                    audit_id,
+                    verdict: Verdict::Deny,
+                    reason: format!("binary path {requested} could not be resolved: {e}"),
+                },
             };
         }
         Decision {
@@ -184,13 +171,12 @@ impl Evaluator for AllowlistEvaluator {
 
 impl AllowlistEvaluator {
     fn allowed_summary(&self) -> String {
-        let mut entries = self.binaries.iter().cloned().collect::<Vec<_>>();
-        entries.extend(self.paths.iter().map(|p| p.display().to_string()));
-        entries.extend(
-            self.unresolved_paths
-                .iter()
-                .map(|p| format!("{p} (unresolved)")),
-        );
+        let mut entries = self
+            .paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>();
+        entries.extend(self.invalid_entries.iter().cloned());
         entries.sort();
         if entries.is_empty() {
             "(none)".to_string()
@@ -204,30 +190,21 @@ fn spawn_display_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
-fn contains_path_separator(path: &str) -> bool {
-    path.contains('/') || path.contains('\\')
+enum AllowlistPathError {
+    NotAbsolute,
+    Io,
 }
 
-fn canonicalize_allowlist_path(path: &str) -> std::io::Result<PathBuf> {
+fn canonicalize_allowlist_path(path: &str) -> Result<PathBuf, AllowlistPathError> {
     let path = Path::new(path);
-    if path.is_absolute() {
-        path.canonicalize()
-    } else {
-        std::env::current_dir()?.join(path).canonicalize()
+    if !path.is_absolute() {
+        return Err(AllowlistPathError::NotAbsolute);
     }
+    path.canonicalize().map_err(|_| AllowlistPathError::Io)
 }
 
-fn canonicalize_spawn_path(path: &str, cwd: &str) -> std::io::Result<PathBuf> {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        return path.canonicalize();
-    }
-    let base = if cwd.trim().is_empty() {
-        std::env::current_dir()?
-    } else {
-        PathBuf::from(cwd)
-    };
-    base.join(path).canonicalize()
+fn canonicalize_spawn_path(path: &str) -> std::io::Result<PathBuf> {
+    Path::new(path).canonicalize()
 }
 
 /// Per-daemon governance state.
@@ -329,8 +306,10 @@ mod tests {
     #[tokio::test]
     async fn allowlist_denies_unknown_binary() {
         let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec![
-            "bash".into(),
-            "zsh".into(),
+            std::env::current_exe()
+                .expect("current test binary")
+                .to_string_lossy()
+                .into_owned(),
         ])));
         let d = g
             .check(build::spawn(vec!["/usr/bin/nethack".into()], "/".into()))
@@ -339,17 +318,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allowlist_allows_known_binary_by_basename() {
+    async fn allowlist_denies_basename_invocation() {
         let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec!["bash".into()])));
         let d = g
             .check(build::spawn(vec!["bash".into(), "-i".into()], "/".into()))
             .await;
-        assert_eq!(d.verdict, Verdict::Allow);
+        assert_eq!(d.verdict, Verdict::Deny);
     }
 
     #[tokio::test]
-    async fn basename_allowlist_does_not_allow_path_invocation() {
-        let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec!["git".into()])));
+    async fn relative_allowlist_entry_does_not_allow_path_invocation() {
+        let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec!["./git".into()])));
         let d = g
             .check(build::spawn(vec!["./git".into()], "/".into()))
             .await;
@@ -394,9 +373,11 @@ mod tests {
 
     #[tokio::test]
     async fn audit_event_emitted_on_check() {
-        let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec!["bash".into()])));
+        let exe = std::env::current_exe().expect("current test binary");
+        let exe_str = exe.to_string_lossy().into_owned();
+        let g = Governance::new(Arc::new(AllowlistEvaluator::new(vec![exe_str.clone()])));
         let mut sub = g.subscribe();
-        let _ = g.check(build::spawn(vec!["bash".into()], "/".into())).await;
+        let _ = g.check(build::spawn(vec![exe_str], "/".into())).await;
         let evt = sub.recv().await.expect("event");
         assert_eq!(evt.action_kind, ActionKind::Spawn);
         assert_eq!(evt.verdict, Verdict::Allow);

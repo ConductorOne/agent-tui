@@ -23,12 +23,19 @@ use agent_tui_protocol::{
 use base64::Engine as _;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
+use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 use uuid::Uuid;
 
 /// Spin up an isolated daemon on a temp socket dir and return its connect URL.
 async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
+    boot_daemon_with_allowed(None).await
+}
+
+async fn boot_daemon_with_allowed(
+    allowed_binaries: Option<String>,
+) -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
     // macOS sockaddr_un.sun_path is 104 bytes; the full layout path is
     // `<root>/<session>.sock`. Use a short session id (8 hex chars) and
     // anchor the root under /tmp directly so the result fits.
@@ -41,7 +48,7 @@ async fn boot_daemon() -> (DaemonConfig, agent_tui_daemon::DaemonHandle) {
         layout: layout.clone(),
         engine: "alacritty".into(),
         binary_version: "0.0.0-test".into(),
-        allowed_binaries: None,
+        allowed_binaries,
         monitor_parent: None,
         idle_timeout_secs: None,
         adopt_handoff: None,
@@ -217,6 +224,70 @@ async fn spawn_list_die_lifecycle() {
         arr[0]["exit_code"], 143,
         "retained pane shows the remembered SIGTERM exit code"
     );
+}
+
+#[tokio::test]
+async fn allowed_binaries_rejects_basename_with_request_controlled_path() {
+    let shell = std::fs::canonicalize("/bin/sh").expect("/bin/sh canonicalizes");
+    let shell = shell.to_string_lossy().into_owned();
+    let (cfg, _h) = boot_daemon_with_allowed(Some(shell.clone())).await;
+
+    let evil_dir = short_temp_root("at-path");
+    std::fs::create_dir_all(&evil_dir).expect("mkdir evil dir");
+    let fake_shell = evil_dir.join("sh");
+    std::fs::write(&fake_shell, "#!/bin/sh\nprintf pwned\n").expect("write fake shell");
+    let mut perms = std::fs::metadata(&fake_shell)
+        .expect("fake shell metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_shell, perms).expect("chmod fake shell");
+
+    let denied = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec!["sh".into(), "-c".into(), "printf allowed".into()],
+            cwd: Some(evil_dir.to_string_lossy().into_owned()),
+            size: None,
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: vec![("PATH".into(), ".".into())],
+        },
+    )
+    .await;
+    assert!(
+        !denied.response.success,
+        "basename spawn should be denied: {denied:?}"
+    );
+    let error = denied.response.error.expect("policy error");
+    assert_eq!(error.code, ErrorCode::PolicyDenied);
+    assert!(
+        error.message.contains("absolute path"),
+        "error should explain absolute-path requirement: {error:?}"
+    );
+
+    let allowed = round_trip(
+        &cfg,
+        Command::Spawn {
+            argv: vec![shell, "-c".into(), "printf allowed; sleep 0.1".into()],
+            cwd: Some(evil_dir.to_string_lossy().into_owned()),
+            size: Some((40, 4)),
+            stdin: agent_tui_protocol::request::StdinMode::default(),
+            env: vec![("PATH".into(), ".".into())],
+        },
+    )
+    .await;
+    assert!(
+        allowed.response.success,
+        "canonical absolute shell should be allowed: {allowed:?}"
+    );
+
+    let _ = round_trip(
+        &cfg,
+        Command::Die {
+            pane: None,
+            grace: None,
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
