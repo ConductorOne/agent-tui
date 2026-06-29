@@ -7,6 +7,9 @@ members = ["cargo:."]
 cargo-dist-version = "0.28.0"
 # CI backends to support
 ci = "github"
+# The generated GitHub release workflow is intentionally hardened in-repo
+# because cargo-dist does not expose knobs for every security setting we need.
+allow-dirty = ["ci"]
 # The installers to generate for each app.
 #   - shell: `install.sh` script. curl-pipe-able from the GH Release.
 #   - powershell: `install.ps1` for Windows.
