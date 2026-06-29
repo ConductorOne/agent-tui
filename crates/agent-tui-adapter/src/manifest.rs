@@ -481,7 +481,7 @@ fn resolve_rows(
         }
         RowSpec::Dynamic(RowDynamic::AboveLastNonEmpty) => {
             let row = last_non_empty_row(snap, rows, cols)?;
-            (row > 0).then_some((0, row - 1))
+            row.checked_sub(1).map(|above| (0, above))
         }
         RowSpec::Dynamic(RowDynamic::Cursor) => {
             let row = usize::from(snap.grid.cursor.0).min(rows - 1);
@@ -489,7 +489,7 @@ fn resolve_rows(
         }
         RowSpec::Dynamic(RowDynamic::AboveCursor) => {
             let row = usize::from(snap.grid.cursor.0).min(rows - 1);
-            (row > 0).then_some((0, row - 1))
+            row.checked_sub(1).map(|above| (0, above))
         }
     }
 }
@@ -791,6 +791,32 @@ mod tests {
         assert_eq!(resolve_range([-1, 0], 24), (0, 23));
         // clamped: [-100, 100] → (0, 23)
         assert_eq!(resolve_range([-100, 100], 24), (0, 23));
+    }
+
+    #[test]
+    fn dynamic_above_row_selectors_do_not_underflow_on_first_row() {
+        let snap = snap("> ");
+        let rows = usize::from(snap.grid.rows);
+        let cols = usize::from(snap.grid.cols);
+
+        assert_eq!(
+            resolve_rows(
+                &RowSpec::Dynamic(RowDynamic::AboveLastNonEmpty),
+                &snap,
+                rows,
+                cols,
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_rows(
+                &RowSpec::Dynamic(RowDynamic::AboveCursor),
+                &snap,
+                rows,
+                cols
+            ),
+            None
+        );
     }
 
     fn snap(content: &str) -> EngineSnapshot {

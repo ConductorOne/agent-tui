@@ -107,7 +107,46 @@ impl SocketLayout {
     /// Create the root directory if missing. Idempotent.
     ///
     /// # Errors
+    /// Filesystem errors from `create_dir_all`, ownership checks, or
+    /// permission tightening.
+    #[cfg(unix)]
+    pub fn ensure_root(&self) -> std::io::Result<()> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        std::fs::create_dir_all(&self.root)?;
+        let meta = std::fs::symlink_metadata(&self.root)?;
+        if !meta.file_type().is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("socket root {} is not a directory", self.root.display()),
+            ));
+        }
+        let euid = nix::unistd::Uid::effective().as_raw();
+        if meta.uid() != euid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "socket root {} is owned by uid {}, not current uid {}",
+                    self.root.display(),
+                    meta.uid(),
+                    euid
+                ),
+            ));
+        }
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            let mut perms = meta.permissions();
+            perms.set_mode(mode & !0o077);
+            std::fs::set_permissions(&self.root, perms)?;
+        }
+        Ok(())
+    }
+
+    /// Create the root directory if missing. Idempotent.
+    ///
+    /// # Errors
     /// Filesystem errors from `create_dir_all`.
+    #[cfg(not(unix))]
     pub fn ensure_root(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)
     }
@@ -135,6 +174,30 @@ mod tests {
         assert!(l.socket.to_string_lossy().ends_with("hello.sock"));
         assert!(l.pid.to_string_lossy().ends_with("hello.pid"));
         assert!(l.version.to_string_lossy().ends_with("hello.version"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_root_tightens_group_and_other_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("agent-tui-paths-{}-tighten", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp socket root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+            .expect("make root too broad");
+
+        let layout = SocketLayout::for_session_in(&SessionId("tight".to_string()), root.clone());
+        layout.ensure_root().expect("tighten socket root");
+
+        let mode = std::fs::metadata(&root)
+            .expect("stat socket root")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Note: the env-driven `explicit_socket_dir_wins` path is exercised by

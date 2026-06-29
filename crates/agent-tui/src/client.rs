@@ -20,14 +20,49 @@ use tokio::time::timeout;
 use tracing::debug;
 use uuid::Uuid;
 
+/// Policy values the client must copy into a daemon it lazily starts.
+///
+/// Foreground `daemon run` receives these from clap directly. Lazy-spawn is
+/// different: the parent CLI command already parsed the globals, then starts a
+/// fresh `agent-tui daemon run` child. Keep the policy payload explicit so the
+/// spawned daemon cannot silently fall back to permissive defaults.
+#[derive(Debug, Clone, Default)]
+pub struct LazySpawnConfig {
+    pub allowed_binaries: Option<String>,
+}
+
+impl LazySpawnConfig {
+    #[must_use]
+    pub fn from_allowed_binaries(allowed_binaries: Option<&str>) -> Self {
+        Self {
+            allowed_binaries: allowed_binaries.map(str::to_string),
+        }
+    }
+
+    fn resolved_allowed_binaries(&self) -> Option<String> {
+        self.allowed_binaries
+            .clone()
+            .or_else(|| std::env::var("AGENT_TUI_ALLOWED_BINARIES").ok())
+    }
+}
+
 /// Connect, send one request, read one response. Spawns the daemon if no
 /// socket is listening.
 pub async fn one_shot(layout: &SocketLayout, command: Command) -> Result<ResponseEnvelope> {
+    one_shot_with_config(layout, command, &LazySpawnConfig::default()).await
+}
+
+/// [`one_shot`] with explicit lazy-spawn policy propagation.
+pub async fn one_shot_with_config(
+    layout: &SocketLayout,
+    command: Command,
+    lazy_spawn: &LazySpawnConfig,
+) -> Result<ResponseEnvelope> {
     let stream = match connect(layout).await {
         Ok(s) => s,
         Err(e) if is_unreachable(&e) => {
             debug!(socket = %layout.socket.display(), "daemon unreachable, spawning");
-            spawn_daemon(layout)?;
+            spawn_daemon(layout, lazy_spawn)?;
             wait_for_socket(layout, Duration::from_secs(3)).await?
         }
         Err(e) => return Err(e),
@@ -63,7 +98,7 @@ fn is_unreachable(err: &anyhow::Error) -> bool {
         })
 }
 
-fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
+fn spawn_daemon(layout: &SocketLayout, lazy_spawn: &LazySpawnConfig) -> Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;
     let session = layout
         .socket
@@ -77,10 +112,10 @@ fn spawn_daemon(layout: &SocketLayout) -> Result<()> {
         .arg("--socket-dir")
         .arg(&layout.root);
     // Forward governance settings to the lazily-spawned daemon child. The
-    // CLI's `--allowed-binaries` value lives on the *parent* invocation; we
-    // propagate it via the env-var binding clap already declares so the
-    // daemon process sees the same allowlist.
-    if let Ok(csv) = std::env::var("AGENT_TUI_ALLOWED_BINARIES") {
+    // CLI's `--allowed-binaries` value lives on the *parent* invocation; copy
+    // the parsed value explicitly, falling back to the env-var binding clap
+    // declares for callers that configured policy through the environment.
+    if let Some(csv) = lazy_spawn.resolved_allowed_binaries() {
         cmd.env("AGENT_TUI_ALLOWED_BINARIES", csv);
     }
     cmd.arg("daemon").arg("run");
@@ -125,13 +160,23 @@ async fn wait_for_socket(layout: &SocketLayout, max_wait: Duration) -> Result<St
 pub async fn stream(
     layout: &SocketLayout,
     command: Command,
+    on_envelope: impl FnMut(&ResponseEnvelope) -> Result<bool>,
+) -> Result<()> {
+    stream_with_config(layout, command, &LazySpawnConfig::default(), on_envelope).await
+}
+
+/// [`stream`] with explicit lazy-spawn policy propagation.
+pub async fn stream_with_config(
+    layout: &SocketLayout,
+    command: Command,
+    lazy_spawn: &LazySpawnConfig,
     mut on_envelope: impl FnMut(&ResponseEnvelope) -> Result<bool>,
 ) -> Result<()> {
     let stream = match connect(layout).await {
         Ok(s) => s,
         Err(e) if is_unreachable(&e) => {
             debug!(socket = %layout.socket.display(), "daemon unreachable, spawning");
-            spawn_daemon(layout)?;
+            spawn_daemon(layout, lazy_spawn)?;
             wait_for_socket(layout, Duration::from_secs(3)).await?
         }
         Err(e) => return Err(e),

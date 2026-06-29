@@ -327,3 +327,42 @@ fn daemon_shutdown_reaps_pane_then_lazily_respawns() {
     // Tidy up the respawned daemon.
     let _ = s.cmd(&["daemon", "shutdown", "--force"], None).output();
 }
+
+/// A lazily-spawned daemon must receive the parent CLI's global governance
+/// flags. Without this propagation, the daemon starts permissive and accepts
+/// `/bin/sh` even though this client invocation only allows the test binary.
+#[test]
+fn lazy_spawn_forwards_allowed_binaries_to_daemon() {
+    let s = Supervised::new("lazyallow");
+    let owner_pid = s.owner.id();
+    let out = s
+        .cmd(
+            &[
+                "--allowed-binaries",
+                bin(),
+                "spawn",
+                "--",
+                "/bin/sh",
+                "-c",
+                "true",
+            ],
+            Some(owner_pid),
+        )
+        .output()
+        .expect("run lazy-spawned policy check");
+
+    assert!(
+        !out.status.success(),
+        "spawn unexpectedly succeeded; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let data = json(&out);
+    assert_eq!(
+        data.get("error").and_then(|e| e.get("code")),
+        Some(&Value::String("POLICY_DENIED".into())),
+        "lazy-spawned daemon should enforce the forwarded allowlist: {data:?}"
+    );
+
+    let _ = s.cmd(&["daemon", "shutdown", "--force"], None).output();
+}

@@ -6,6 +6,7 @@
 //! built-in `generic_outline` heuristic so the agent never gets `null`.
 
 use std::collections::HashMap;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use agent_tui_engine::{Cell, EngineSnapshot};
@@ -16,6 +17,7 @@ use agent_tui_protocol::{
     Selector, Snapshot, Warning, format_selector_parse_error, outline_all_refs,
 };
 use base64::Engine as _;
+use tokio::io::AsyncWriteExt;
 
 use crate::classifier;
 use crate::hash_window::HashWindow;
@@ -299,10 +301,42 @@ async fn render_png_artifact(
                 "report a bug",
             ))
         })?;
-    tokio::fs::write(path, &rendered.bytes).await.map_err(|e| {
+
+    validate_png_artifact_path(path).map_err(|reason| {
+        Response::err(ErrorBody::new(
+            ErrorCode::InvalidArgs,
+            reason,
+            "use a new relative path under the daemon's current directory",
+        ))
+    })?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await
+        .map_err(|e| {
+            let code = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                ErrorCode::InvalidArgs
+            } else {
+                ErrorCode::Internal
+            };
+            Response::err(ErrorBody::new(
+                code,
+                format!("failed to create PNG at {path}: {e}"),
+                "choose a new writable path",
+            ))
+        })?;
+    file.write_all(&rendered.bytes).await.map_err(|e| {
         Response::err(ErrorBody::new(
             ErrorCode::Internal,
             format!("failed to write PNG to {path}: {e}"),
+            "check the path is writable",
+        ))
+    })?;
+    file.flush().await.map_err(|e| {
+        Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            format!("failed to flush PNG to {path}: {e}"),
             "check the path is writable",
         ))
     })?;
@@ -312,6 +346,54 @@ async fn render_png_artifact(
         height: rendered.height,
         annotated: rendered.annotated,
     })
+}
+
+fn validate_png_artifact_path(path: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty() {
+        return Err("PNG path cannot be empty".to_string());
+    }
+    if path.is_absolute() {
+        return Err(format!("PNG path {} must be relative", path.display()));
+    }
+
+    let mut has_normal_component = false;
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => has_normal_component = true,
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "PNG path {} must not contain traversal or root components",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if !has_normal_component {
+        return Err(format!("PNG path {} must name a file", path.display()));
+    }
+
+    let cwd = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .map_err(|e| format!("cannot resolve daemon current directory: {e}"))?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let parent = parent.unwrap_or_else(|| Path::new("."));
+    let parent = parent.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve PNG parent directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    if !parent.starts_with(&cwd) {
+        return Err(format!(
+            "PNG path {} escapes daemon current directory {}",
+            path.display(),
+            cwd.display()
+        ));
+    }
+
+    Ok(())
 }
 
 /// Resolve the pane's outline: the attached adapter's, or the generic
@@ -620,6 +702,34 @@ mod tests {
     // Default fg/bg in alacritty's encoding: NamedColor::Foreground/Background
     // are >= 256, so a fully-default cell carries no color.
     const DEF: u32 = 256;
+
+    #[test]
+    fn png_path_validation_accepts_relative_file() {
+        validate_png_artifact_path("snapshot.png").expect("relative file path should be accepted");
+    }
+
+    #[test]
+    fn png_path_validation_rejects_absolute_path() {
+        let absolute = std::env::current_dir()
+            .expect("current dir")
+            .join("snapshot.png");
+        let err = validate_png_artifact_path(&absolute.to_string_lossy())
+            .expect_err("absolute path must be rejected");
+        assert!(err.contains("must be relative"));
+    }
+
+    #[test]
+    fn png_path_validation_rejects_parent_traversal() {
+        let err =
+            validate_png_artifact_path("../snapshot.png").expect_err("traversal must be rejected");
+        assert!(err.contains("must not contain traversal"));
+    }
+
+    #[test]
+    fn png_path_validation_rejects_non_file_path() {
+        let err = validate_png_artifact_path(".").expect_err("directory path must be rejected");
+        assert!(err.contains("must name a file"));
+    }
 
     #[test]
     fn plain_mode_emits_no_escapes() {

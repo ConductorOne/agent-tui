@@ -13,7 +13,7 @@ use agent_tui_protocol::{
 use interprocess::local_socket::ListenerOptions;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::tokio::Listener as _;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
@@ -61,6 +61,11 @@ pub struct DaemonConfig {
 /// short enough that orphaned test daemons go away within a single
 /// CI run.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 900;
+
+/// Maximum bytes accepted for one daemon request line, including the
+/// terminating newline. Normal JSON-RPC commands are tiny; 1 MiB leaves room
+/// for structured payloads while bounding memory spent on a single client.
+const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 
 fn build_governance(cfg: &DaemonConfig) -> Governance {
     use super::governance::{AllowlistEvaluator, Governance};
@@ -277,9 +282,9 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
 
 async fn handle_conn(sock: Stream, state: DaemonState) {
     let (reader, mut writer) = tokio::io::split(sock);
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
     loop {
-        match lines.next_line().await {
+        match read_request_line(&mut reader).await {
             Ok(Some(line)) => {
                 if line.trim().is_empty() {
                     continue;
@@ -306,7 +311,7 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
                     let disconnected =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let watcher_flag = disconnected.clone();
-                    let read_half = lines.into_inner().into_inner();
+                    let read_half = reader.into_inner();
                     let watcher = tokio::spawn(async move {
                         use tokio::io::AsyncReadExt as _;
                         let mut r = read_half;
@@ -363,6 +368,32 @@ async fn handle_conn(sock: Stream, state: DaemonState) {
             }
         }
     }
+}
+
+async fn read_request_line<R>(reader: &mut R) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let read = {
+        let mut limited = (&mut *reader).take((MAX_REQUEST_LINE_BYTES + 1) as u64);
+        limited.read_until(b'\n', &mut buf).await?
+    };
+    if read == 0 && buf.is_empty() {
+        return Ok(None);
+    }
+    if buf.len() > MAX_REQUEST_LINE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("request line exceeds {MAX_REQUEST_LINE_BYTES} bytes"),
+        ));
+    }
+    String::from_utf8(buf).map(Some).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("request line is not valid UTF-8: {e}"),
+        )
+    })
 }
 
 /// Stream the child's output to the client as new bytes arrive.
@@ -1109,6 +1140,44 @@ async fn dispatch_snapshot(
     .await
 }
 
+async fn daemon_upgrade_policy_response(
+    state: &DaemonState,
+    binary: Option<&str>,
+) -> Option<Response> {
+    let executable = match binary {
+        Some(binary) => binary.to_string(),
+        None => match std::env::current_exe() {
+            Ok(path) => path.to_string_lossy().into_owned(),
+            Err(_) => return None,
+        },
+    };
+    let decision = state
+        .governance
+        .check(super::governance::build::spawn(
+            vec![executable],
+            String::new(),
+        ))
+        .await;
+    policy_response_for_daemon_command(&decision)
+}
+
+fn policy_response_for_daemon_command(decision: &agent_tui_protocol::Decision) -> Option<Response> {
+    use agent_tui_protocol::Verdict;
+    match decision.verdict {
+        Verdict::Allow => None,
+        Verdict::Deny => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyDenied,
+            decision.reason.clone(),
+            "daemon command blocked; loosen --allowed-binaries or choose an allowed binary",
+        ))),
+        Verdict::RequireConfirm => Some(Response::err(ErrorBody::new(
+            ErrorCode::PolicyPending,
+            decision.reason.clone(),
+            "human confirmation required; `policy confirm <id>` lands in a follow-on cycle",
+        ))),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command) -> Response {
     use agent_tui_protocol::Command;
@@ -1237,7 +1306,12 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
                 "status": "shutting_down",
             }))
         }
-        Command::DaemonUpgrade { binary } => crate::upgrade::run(state, binary).await,
+        Command::DaemonUpgrade { binary } => {
+            if let Some(resp) = daemon_upgrade_policy_response(state, binary.as_deref()).await {
+                return resp;
+            }
+            crate::upgrade::run(state, binary).await
+        }
         Command::Focus { pane } => handlers::focus::run(&state.registry, pane).await,
         Command::Eval { .. } => Response::err(ErrorBody::new(
             ErrorCode::Internal,
@@ -1314,3 +1388,28 @@ async fn idle_timeout_watcher(
 //     let _ = nix::sys::prctl::set_pdeathsig(
 //         Some(nix::sys::signal::Signal::SIGTERM),
 //     );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_request_line_accepts_normal_line() {
+        let mut reader = BufReader::new(std::io::Cursor::new(b"{\"op\":\"list\"}\n".to_vec()));
+        let line = read_request_line(&mut reader)
+            .await
+            .expect("read request")
+            .expect("line");
+        assert_eq!(line, "{\"op\":\"list\"}\n");
+    }
+
+    #[tokio::test]
+    async fn read_request_line_rejects_oversized_frame() {
+        let mut reader =
+            BufReader::new(std::io::Cursor::new(vec![b'a'; MAX_REQUEST_LINE_BYTES + 1]));
+        let err = read_request_line(&mut reader)
+            .await
+            .expect_err("oversized request must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+}
