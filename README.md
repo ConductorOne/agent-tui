@@ -111,6 +111,14 @@ cargo build --release
 ./target/release/agent-tui --help
 ```
 
+To put the binary on your `PATH`, install it from the workspace's binary crate
+into `~/.cargo/bin` (the workspace root is a virtual manifest, so point at the
+`agent-tui` crate rather than `.`):
+
+```bash
+cargo install --path crates/agent-tui
+```
+
 </details>
 
 ## Refs: bringing the DOM to the terminal
@@ -272,11 +280,11 @@ adapter's semantic regions instead of raw text:
 ```bash
 agent-tui spawn -- htop
 agent-tui wait --idle 500
-agent-tui --json snapshot --mode outline | jq -c '[.data.outline.nodes[] | {ref, role}]'
+agent-tui --json snapshot --mode outline | jq -c '[.data.outline.nodes[].children[] | {ref, role}]'
 ```
 
 ```json
-[{"ref":"@e1","role":"meters"},{"ref":"@e2","role":"table"},{"ref":"@e3","role":"footer"}]
+[{"ref":"@htop.meters","role":"meters"},{"ref":"@htop.processes","role":"table"},{"ref":"@htop.fkeys","role":"footer"}]
 ```
 
 **Ask an AI CLI — `claude -p`.** `ask` is sugar over `run` with per-provider

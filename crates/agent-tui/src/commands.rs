@@ -62,6 +62,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         CliCmd::Skills(args) => skills(&args),
         CliCmd::Mcp(_) => crate::mcp::serve(cli.globals).await,
         CliCmd::DumpSurface => dump_surface(),
+        CliCmd::Completions { shell } => {
+            completions(shell);
+            Ok(())
+        }
+        CliCmd::Man { dir } => man(dir.as_deref()),
         CliCmd::Ask {
             provider,
             prompt,
@@ -750,6 +755,68 @@ fn dump_surface() -> Result<()> {
     let payload = walk(&root);
     println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
+}
+
+/// `completions <shell>` — print a shell-completion script to stdout.
+fn completions(shell: clap_complete::Shell) {
+    use clap::CommandFactory;
+
+    let mut cmd = crate::cli::Cli::command();
+    let bin = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, bin, &mut std::io::stdout());
+}
+
+/// `man [--dir <path>]` — render troff man pages from the CLI surface.
+/// With no `--dir`, prints the top-level page to stdout. With `--dir`, writes
+/// one `.1` page per (sub)command so packagers can install the whole set.
+fn man(dir: Option<&std::path::Path>) -> Result<()> {
+    use clap::CommandFactory;
+    use std::io::Write;
+
+    let cmd = crate::cli::Cli::command();
+    match dir {
+        None => {
+            let mut out = Vec::new();
+            clap_mangen::Man::new(cmd).render(&mut out)?;
+            std::io::stdout().write_all(&out)?;
+            Ok(())
+        }
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(|e| anyhow!("create {}: {e}", dir.display()))?;
+            let n = write_man_pages(&cmd, dir)?;
+            eprintln!("wrote {n} man page(s) to {}", dir.display());
+            Ok(())
+        }
+    }
+}
+
+/// Recursively render `cmd` and every visible subcommand to `<name>.1` files
+/// under `dir`. Returns the number of pages written. Subcommand pages are
+/// named `agent-tui-spawn.1`, `agent-tui-daemon-status.1`, … matching the
+/// man(1) convention for nested commands.
+fn write_man_pages(cmd: &clap::Command, dir: &std::path::Path) -> Result<usize> {
+    fn walk(cmd: &clap::Command, prefix: &str, dir: &std::path::Path, n: &mut usize) -> Result<()> {
+        let name = if prefix.is_empty() {
+            cmd.get_name().to_string()
+        } else {
+            format!("{prefix}-{}", cmd.get_name())
+        };
+        let mut out = Vec::new();
+        // `Man` takes ownership; clone the subtree for this page.
+        clap_mangen::Man::new(cmd.clone()).render(&mut out)?;
+        let path = dir.join(format!("{name}.1"));
+        std::fs::write(&path, &out).map_err(|e| anyhow!("write {}: {e}", path.display()))?;
+        *n += 1;
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() != "help" && !sub.is_hide_set() {
+                walk(sub, &name, dir, n)?;
+            }
+        }
+        Ok(())
+    }
+    let mut n = 0;
+    walk(cmd, "", dir, &mut n)?;
+    Ok(n)
 }
 
 /// `ask` — sugar over `run` driven by TOML recipes (bundled +

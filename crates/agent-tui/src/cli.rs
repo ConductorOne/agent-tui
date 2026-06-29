@@ -477,6 +477,22 @@ pub enum Command {
     Mcp(McpArgs),
     /// `skills get/list` — print embedded skill docs.
     Skills(SkillsArgs),
+    /// Generate a shell-completion script for the given shell and print it
+    /// to stdout. Example: `agent-tui completions zsh > _agent-tui`.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Generate troff man pages from the CLI surface. Prints the top-level
+    /// page to stdout, or with `--dir` writes one page per command
+    /// (`agent-tui.1`, `agent-tui-spawn.1`, …) into that directory.
+    Man {
+        /// Output directory. When set, write one `.1` page per (sub)command
+        /// instead of printing the root page to stdout.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
 }
 
 /// `pane` subcommand group.

@@ -73,10 +73,13 @@ pub async fn run(
     ) {
         Ok(p) => p,
         Err(e) => {
+            // A failed spawn is almost always caller-fixable (bad argv,
+            // binary not on PATH, not executable) rather than an
+            // agent-tui bug — surface it as SPAWN_FAILED, not INTERNAL.
             return Response::err(ErrorBody::new(
-                ErrorCode::Internal,
+                ErrorCode::SpawnFailed,
                 format!("pty spawn failed: {e}"),
-                "verify the binary exists and is on PATH",
+                format!("verify `{}` exists, is executable, and is on PATH", argv[0]),
             ));
         }
     };

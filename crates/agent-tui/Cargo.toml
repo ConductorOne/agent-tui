@@ -26,6 +26,9 @@ agent-tui-adapter = { workspace = true }
 
 tokio = { workspace = true }
 clap = { workspace = true }
+# Shell-completion and man-page generation from the clap surface.
+clap_complete = "4.5"
+clap_mangen = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
