@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/ConductorOne/agent-tui/compare/v0.1.12...v0.2.0) - 2026-06-30
+
 ### Added
 
+- Initial public release
+- *(snapshot)* Ship-nice PNG renders — palette, chrome frame, attrs, restyled annotate
+- *(cli)* Add shell completions and man-page generation
 - *(adapters)* Manifest v2 durable refs, dynamic row selectors, and signal refs for agents driving agents.
+
+### Documentation
+
+- *(ai-cli)* Narrow live adapter proof boundary ([#111](https://github.com/ConductorOne/agent-tui/pull/111))
+
+### Fixed
+
+- *(release)* Configure git-cliff changelog generation (dedup + skip merge/release noise)
+- *(release)* Correct off-by-one version attribution + doubled Unreleased in CHANGELOG
+
+### Other
+
+- *(launch)* Prepare public release readiness ([#105](https://github.com/ConductorOne/agent-tui/pull/105))
+- Add manifest v2 agent control refs
+- Harden daemon trust boundaries
+- Harden spawn allowlist path matching
+
+### Testing
+
+- *(ai-cli)* Cover AI SDK harness CLI names ([#109](https://github.com/ConductorOne/agent-tui/pull/109))
 
 ## [0.1.12](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.1.12) - 2026-06-13
 
