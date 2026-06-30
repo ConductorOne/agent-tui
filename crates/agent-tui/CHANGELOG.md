@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(adapters)* Manifest v2 durable refs, dynamic row selectors, and signal refs for agents driving agents.
 
-## [0.1.12](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.1.12) - 2026-06-13
+## [0.2.0](https://github.com/ConductorOne/agent-tui/compare/v0.1.11...v0.2.0) - 2026-06-13
 
 ### Fixed
 
