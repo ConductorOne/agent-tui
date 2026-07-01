@@ -16,6 +16,20 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::pty::PtyChild;
 
+/// Quiet-period a streaming verb waits after the child exits before treating
+/// the output ring as fully drained, when the reader thread hasn't reported EOF.
+///
+/// This backs the Windows-ConPTY branch of [`Pane::exit_drained`]: the daemon
+/// holds the ConPTY master for the pane's life, so conhost keeps the output
+/// pipe's write end open and the blocking reader never observes EOF (so
+/// [`PtyChild::reader_finished`] never flips). ConPTY emits nothing after the
+/// child exits, so `last_output_ms_ago` only grows; once it passes this grace
+/// the ring is settled. Sized at ~3× the server's 50ms `STREAM_IDLE_TICK`:
+/// long enough for conhost to flush a child's final output, short enough to
+/// keep `events` / `tail --follow` responsive at child exit. On Unix the grace
+/// is never consulted — `reader_finished()` flips the instant the child exits.
+const DRAIN_GRACE_MS: u64 = 150;
+
 /// One PTY-backed pane: an engine driven by output from a child process.
 pub struct Pane {
     /// Stable per-session pane id (e.g. `p1`). Never reused after `Die`.
@@ -84,6 +98,32 @@ impl Pane {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.poll_exit().is_some()
+    }
+
+    /// Terminal-drain gate shared by the streaming verbs (`events`,
+    /// `tail --follow`, `attach`): true once the child has exited **and** every
+    /// trailing byte is settled in the output ring, so the stream can emit its
+    /// terminal event (`child_exited` / `eof`) without dropping final output.
+    ///
+    /// "Settled" is satisfied either by the reader thread observing EOF
+    /// ([`PtyChild::reader_finished`]) — the normal Unix case, where closing the
+    /// slave EOFs the master the instant the child exits — **or** by the pane
+    /// going quiet for [`DRAIN_GRACE_MS`]. The grace branch exists for Windows
+    /// ConPTY, where the daemon-held master keeps conhost's output-pipe write
+    /// end open so the blocking reader never sees EOF: ConPTY emits nothing
+    /// after the child exits, so `last_output_ms_ago` only grows and, once past
+    /// the grace, the ring is fully flushed. `last_output_ms_ago() == None`
+    /// (child produced no output at all) also drains immediately — there is
+    /// nothing to wait for. On Unix `reader_finished()` flips first, so the
+    /// grace branch is never reached and behavior is byte-for-byte unchanged.
+    #[must_use]
+    pub fn exit_drained(&self) -> bool {
+        self.poll_exit().is_some()
+            && (self.pty.reader_finished()
+                || self
+                    .pty
+                    .last_output_ms_ago()
+                    .map_or(true, |ms| ms > DRAIN_GRACE_MS))
     }
 
     /// Swap in a new adapter; returns the previous one.

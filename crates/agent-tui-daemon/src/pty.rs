@@ -768,6 +768,72 @@ impl PtyChild {
     pub fn subscribe_output(&self) -> watch::Receiver<u64> {
         self.output_tx.subscribe()
     }
+
+    /// Windows-only: force the parked PTY reader thread to observe EOF by
+    /// dropping the ConPTY master.
+    ///
+    /// The daemon holds the ConPTY master for the pane's whole life. That keeps
+    /// the pseudoconsole — and its conhost host — alive, and conhost keeps the
+    /// **write** end of the output pipe open, so the blocking `read()` in the
+    /// reader thread never returns EOF even after the child exits. (On Unix the
+    /// slave closing on child exit EOFs the master immediately; there is no
+    /// analog here.) The cloned reader owns its own *duplicated* pipe read
+    /// handle (`try_clone_reader` → `DuplicateHandle`), not the pseudoconsole,
+    /// so only dropping the master — which after spawn holds the sole `Arc` to
+    /// the pseudoconsole (the slave was dropped, the writer + reader are
+    /// independent handles) — runs `ClosePseudoConsole`. That lets conhost close
+    /// the write end, unblocking the reader with EOF so its `spawn_blocking`
+    /// thread exits instead of leaking (and stalling the runtime's shutdown
+    /// join).
+    ///
+    /// Implemented by swapping in an inert [`ClosedMaster`] so the real master
+    /// drops now while [`MasterEnd::Portable`]'s type stays unchanged (the Unix
+    /// paths are untouched). Idempotent. Safe on a terminal-retained pane: the
+    /// engine grid and output ring are separate `Arc`s and remain readable;
+    /// only `resize` / `write_input` are affected, and both are already no-ops
+    /// once the child has exited.
+    #[cfg(windows)]
+    pub fn close_master(&self) {
+        let MasterEnd::Portable(m) = &self.master;
+        if let Ok(mut guard) = m.lock() {
+            let old = std::mem::replace(
+                &mut *guard,
+                Box::new(ClosedMaster) as Box<dyn MasterPty + Send>,
+            );
+            // Dropping the real master runs `ClosePseudoConsole`; conhost then
+            // closes the output pipe's write end and the reader EOFs.
+            drop(old);
+        }
+    }
+}
+
+/// Inert [`MasterPty`] swapped in by [`PtyChild::close_master`] (Windows only)
+/// so the live ConPTY master — the sole `Arc` holder of the pseudoconsole —
+/// drops and `ClosePseudoConsole` runs. Every method is a no-op: after the swap
+/// the pane is terminal, so resize/write are already meaningless and nothing
+/// reads back through this handle.
+#[cfg(windows)]
+struct ClosedMaster;
+
+#[cfg(windows)]
+impl MasterPty for ClosedMaster {
+    fn resize(&self, _size: PtySize) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn get_size(&self) -> anyhow::Result<PtySize> {
+        Ok(PtySize {
+            rows: 0,
+            cols: 0,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+    fn try_clone_reader(&self) -> anyhow::Result<Box<dyn Read + Send>> {
+        Ok(Box::new(std::io::empty()))
+    }
+    fn take_writer(&self) -> anyhow::Result<Box<dyn Write + Send>> {
+        Ok(Box::new(std::io::sink()))
+    }
 }
 
 impl Drop for PtyChild {

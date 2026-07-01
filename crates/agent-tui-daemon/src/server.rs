@@ -172,6 +172,15 @@ impl DaemonHandle {
             {
                 let _ = crate::pty::kill_tree_windows(pid);
             }
+            // Close the ConPTY master for EVERY pane (live or terminal-retained).
+            // The per-pane reader is a `spawn_blocking` thread parked in a
+            // blocking `read()` on the master; on Windows killing the child does
+            // not EOF it (conhost keeps the output pipe's write end open until
+            // `ClosePseudoConsole`). Unless we drop the master here, the runtime's
+            // shutdown join blocks forever on that parked thread and the daemon
+            // hangs on exit — the Windows analog of the Unix "SIGKILL makes the
+            // master EOF" guarantee `reap_all_panes` relies on.
+            pane.pty.close_master();
         }
     }
 
@@ -677,7 +686,7 @@ async fn handle_streaming_events(
         // Terminal: child exited and the reader drained its last bytes.
         // Flush any pending screen change first so the final frame isn't
         // lost, then emit `child_exited` and end the stream.
-        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
+        if pane_arc.exit_drained() {
             if dirty {
                 flush_screen_events(
                     state,
@@ -916,7 +925,7 @@ async fn stream_follow(
         // code is the pane's REMEMBERED code (`poll_exit`), authoritative even
         // when the death was a 3rd-party `die` or the OS handle was already
         // reaped — so every follower gets the same faithful fate.
-        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
+        if pane_arc.exit_drained() {
             let tail = pane_arc.pty.tail(cursor);
             if !tail.bytes.is_empty() {
                 let env = wrap_envelope(
