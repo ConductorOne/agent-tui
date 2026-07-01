@@ -681,9 +681,11 @@ impl PtyChild {
         }
     }
 
-    /// Child PID for Windows `GenerateConsoleCtrlEvent` delivery. portable-pty
-    /// spawns the child with `CREATE_NEW_PROCESS_GROUP` so the PID doubles as
-    /// the process-group id Windows control events expect.
+    /// Child PID. On Windows this is the ConPTY child used for descendant-tree
+    /// teardown (`kill_tree_windows`) and the owner-death / reap paths. Note:
+    /// portable-pty does NOT spawn the child with `CREATE_NEW_PROCESS_GROUP`, so
+    /// this PID is not a valid console-control group id — interrupts are
+    /// delivered by writing to the ConPTY input instead (see `handlers::signal`).
     pub fn child_pid(&self) -> Option<u32> {
         match &self.child {
             ChildEnd::Portable { child, .. } => child.lock().ok()?.process_id(),
@@ -1105,7 +1107,7 @@ fn signal_name_to_num(_name: &str) -> Option<u32> {
 /// TerminateProcess BOOL and only kills the direct child). `taskkill /T`
 /// reaps forked subprocesses the way `killpg` does on Unix. Dependency-free.
 #[cfg(windows)]
-fn kill_tree_windows(pid: u32) -> Result<()> {
+pub(crate) fn kill_tree_windows(pid: u32) -> Result<()> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;

@@ -158,9 +158,25 @@ impl DaemonHandle {
         }
     }
 
-    /// No-op on non-Unix (the daemon's Windows teardown path is still in
-    /// design — see the `--monitor-parent` note in [`run_daemon`]).
-    #[cfg(not(unix))]
+    /// Windows analog of the Unix group-kill: for every still-live pane, kill
+    /// the ConPTY child and its entire descendant tree via `kill_tree_windows`
+    /// (the same `taskkill /F /T` teardown `die`/`kill` use — the direct analog
+    /// of the `killpg` loop above). Mirrors the Unix iteration/locking: only
+    /// panes whose child is still running (`try_exit_code()` == `Ok(None)`) are
+    /// reaped; a terminal-retained pane has already exited, so it is skipped.
+    #[cfg(windows)]
+    pub async fn reap_all_panes(&self) {
+        for pane in self.registry.all_panes().await {
+            if matches!(pane.pty.try_exit_code(), Ok(None))
+                && let Some(pid) = pane.pty.child_pid()
+            {
+                let _ = crate::pty::kill_tree_windows(pid);
+            }
+        }
+    }
+
+    /// No-op on platforms that are neither Unix nor Windows.
+    #[cfg(not(any(unix, windows)))]
     pub async fn reap_all_panes(&self) {}
 }
 
@@ -1321,14 +1337,14 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
     }
 }
 
-/// Polls `kill(pid, 0)` every 500ms; fires the shutdown notify when the
-/// PID is gone. Used by the `--monitor-parent` flag.
+/// Watches the `--monitor-parent` PID and fires the shutdown notify when it
+/// dies, on a 500ms cadence.
 ///
-/// Cross-platform: `kill(pid, 0)` returns success while the process
-/// exists, `ESRCH` after it dies. On Windows we'd shell out to
-/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)` — but
-/// the daemon's Windows path is still in design (RFC §13.x), so this
-/// helper is Unix-only for now and silently does nothing elsewhere.
+///  - Unix: polls `kill(pid, 0)` — success while the process exists, `ESRCH`
+///    (or `EPERM`) once it is gone.
+///  - Windows: holds a SYNCHRONIZE handle via `OpenProcess` and blocks on
+///    `WaitForSingleObject(handle, 500)`, which signals the moment the parent
+///    process exits (a null handle is treated as already-dead).
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
     #[cfg(unix)]
@@ -1348,7 +1364,55 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
             }
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Windows analog of the `kill(pid, 0)` poll: hold a SYNCHRONIZE handle
+        // to the parent and wait on it. `WaitForSingleObject` returns
+        // WAIT_OBJECT_0 the instant the process object is signaled (the parent
+        // exited). A null handle means we cannot even open it (already gone, or
+        // unreadable) → treat as owner death. The 500ms wait keeps the same
+        // cadence as the Unix poll so a shutdown fired elsewhere is still
+        // observed promptly (this task is not otherwise cancellable).
+        use windows_sys::Win32::Foundation::{CloseHandle, FALSE, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+        };
+        // Standard SYNCHRONIZE access right (0x0010_0000), defined locally to
+        // avoid depending on its exact windows-sys module path.
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+
+        // SAFETY: OpenProcess is a Win32 syscall; a null return is handled below.
+        #[allow(unsafe_code)]
+        let handle =
+            unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+        if handle.is_null() {
+            info!(
+                monitor_parent = pid,
+                "parent process not openable (already exited?); shutting down daemon"
+            );
+            shutdown.notify_waiters();
+            return;
+        }
+        loop {
+            // SAFETY: `handle` is a valid open process handle until CloseHandle.
+            #[allow(unsafe_code)]
+            let rc = unsafe { WaitForSingleObject(handle, 500) };
+            if rc == WAIT_OBJECT_0 {
+                info!(monitor_parent = pid, "parent exited; shutting down daemon");
+                shutdown.notify_waiters();
+                break;
+            }
+            // WAIT_TIMEOUT → still alive, poll again. Any other status
+            // (WAIT_FAILED / WAIT_ABANDONED) is treated conservatively as
+            // still-alive; the next iteration re-checks.
+        }
+        // SAFETY: releasing the handle we opened above.
+        #[allow(unsafe_code)]
+        unsafe {
+            CloseHandle(handle);
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, shutdown);
     }

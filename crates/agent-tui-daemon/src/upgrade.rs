@@ -118,6 +118,22 @@ pub struct PaneHandoff {
 /// new binary fails its smoke test. Re-exec is one-way, so we never exec a
 /// binary we couldn't even run `--version` on.
 pub async fn run(state: &DaemonState, binary: Option<String>) -> Response {
+    // In-place re-exec (`execve` into the same PID) is Unix-only. On Windows we
+    // must NOT ack `{status: upgrading}` and then silently do nothing — that
+    // makes the client believe an upgrade happened when the process image was
+    // never swapped. Fail honestly BEFORE the ack. (`if cfg!(...)` rather than
+    // an early `#[cfg]` return so the Unix body below stays byte-identical and
+    // compiled on every platform — no unreachable-code or dead-code churn.)
+    if cfg!(not(unix)) {
+        let _ = &state;
+        let _ = &binary;
+        return Response::err(ErrorBody::new(
+            ErrorCode::Internal,
+            "in-place daemon upgrade is not supported on Windows; run `agent-tui daemon shutdown` then re-invoke to start a fresh daemon on the new binary (live panes are not preserved on Windows)",
+            "shut the daemon down and re-invoke on the new binary",
+        ));
+    }
+
     // Resolve the binary to exec. Default: our own current executable (the
     // production path swaps the on-disk file first, then re-execs it).
     let binary_path = match binary {

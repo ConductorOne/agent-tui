@@ -2,10 +2,14 @@
 //!
 //! Delivers a UNIX-style signal to the pane's child:
 //!  - Unix: `killpg` to the process group so forwarded shell children get hit.
-//!  - Windows: `GenerateConsoleCtrlEvent` for SIGINT/SIGBREAK; `TerminateProcess`
-//!    (via portable-pty's `ChildKiller`) for SIGTERM/SIGKILL. portable-pty
-//!    spawns Windows children with `CREATE_NEW_PROCESS_GROUP` so the child PID
-//!    is already a valid control-event group id.
+//!  - Windows: interrupts (SIGINT / SIGQUIT / SIGBREAK) are delivered by writing
+//!    the corresponding control byte (ETX `0x03` / FS `0x1c`) into the
+//!    pseudoconsole INPUT via the master writer — the idiomatic ConPTY approach
+//!    used by Windows Terminal and wezterm. `GenerateConsoleCtrlEvent` does NOT
+//!    work here: the child runs on its own pseudoconsole and is not a
+//!    process-group root (portable-pty does not set `CREATE_NEW_PROCESS_GROUP`),
+//!    so the call always fails and delivers nothing. SIGTERM / SIGKILL use the
+//!    Windows descendant-tree kill in [`crate::pty::PtyChild::kill`].
 
 use std::sync::Arc;
 
@@ -126,11 +130,11 @@ fn deliver(pane: &Pane, signal: &str) -> Result<(), DeliverErr> {
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy)]
 enum WinSig {
-    /// `SIGINT` / `2` → CTRL_C_EVENT.
+    /// `SIGINT` / `2` → ETX (`0x03`) written to the ConPTY input.
     CtrlC,
-    /// `SIGBREAK` / `SIGQUIT` → CTRL_BREAK_EVENT.
+    /// `SIGBREAK` / `SIGQUIT` → FS (`0x1c`) written to the ConPTY input.
     CtrlBreak,
-    /// `SIGTERM` / `SIGKILL` / `15` / `9` → `TerminateProcess` via ChildKiller.
+    /// `SIGTERM` / `SIGKILL` / `15` / `9` → descendant-tree kill via `PtyChild::kill`.
     Terminate,
 }
 
@@ -159,29 +163,26 @@ fn parse_win_signal(s: &str) -> Result<WinSig, String> {
     }
 }
 
+/// Deliver an interrupt to the ConPTY child by writing the control byte to the
+/// pseudoconsole INPUT via the existing master writer ([`crate::pty::PtyChild::write_input`]
+/// locks the ConPTY input) — the idiomatic ConPTY approach (how Windows Terminal
+/// and wezterm implement Ctrl-C). This replaces `GenerateConsoleCtrlEvent`, which
+/// cannot reach the child: it lives on a separate pseudoconsole and is not a
+/// process-group root (portable-pty does not pass `CREATE_NEW_PROCESS_GROUP`), so
+/// the console-ctrl call always fails and delivers nothing.
+///
+/// SIGINT → ETX (`0x03`, Ctrl-C); SIGQUIT / SIGBREAK → FS (`0x1c`, Ctrl-\),
+/// best-effort (some line disciplines ignore it).
 #[cfg(windows)]
 fn deliver_ctrl_event(pane: &Pane, kind: WinSig) -> Result<(), DeliverErr> {
-    use windows_sys::Win32::System::Console::{
-        CTRL_BREAK_EVENT, CTRL_C_EVENT, GenerateConsoleCtrlEvent,
-    };
-    let pid = pane.pty.child_pid().ok_or_else(|| {
-        DeliverErr::Internal("pane has no child PID (child may have exited)".into())
-    })?;
-    let event = match kind {
-        WinSig::CtrlC => CTRL_C_EVENT,
-        WinSig::CtrlBreak => CTRL_BREAK_EVENT,
+    let byte: u8 = match kind {
+        WinSig::CtrlC => 0x03,
+        WinSig::CtrlBreak => 0x1c,
         WinSig::Terminate => unreachable!("Terminate routed elsewhere"),
     };
-    // SAFETY: GenerateConsoleCtrlEvent is a Win32 syscall; passing a known
-    // event id + a u32 process-group id is the documented contract.
-    #[allow(unsafe_code)]
-    let ok = unsafe { GenerateConsoleCtrlEvent(event, pid) };
-    if ok == 0 {
-        return Err(DeliverErr::Internal(format!(
-            "GenerateConsoleCtrlEvent failed for pid {pid}"
-        )));
-    }
-    Ok(())
+    pane.pty.write_input(&[byte]).map_err(|e| {
+        DeliverErr::Internal(format!("write interrupt byte to pseudoconsole input: {e}"))
+    })
 }
 
 #[cfg(windows)]

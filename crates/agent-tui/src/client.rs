@@ -131,6 +131,18 @@ fn spawn_daemon(layout: &SocketLayout, lazy_spawn: &LazySpawnConfig) -> Result<(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // On Windows, isolate the lazily-spawned daemon from the client's console so
+    // a console-wide CTRL_C_EVENT (the client's own Ctrl-C) does not also kill
+    // the daemon. CREATE_NEW_PROCESS_GROUP gives it a fresh process group and
+    // DETACHED_PROCESS detaches it from the caller's console — the Windows analog
+    // of the Unix daemon landing in a different process group. (`creation_flags`
+    // is an inherent method on `tokio::process::Command` for Windows.)
+    #[cfg(windows)]
+    {
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
     let _child = cmd.spawn().context("spawn daemon")?;
     Ok(())
 }
