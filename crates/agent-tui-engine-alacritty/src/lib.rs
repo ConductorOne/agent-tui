@@ -74,8 +74,10 @@ struct TermEvents {
 }
 
 /// Listener installed in the `Term`; forwards the events agents care about
-/// into the shared [`TermEvents`] sink and drops the rest (`PtyWrite`,
-/// clipboard, …) — the daemon polls `snapshot`/`subscribe` for state.
+/// into the shared [`TermEvents`] sink — bell/title for state, and `PtyWrite`
+/// (DSR/DA/KKP replies) so the daemon can write them back to the PTY — and
+/// drops the rest (clipboard, …). The daemon polls `snapshot`/`subscribe` for
+/// state and drains `take_pty_writes` after each feed.
 #[derive(Clone, Default)]
 struct EventProxy(Arc<TermEvents>);
 

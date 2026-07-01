@@ -636,7 +636,10 @@ impl PtyChild {
                     let _ = killer;
                     match self.child_pid() {
                         Some(pid) => kill_tree_windows(pid),
-                        None => Ok(()),
+                        // A missing pid means the child mutex is poisoned; we
+                        // can't confirm a kill, so surface an error rather than
+                        // report a false `killed: true`.
+                        None => Err(anyhow!("cannot resolve child pid to kill")),
                     }
                 }
                 #[cfg(not(windows))]
@@ -1107,7 +1110,12 @@ fn kill_tree_windows(pid: u32) -> Result<()> {
     use std::process::{Command, Stdio};
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const TASKKILL_NOT_FOUND: i32 = 128; // taskkill exit code when PID already gone
-    let status = Command::new("taskkill")
+    // Resolve taskkill by absolute path so a sanitized/relocated PATH can't
+    // break teardown; fall back to the bare name if %SystemRoot% is unset.
+    let taskkill = std::env::var("SystemRoot")
+        .map(|root| format!("{root}\\System32\\taskkill.exe"))
+        .unwrap_or_else(|_| "taskkill.exe".to_string());
+    let status = Command::new(taskkill)
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
@@ -1161,12 +1169,17 @@ fn pty_reader_loop(
                         break;
                     };
                     let r = engine.feed(&buf[..n]);
-                    if r.is_ok()
-                        && let Ok(mut ring) = output_buf.lock()
-                    {
+                    if r.is_ok() {
+                        // Drain terminal→host replies unconditionally on a
+                        // successful feed — the child-unblocking handshake must
+                        // not be gated on the output ring's health (a poisoned
+                        // `output_buf` lock would otherwise strand the reply and
+                        // wedge the child on its startup `ESC[6n`).
                         pty_writes = engine.take_pty_writes();
-                        ring.push(&buf[..n]);
-                        new_total = Some(ring.total);
+                        if let Ok(mut ring) = output_buf.lock() {
+                            ring.push(&buf[..n]);
+                            new_total = Some(ring.total);
+                        }
                     }
                     r
                 };
