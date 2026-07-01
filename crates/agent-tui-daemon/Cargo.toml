@@ -73,4 +73,12 @@ rustix = { version = "1.1", features = ["fs", "pipe", "pty"] }
 # owner-death watch (server::parent_pid_monitor). SIGINT/SIGBREAK are delivered
 # by writing ETX/FS to the ConPTY input (handlers::signal) and SIGTERM/SIGKILL
 # via the taskkill descendant-tree kill (pty.rs), so no Console feature is needed.
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
+# CreatePipe (Win32_System_Pipes, itself gated on Win32_Security for the
+# SECURITY_ATTRIBUTES parameter type) backs the headless run/ask/edit spawn
+# (pty::spawn_headless_windows): plain non-ConPTY pipes on stdin + stdout/stderr.
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_Security",
+] }

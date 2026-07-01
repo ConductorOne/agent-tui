@@ -208,17 +208,7 @@ impl PtyChild {
         if argv.is_empty() {
             return Err(anyhow!("argv must be non-empty"));
         }
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("openpty")?;
-
-        // **Normalize LINES + COLUMNS to match the PTY we just allocated.**
+        // **Normalize LINES + COLUMNS to match the PTY we allocate below.**
         //
         // ncurses-based programs (tig, mc, dialog, …) read `LINES` and
         // `COLUMNS` from the environment first and only fall back to
@@ -254,6 +244,26 @@ impl PtyChild {
         ];
         env_overrides.extend(env.iter().cloned());
 
+        // Windows: `run`/`ask`/`edit` (Pipe/Closed) are subprocess-as-data — no
+        // TUI, output is ANSI-stripped by `tail`. Dispatch them to a plain
+        // (non-pseudoconsole) spawn BEFORE allocating a ConPTY, so no conhost is
+        // created and cooked ConPTY input echo can't corrupt the captured
+        // stdout. The interactive `Pty` path below still uses the real ConPTY.
+        #[cfg(windows)]
+        if matches!(stdin_mode, StdinMode::Pipe | StdinMode::Closed) {
+            return spawn_headless_windows(argv, cwd, &env_overrides, engine, recorder, stdin_mode);
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("openpty")?;
+
         let (child, stdin_pipe): (Box<dyn Child + Send + Sync>, Option<std::fs::File>) =
             match stdin_mode {
                 StdinMode::Pty => {
@@ -284,11 +294,12 @@ impl PtyChild {
                     // slave fd isn't exposed by portable-pty's trait — we
                     // re-derive it via ptsname().
                     //
-                    // Windows: the custom-stdin path is Unix-only because it
-                    // uses ptsname + dup + setsid. On Windows the spawn
-                    // returns an error pointing at the limitation; the
-                    // Windows port will land separately (see
-                    // `docs/design/windows-strategy.md`).
+                    // Unix custom-stdin path: pipe/`/dev/null` on stdin while
+                    // stdout/stderr stay on the slave PTY (uses ptsname + dup +
+                    // setsid). Windows never reaches this arm — Pipe/Closed are
+                    // dispatched to `spawn_headless_windows` above before the
+                    // ConPTY is allocated — but the arm still needs a body for
+                    // match exhaustiveness on every non-unix target.
                     #[cfg(unix)]
                     {
                         spawn_with_custom_stdin(
@@ -303,7 +314,7 @@ impl PtyChild {
                     {
                         let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
                         return Err(anyhow!(
-                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/design/windows-strategy.md",
+                            "stdin mode {:?} requires Unix or Windows (Windows uses the headless spawn path)",
                             stdin_mode
                         ));
                     }
@@ -1166,6 +1177,245 @@ fn signal_name_to_num(name: &str) -> Option<u32> {
 #[cfg(not(unix))]
 fn signal_name_to_num(_name: &str) -> Option<u32> {
     None
+}
+
+/// Windows headless spawn for `run`/`ask`/`edit` — a plain (non-pseudoconsole)
+/// child, the Windows analog of the Unix [`spawn_with_custom_stdin`] path.
+///
+/// These verbs are "subprocess-as-data": no TUI, and `tail` ANSI-strips the
+/// output. A `ConPTY` would be *wrong* here — it echoes cooked stdin back onto
+/// stdout (doubling captured input) and reports `isatty(0)=true`. A plain spawn
+/// instead yields `isatty(0)=false` (real headless stdin), a genuine pipe EOF
+/// when we close the write end, and no stdin→stdout echo.
+///
+/// Handle plumbing mirrors the Unix CLOEXEC-pipe design:
+///  * stdout **and** stderr share ONE anonymous pipe (write end given to both),
+///    so their bytes interleave in a single ordered stream, exactly like the
+///    Unix `slave_out`/`slave_err` dup of one slave PTY.
+///  * stdin is a plain pipe (`Pipe`, write end retained as `stdin_pipe`) or the
+///    `NUL` device (`Closed`, via `Stdio::null()`).
+///  * every pipe end is created NON-inheritable ([`anon_pipe`]); `std::process`
+///    makes inheritable duplicates of only the specific stdio handles under its
+///    own inheritance lock, so the ends we retain never leak into the child —
+///    dropping our retained stdin write end therefore EOFs the child, just as
+///    dropping the write end of a CLOEXEC pipe does on Unix.
+///
+/// The resulting [`PtyChild`] has an inert [`ClosedMaster`] (headless panes are
+/// never resized) and an `io::sink` writer (input flows through `stdin_pipe`,
+/// not the PTY writer); output is driven by the same [`pty_reader_loop`] the
+/// `ConPTY` and adopt paths use, so the ring / engine / `reader_done` semantics —
+/// and thus `tail`, `wait --exit`, and exit-code fidelity — are identical.
+#[cfg(windows)]
+#[allow(clippy::too_many_lines)]
+fn spawn_headless_windows(
+    argv: &[String],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    engine: Arc<dyn Engine>,
+    recorder: Option<Recorder>,
+    stdin_mode: StdinMode,
+) -> Result<PtyChild> {
+    use std::process::Stdio;
+
+    // stdout+stderr: ONE pipe, its write end handed to both fds so ordering is
+    // preserved in a single stream. We keep the read end for the reader task.
+    let (out_read, out_write) = anon_pipe().context("create stdout/stderr pipe")?;
+    let out_write_err = out_write
+        .try_clone()
+        .context("dup stdout write end for stderr")?;
+
+    // stdin: real pipe (Pipe) or NUL (Closed). Either way isatty(0)=false and a
+    // real EOF reaches the child (drop the write end / NUL reads 0 immediately).
+    let (stdin_stdio, stdin_pipe): (Stdio, Option<std::fs::File>) = match stdin_mode {
+        StdinMode::Pipe => {
+            let (child_read, parent_write) = anon_pipe().context("create stdin pipe")?;
+            (Stdio::from(child_read), Some(parent_write))
+        }
+        StdinMode::Closed => (Stdio::null(), None),
+        StdinMode::Pty => unreachable!("Pty stdin uses the ConPTY path, not the headless spawn"),
+    };
+
+    let mut cmd = std::process::Command::new(&argv[0]);
+    for arg in &argv[1..] {
+        cmd.arg(arg);
+    }
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(stdin_stdio);
+    // `Stdio::from(File)` transfers ownership; std spawns an *inheritable* dup
+    // for the child and closes our (non-inheritable) original with `cmd`.
+    cmd.stdout(Stdio::from(out_write));
+    cmd.stderr(Stdio::from(out_write_err));
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawn headless child: {}", argv[0]))?;
+    // `cmd` — and the parent-side stdio originals it still owns — drops at the
+    // end of this function, leaving the child holding the only write ends, so
+    // `out_read` EOFs once the child (and any grandchild it passed stdout to)
+    // exits. Until then the child is alive holding the write ends, so the reader
+    // can never see a premature EOF.
+
+    let reader: Box<dyn Read + Send> = Box::new(out_read);
+    let child_boxed: Box<dyn Child + Send + Sync> = Box::new(WindowsChildShim::new(child));
+    let killer = child_boxed.clone_killer();
+
+    // Input goes through `stdin_pipe`, never the PTY writer, so the writer is an
+    // inert sink. A headless pipe child isn't a tty and won't emit terminal→host
+    // queries (DSR &c.); any the engine did synthesize have nowhere to go and
+    // are harmlessly swallowed here (there is no back-channel to the child's
+    // stdin, and mixing them in would corrupt the caller's input stream).
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>));
+    let reader_writer = writer.clone();
+
+    let reader_engine = engine;
+    let reader_recorder = recorder.clone();
+    let first_bytes = Arc::new(Mutex::new(FirstBytes::default()));
+    let reader_first_bytes = first_bytes.clone();
+    let last_osc133 = Arc::new(Mutex::new(None));
+    let reader_osc133 = last_osc133.clone();
+    let output_buf = Arc::new(Mutex::new(OutputRing::default()));
+    let reader_output_buf = output_buf.clone();
+    let capture_lock = Arc::new(Mutex::new(()));
+    let reader_capture_lock = capture_lock.clone();
+    let reader_done = Arc::new(AtomicBool::new(false));
+    let reader_done_signal = reader_done.clone();
+    let (output_tx, _output_rx) = watch::channel(0u64);
+    let reader_output_tx = output_tx.clone();
+    let last_output = Arc::new(Mutex::new(None));
+    let reader_last_output = last_output.clone();
+    let reader_handle = tokio::task::spawn_blocking(move || {
+        pty_reader_loop(
+            reader,
+            &reader_engine,
+            reader_recorder.as_ref(),
+            &reader_first_bytes,
+            &reader_osc133,
+            &reader_output_buf,
+            &reader_capture_lock,
+            &reader_output_tx,
+            &reader_last_output,
+            &reader_writer,
+        );
+        reader_done_signal.store(true, Ordering::Release);
+    });
+
+    Ok(PtyChild {
+        // Inert master: headless panes are never resized (resize is a no-op).
+        master: MasterEnd::Portable(Mutex::new(
+            Box::new(ClosedMaster) as Box<dyn MasterPty + Send>,
+        )),
+        writer,
+        stdin_pipe: Mutex::new(stdin_pipe),
+        stdin_mode,
+        output_buf,
+        capture_lock,
+        child: ChildEnd::Portable {
+            child: Mutex::new(child_boxed),
+            killer: Mutex::new(killer),
+        },
+        reader: Mutex::new(Some(reader_handle)),
+        recorder,
+        first_bytes,
+        last_osc133,
+        reader_done,
+        output_tx,
+        last_output,
+    })
+}
+
+/// Create an anonymous byte pipe with both ends **non-inheritable** (the
+/// Windows analog of a CLOEXEC pipe). `std::process` makes inheritable
+/// duplicates of only the specific stdio handles it is handed, under its own
+/// inheritance lock, so the ends we retain here never leak into the child.
+///
+/// Returns `(read_end, write_end)` as `std::fs::File`s (each `CloseHandle`s on
+/// drop). `File::read` maps `ERROR_BROKEN_PIPE` to `Ok(0)`, so the read end
+/// EOFs cleanly for [`pty_reader_loop`] once every write end has closed.
+#[cfg(windows)]
+fn anon_pipe() -> Result<(std::fs::File, std::fs::File)> {
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    let mut read: HANDLE = std::ptr::null_mut();
+    let mut write: HANDLE = std::ptr::null_mut();
+    // Null security attributes ⇒ default, non-inheritable pipe ends.
+    #[allow(unsafe_code)]
+    let ok = unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error()).context("CreatePipe");
+    }
+    // SAFETY: CreatePipe just handed us two fresh, exclusively-owned pipe
+    // handles; wrap each in a File that owns it (CloseHandle on drop). `HANDLE`
+    // and `RawHandle` are both `*mut c_void`.
+    #[allow(unsafe_code)]
+    let read_file = unsafe { std::fs::File::from_raw_handle(read as RawHandle) };
+    #[allow(unsafe_code)]
+    let write_file = unsafe { std::fs::File::from_raw_handle(write as RawHandle) };
+    Ok((read_file, write_file))
+}
+
+/// Wraps a `std::process::Child` so it satisfies portable-pty's `Child` +
+/// `ChildKiller` traits for the Windows headless spawn path. Mirrors the Unix
+/// [`StdChildShim`], plus the Windows-only `Child::as_raw_handle`. Exit status
+/// is mapped through `portable_pty::ExitStatus::from` (Windows: real numeric
+/// exit code, no signal), so `shell_exit_code` reports the faithful code and
+/// `run` returns it (e.g. `exit 7` → 7).
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsChildShim {
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
+}
+
+#[cfg(windows)]
+impl WindowsChildShim {
+    fn new(c: std::process::Child) -> Self {
+        Self {
+            child: std::sync::Arc::new(std::sync::Mutex::new(c)),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl portable_pty::Child for WindowsChildShim {
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        Ok(g.try_wait()?.map(portable_pty::ExitStatus::from))
+    }
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        Ok(portable_pty::ExitStatus::from(g.wait()?))
+    }
+    fn process_id(&self) -> Option<u32> {
+        let g = self.child.lock().expect("child mutex poisoned");
+        Some(g.id())
+    }
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        use std::os::windows::io::AsRawHandle;
+        let g = self.child.lock().expect("child mutex poisoned");
+        // Disambiguate: `std::process::Child` also carries portable-pty's own
+        // `Child::as_raw_handle`; we want the OS process handle.
+        Some(AsRawHandle::as_raw_handle(&*g))
+    }
+}
+
+#[cfg(windows)]
+impl portable_pty::ChildKiller for WindowsChildShim {
+    fn kill(&mut self) -> std::io::Result<()> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        g.kill()
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(Self {
+            child: self.child.clone(),
+        })
+    }
 }
 
 /// Windows force-kill of `pid` and its entire descendant tree via `taskkill
