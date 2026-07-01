@@ -492,6 +492,8 @@ async fn adopt_one(state: &DaemonState, p: &PaneHandoff) -> anyhow::Result<()> {
         adapter: tokio::sync::RwLock::new(adapter),
         lease: std::sync::Mutex::new(lease),
         last_exit: std::sync::Mutex::new(p.last_exit),
+        #[cfg(windows)]
+        exit_observed_at: std::sync::Mutex::new(None),
     };
 
     let counter = p

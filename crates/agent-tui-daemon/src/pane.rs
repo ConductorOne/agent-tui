@@ -16,19 +16,24 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::pty::PtyChild;
 
-/// Quiet-period a streaming verb waits after the child exits before treating
-/// the output ring as fully drained, when the reader thread hasn't reported EOF.
+/// Grace window a streaming verb waits **after first observing the child's
+/// exit** before treating the output ring as fully drained, when the reader
+/// thread hasn't reported EOF.
 ///
 /// This backs the Windows-ConPTY branch of [`Pane::exit_drained`]: the daemon
 /// holds the ConPTY master for the pane's life, so conhost keeps the output
 /// pipe's write end open and the blocking reader never observes EOF (so
-/// [`PtyChild::reader_finished`] never flips). ConPTY emits nothing after the
-/// child exits, so `last_output_ms_ago` only grows; once it passes this grace
-/// the ring is settled. Sized at ~3× the server's 50ms `STREAM_IDLE_TICK`:
-/// long enough for conhost to flush a child's final output, short enough to
-/// keep `events` / `tail --follow` responsive at child exit. On Unix the grace
-/// is never consulted — `reader_finished()` flips the instant the child exits.
-const DRAIN_GRACE_MS: u64 = 150;
+/// [`PtyChild::reader_finished`] never flips). Measured from exit-observed (not
+/// from last output), this gives the reader the full window after the child
+/// exits to push its trailing bytes into the ring before the stream emits its
+/// terminal event — so a fast child that wrote output then exited is not
+/// reported drained before those bytes are read. Sized at ~3× the server's
+/// 50ms `STREAM_IDLE_TICK`: long enough for conhost to flush a child's final
+/// output, short enough to keep `events` / `tail --follow` responsive at child
+/// exit. On Unix the grace is never consulted — `reader_finished()` flips the
+/// instant the child exits and the gate is `poll_exit && reader_finished`.
+#[cfg(windows)]
+const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// One PTY-backed pane: an engine driven by output from a child process.
 pub struct Pane {
@@ -59,6 +64,16 @@ pub struct Pane {
     /// or `list`), making a terminal pane **retained**: late observers and
     /// `list` read the remembered outcome instead of "no such pane".
     pub(crate) last_exit: std::sync::Mutex<Option<i32>>,
+    /// Instant the child's exit was **first observed** by [`exit_drained`].
+    /// `None` until then. On Windows this anchors the [`DRAIN_GRACE`] window so
+    /// the reader is given the full grace after exit to flush trailing bytes
+    /// (rather than measuring the grace from the last output chunk, which drops
+    /// output when a fast child writes-then-exits before the reader's first
+    /// push). Never consulted on Unix.
+    ///
+    /// [`exit_drained`]: Pane::exit_drained
+    #[cfg(windows)]
+    pub(crate) exit_observed_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl Pane {
@@ -105,25 +120,45 @@ impl Pane {
     /// trailing byte is settled in the output ring, so the stream can emit its
     /// terminal event (`child_exited` / `eof`) without dropping final output.
     ///
-    /// "Settled" is satisfied either by the reader thread observing EOF
+    /// "Settled" is satisfied by the reader thread observing EOF
     /// ([`PtyChild::reader_finished`]) — the normal Unix case, where closing the
-    /// slave EOFs the master the instant the child exits — **or** by the pane
-    /// going quiet for [`DRAIN_GRACE_MS`]. The grace branch exists for Windows
-    /// ConPTY, where the daemon-held master keeps conhost's output-pipe write
-    /// end open so the blocking reader never sees EOF: ConPTY emits nothing
-    /// after the child exits, so `last_output_ms_ago` only grows and, once past
-    /// the grace, the ring is fully flushed. `last_output_ms_ago() == None`
-    /// (child produced no output at all) also drains immediately — there is
-    /// nothing to wait for. On Unix `reader_finished()` flips first, so the
-    /// grace branch is never reached and behavior is byte-for-byte unchanged.
+    /// slave EOFs the master the instant the child exits. On Windows, where the
+    /// daemon-held ConPTY master keeps conhost's output-pipe write end open so
+    /// the blocking reader never sees EOF (`reader_finished()` never flips
+    /// before `close_master`), settling is *also* satisfied by [`DRAIN_GRACE`]
+    /// elapsing since the exit was **first observed** — giving the reader the
+    /// full grace window after exit to push its trailing bytes.
+    ///
+    /// The grace is Windows-only, so on Unix the gate stays exactly
+    /// `poll_exit && reader_finished`: a grandchild holding the slave PTY open
+    /// keeps the follow alive until real close, byte-for-byte as before.
     #[must_use]
     pub fn exit_drained(&self) -> bool {
-        self.poll_exit().is_some()
-            && (self.pty.reader_finished()
-                || self
-                    .pty
-                    .last_output_ms_ago()
-                    .map_or(true, |ms| ms > DRAIN_GRACE_MS))
+        if self.poll_exit().is_none() {
+            return false;
+        }
+        #[cfg(not(windows))]
+        {
+            // Unix: the historical gate, unchanged. `reader_finished()` flips
+            // the instant the master EOFs on full PTY close.
+            self.pty.reader_finished()
+        }
+        #[cfg(windows)]
+        {
+            if self.pty.reader_finished() {
+                return true;
+            }
+            // Record the Instant the exit was first observed (idempotent), so
+            // the grace is measured from exit-observed rather than last output.
+            let observed_at = {
+                let mut slot = self
+                    .exit_observed_at
+                    .lock()
+                    .expect("exit_observed_at poisoned");
+                *slot.get_or_insert_with(std::time::Instant::now)
+            };
+            observed_at.elapsed() >= DRAIN_GRACE
+        }
     }
 
     /// Swap in a new adapter; returns the previous one.

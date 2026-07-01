@@ -1351,9 +1351,13 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
 ///
 ///  - Unix: polls `kill(pid, 0)` — success while the process exists, `ESRCH`
 ///    (or `EPERM`) once it is gone.
-///  - Windows: holds a SYNCHRONIZE handle via `OpenProcess` and blocks on
-///    `WaitForSingleObject(handle, 500)`, which signals the moment the parent
-///    process exits (a null handle is treated as already-dead).
+///  - Windows: holds a SYNCHRONIZE handle via `OpenProcess` and polls it with a
+///    non-blocking `WaitForSingleObject(handle, 0)` on the same 500ms cadence,
+///    yielding to the runtime between probes and returning early on external
+///    shutdown (a null handle is treated as already-dead). The probe must not
+///    block — a blocking `WaitForSingleObject(handle, 500)` would pin a tokio
+///    worker thread so the runtime-drop's blocking-pool join hangs the daemon
+///    on any non-parent-death shutdown (idle timeout / `daemon shutdown`).
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
     #[cfg(unix)]
@@ -1376,13 +1380,14 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
     #[cfg(windows)]
     {
         // Windows analog of the `kill(pid, 0)` poll: hold a SYNCHRONIZE handle
-        // to the parent and wait on it. `WaitForSingleObject` returns
-        // WAIT_OBJECT_0 the instant the process object is signaled (the parent
-        // exited). A null handle means we cannot even open it (already gone, or
-        // unreadable) → treat as owner death. The 500ms wait keeps the same
-        // cadence as the Unix poll so a shutdown fired elsewhere is still
-        // observed promptly (this task is not otherwise cancellable).
-        use windows_sys::Win32::Foundation::{CloseHandle, FALSE, WAIT_OBJECT_0};
+        // to the parent and probe it with a *non-blocking*
+        // `WaitForSingleObject(handle, 0)` on a 500ms cadence, yielding to the
+        // runtime via `tokio::time::sleep(..).await` between probes. A null
+        // handle means we cannot even open it (already gone, or unreadable) →
+        // treat as owner death. The select! also listens on `shutdown` so an
+        // externally-fired shutdown returns promptly and releases the handle,
+        // instead of pinning a worker thread in a blocking wait.
+        use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
         };
@@ -1402,23 +1407,42 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
             shutdown.notify_waiters();
             return;
         }
+        // Hold the handle as an address (`usize` is `Send`) so it can live
+        // across the `.await` below; the raw `HANDLE` pointer is `!Send`, which
+        // would make this task's future non-`Send` and thus unspawnable. Cast
+        // back to `HANDLE` for each syscall.
+        let handle_addr = handle as usize;
         loop {
-            // SAFETY: `handle` is a valid open process handle until CloseHandle.
+            tokio::select! {
+                // External shutdown (idle timeout / `daemon shutdown` / `die`):
+                // stop polling, release the handle, and let the runtime drop
+                // this task cleanly.
+                () = shutdown.notified() => {
+                    // SAFETY: releasing the handle we opened above.
+                    #[allow(unsafe_code)]
+                    unsafe { CloseHandle(handle_addr as HANDLE) };
+                    return;
+                }
+                // Yielding wait keeps the same 500ms cadence as the Unix poll
+                // without pinning a worker thread.
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+            // Non-blocking parent-liveness probe (0ms timeout): WAIT_OBJECT_0
+            // iff the parent's process object is signaled (it exited).
+            // SAFETY: the handle is valid until we CloseHandle it below.
             #[allow(unsafe_code)]
-            let rc = unsafe { WaitForSingleObject(handle, 500) };
+            let rc = unsafe { WaitForSingleObject(handle_addr as HANDLE, 0) };
             if rc == WAIT_OBJECT_0 {
                 info!(monitor_parent = pid, "parent exited; shutting down daemon");
                 shutdown.notify_waiters();
-                break;
+                // SAFETY: releasing the handle we opened above.
+                #[allow(unsafe_code)]
+                unsafe { CloseHandle(handle_addr as HANDLE) };
+                return;
             }
             // WAIT_TIMEOUT → still alive, poll again. Any other status
             // (WAIT_FAILED / WAIT_ABANDONED) is treated conservatively as
             // still-alive; the next iteration re-checks.
-        }
-        // SAFETY: releasing the handle we opened above.
-        #[allow(unsafe_code)]
-        unsafe {
-            CloseHandle(handle);
         }
     }
     #[cfg(not(any(unix, windows)))]

@@ -142,6 +142,21 @@ fn spawn_daemon(layout: &SocketLayout, lazy_spawn: &LazySpawnConfig) -> Result<(
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+
+        // Also stop the DETACHED daemon from inheriting the client's own std
+        // handles. Rust's std `Command::spawn` calls CreateProcess with
+        // bInheritHandles=TRUE, so the child inherits *every* inheritable handle
+        // this process holds — including our stdout when it is a pipe
+        // (`agent-tui run ... | consumer`). We already redirect the daemon's own
+        // stdio to NUL above, but the *inherited* pipe write-end is a separate,
+        // still-open handle: because the daemon is long-lived (idle-timeout
+        // backstop, minutes) the pipe never EOFs and the consumer blocks
+        // forever. File redirection is unaffected (a file reads EOF regardless
+        // of extra open write handles), which matches the observed symptom. On
+        // Unix the equivalent leak can't happen: the null `dup2` closes the
+        // client's fd in the child. (The `unsafe` `SetHandleInformation` lives
+        // in agent-tui-daemon, since this crate is `#![forbid(unsafe_code)]`.)
+        agent_tui_daemon::deny_std_handle_inheritance();
     }
     let _child = cmd.spawn().context("spawn daemon")?;
     Ok(())

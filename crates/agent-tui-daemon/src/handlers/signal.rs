@@ -173,8 +173,24 @@ fn parse_win_signal(s: &str) -> Result<WinSig, String> {
 ///
 /// SIGINT → ETX (`0x03`, Ctrl-C); SIGQUIT / SIGBREAK → FS (`0x1c`, Ctrl-\),
 /// best-effort (some line disciplines ignore it).
+///
+/// Only interactive (`StdinMode::Pty`) panes have a ConPTY input to write to.
+/// Headless run/ask/edit panes (`Pipe`/`Closed`) have `writer = io::sink()`, so
+/// `write_input` would *succeed while discarding the byte* — reporting success
+/// while delivering nothing. We reject those up front with an honest error
+/// instead.
 #[cfg(windows)]
 fn deliver_ctrl_event(pane: &Pane, kind: WinSig) -> Result<(), DeliverErr> {
+    use agent_tui_protocol::request::StdinMode;
+
+    if pane.pty.stdin_mode() != StdinMode::Pty {
+        return Err(DeliverErr::InvalidArgs(
+            "cannot deliver a console interrupt (SIGINT/SIGBREAK) to a headless \
+             run/ask/edit pane: it has no console input. Use `signal SIGTERM` \
+             or `die` to stop it, or spawn an interactive pane."
+                .to_string(),
+        ));
+    }
     let byte: u8 = match kind {
         WinSig::CtrlC => 0x03,
         WinSig::CtrlBreak => 0x1c,
