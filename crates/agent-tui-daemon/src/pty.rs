@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 /// `Send + Sync` for storage inside `Arc<Pane>`.
 pub struct PtyChild {
     master: MasterEnd,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Separate write end of the child's stdin when `stdin_mode == Pipe`.
     /// `None` for `Pty` (writes go through `writer`) and `Closed` (stdin
     /// is /dev/null, no writer at all).
@@ -315,7 +315,9 @@ impl PtyChild {
         // master read loop sees EOF instead of hanging.
         drop(pair.slave);
 
-        let writer = pair.master.take_writer().context("take_writer")?;
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(pair.master.take_writer().context("take_writer")?));
+        let reader_writer = writer.clone();
         let reader = pair.master.try_clone_reader().context("clone_reader")?;
 
         let reader_engine = engine;
@@ -348,6 +350,7 @@ impl PtyChild {
                 &reader_capture_lock,
                 &reader_output_tx,
                 &reader_last_output,
+                &reader_writer,
             );
             // Reader saw EOF/error and is exiting: every byte the child
             // wrote is now in the output ring. Publish *after* the loop so
@@ -358,7 +361,7 @@ impl PtyChild {
 
         Ok(Self {
             master: MasterEnd::Portable(Mutex::new(pair.master)),
-            writer: Mutex::new(writer),
+            writer,
             stdin_pipe: Mutex::new(stdin_pipe),
             stdin_mode,
             output_buf,
@@ -414,7 +417,11 @@ impl PtyChild {
         let reader_fd = dup_owned(&owned)?;
         let writer_fd = dup_owned(&owned)?;
         let reader: Box<dyn Read + Send> = Box::new(std::fs::File::from(reader_fd));
-        let writer: Box<dyn Write + Send> = Box::new(std::fs::File::from(writer_fd));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(
+            std::fs::File::from(writer_fd),
+        )
+            as Box<dyn Write + Send>));
+        let reader_writer = writer.clone();
 
         let reader_engine = engine;
         let reader_recorder = recorder.clone();
@@ -447,13 +454,14 @@ impl PtyChild {
                 &reader_capture_lock,
                 &reader_output_tx,
                 &reader_last_output,
+                &reader_writer,
             );
             reader_done_signal.store(true, Ordering::Release);
         });
 
         Ok(Self {
             master: MasterEnd::Adopted(Mutex::new(owned)),
-            writer: Mutex::new(writer),
+            writer,
             // The original stdin pipe (if any) did not survive the exec; an
             // adopted pane writes input through the PTY master like `Pty` mode.
             stdin_pipe: Mutex::new(None),
@@ -618,9 +626,25 @@ impl PtyChild {
     pub fn kill(&self) -> Result<()> {
         match &self.child {
             ChildEnd::Portable { killer, .. } => {
-                let mut k = killer.lock().map_err(|e| anyhow!("killer poisoned: {e}"))?;
-                k.kill().context("kill child")?;
-                Ok(())
+                #[cfg(windows)]
+                {
+                    // portable-pty 0.9's Windows ChildKiller::kill() is unusable:
+                    // it inverts the TerminateProcess success BOOL and only kills
+                    // the direct child, orphaning the ConPTY host and any forked
+                    // grandchildren. Kill the whole descendant tree by PID — the
+                    // Windows analog of the Unix killpg teardown.
+                    let _ = killer;
+                    match self.child_pid() {
+                        Some(pid) => kill_tree_windows(pid),
+                        None => Ok(()),
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let mut k = killer.lock().map_err(|e| anyhow!("killer poisoned: {e}"))?;
+                    k.kill().context("kill child")?;
+                    Ok(())
+                }
             }
             #[cfg(unix)]
             ChildEnd::Adopted { pid, .. } => {
@@ -1073,6 +1097,31 @@ fn signal_name_to_num(_name: &str) -> Option<u32> {
     None
 }
 
+/// Windows force-kill of `pid` and its entire descendant tree via `taskkill
+/// /F /T`. portable-pty's Windows ChildKiller can't be used (inverts the
+/// TerminateProcess BOOL and only kills the direct child). `taskkill /T`
+/// reaps forked subprocesses the way `killpg` does on Unix. Dependency-free.
+#[cfg(windows)]
+fn kill_tree_windows(pid: u32) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const TASKKILL_NOT_FOUND: i32 = 128; // taskkill exit code when PID already gone
+    let status = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("spawn taskkill")?;
+    if status.success() || status.code() == Some(TASKKILL_NOT_FOUND) {
+        Ok(())
+    } else {
+        Err(anyhow!("taskkill /F /T /PID {pid} exited with {status}"))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pty_reader_loop(
     mut reader: Box<dyn Read + Send>,
@@ -1084,6 +1133,7 @@ fn pty_reader_loop(
     capture_lock: &Arc<Mutex<()>>,
     output_tx: &watch::Sender<u64>,
     last_output: &Arc<Mutex<Option<std::time::Instant>>>,
+    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
 ) {
     let mut buf = [0u8; 8192];
     let mut osc_scanner = crate::osc133::Scanner::new();
@@ -1100,6 +1150,12 @@ fn pty_reader_loop(
                 // capture lock, so an `attach` capture observes a consistent
                 // (rendered frame, high-water) pair — no byte falls between.
                 let mut new_total: Option<u64> = None;
+                // Terminal→host replies (DSR cursor reports, DA1/DA2, KKP)
+                // the engine produced while parsing this chunk. Drained under
+                // `capture_lock` but written back AFTER releasing it — and
+                // NOT teed to the recorder (protocol handshake, not agent
+                // input; recording it would desync `.cast` replay).
+                let mut pty_writes: Vec<u8> = Vec::new();
                 let feed_result = {
                     let Ok(_cap) = capture_lock.lock() else {
                         break;
@@ -1108,6 +1164,7 @@ fn pty_reader_loop(
                     if r.is_ok()
                         && let Ok(mut ring) = output_buf.lock()
                     {
+                        pty_writes = engine.take_pty_writes();
                         ring.push(&buf[..n]);
                         new_total = Some(ring.total);
                     }
@@ -1116,6 +1173,13 @@ fn pty_reader_loop(
                 if let Err(e) = feed_result {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
                     break;
+                }
+                if !pty_writes.is_empty() {
+                    if let Ok(mut w) = writer.lock() {
+                        if let Err(e) = w.write_all(&pty_writes).and_then(|()| w.flush()) {
+                            tracing::warn!(error = %e, "pty write-back failed");
+                        }
+                    }
                 }
                 // Wake any streaming followers as soon as the bytes are in the
                 // ring (outside the capture lock). `send_replace` never errors,
