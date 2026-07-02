@@ -7,6 +7,7 @@
 
 use std::io::ErrorKind;
 use std::path::Path;
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -106,60 +107,69 @@ fn spawn_daemon(layout: &SocketLayout, lazy_spawn: &LazySpawnConfig) -> Result<(
         .and_then(|s| s.to_str())
         .unwrap_or("default")
         .to_string();
-    let mut cmd = tokio::process::Command::new(exe);
-    cmd.arg("--session")
-        .arg(&session)
-        .arg("--socket-dir")
-        .arg(&layout.root);
-    // Forward governance settings to the lazily-spawned daemon child. The
-    // CLI's `--allowed-binaries` value lives on the *parent* invocation; copy
-    // the parsed value explicitly, falling back to the env-var binding clap
-    // declares for callers that configured policy through the environment.
-    if let Some(csv) = lazy_spawn.resolved_allowed_binaries() {
-        cmd.env("AGENT_TUI_ALLOWED_BINARIES", csv);
-    }
-    cmd.arg("daemon").arg("run");
-    // Opt-in parent-monitor. The CLI process is ephemeral — using
-    // *our* PID would shut the daemon down the instant the CLI's
-    // one-shot RPC finishes, breaking the whole "daemon outlives CLI"
-    // design. Tests (and any other long-lived parent) opt into the
-    // cleanup behavior by setting `AGENT_TUI_MONITOR_PARENT_PID` to
-    // a PID they control before the lazy-spawn fires.
+
+    // Shared argv. Globals (`--session`, `--socket-dir`) precede the subcommand;
+    // `--monitor-parent` is a `daemon run` flag.
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--session".into(),
+        session.into(),
+        "--socket-dir".into(),
+        layout.root.clone().into_os_string(),
+        "daemon".into(),
+        "run".into(),
+    ];
+    // Opt-in parent-monitor. The CLI process is ephemeral — using *our* PID
+    // would shut the daemon down the instant the CLI's one-shot RPC finishes,
+    // breaking the whole "daemon outlives CLI" design. Tests (and any other
+    // long-lived parent) opt into the cleanup behavior by setting
+    // `AGENT_TUI_MONITOR_PARENT_PID` to a PID they control before the lazy-spawn.
     if let Ok(pid) = std::env::var("AGENT_TUI_MONITOR_PARENT_PID") {
-        cmd.arg("--monitor-parent").arg(pid);
+        args.push("--monitor-parent".into());
+        args.push(pid.into());
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // On Windows, isolate the lazily-spawned daemon from the client's console so
-    // a console-wide CTRL_C_EVENT (the client's own Ctrl-C) does not also kill
-    // the daemon. CREATE_NEW_PROCESS_GROUP gives it a fresh process group and
-    // DETACHED_PROCESS detaches it from the caller's console — the Windows analog
-    // of the Unix daemon landing in a different process group. (`creation_flags`
-    // is an inherent method on `tokio::process::Command` for Windows.)
+
+    // Forward governance settings to the lazily-spawned daemon child. The CLI's
+    // `--allowed-binaries` value lives on the *parent* invocation; copy the
+    // parsed value explicitly, falling back to the env-var binding clap declares
+    // for callers that configured policy through the environment.
+    let mut env_overrides: Vec<(std::ffi::OsString, std::ffi::OsString)> = Vec::new();
+    if let Some(csv) = lazy_spawn.resolved_allowed_binaries() {
+        env_overrides.push((
+            std::ffi::OsString::from("AGENT_TUI_ALLOWED_BINARIES"),
+            std::ffi::OsString::from(csv),
+        ));
+    }
+
+    // On Windows, spawn the DETACHED daemon so it inherits ONLY three fresh NUL
+    // std handles — nothing else. A plain `Command::spawn` leaves
+    // `bInheritHandles = TRUE`; inside a `cmd.exe` pipeline (`run … | consumer`)
+    // that lets the long-lived daemon inherit and pin open a pipe handle cmd
+    // leaves in this process, so the consumer never sees EOF (a real hang).
+    // Stripping only our own std handles is insufficient — see
+    // `agent_tui_daemon::win_spawn`. The empty-but-for-NUL inherit allow-list
+    // also gives the daemon a fresh process group + no console (DETACHED), the
+    // Windows analog of the Unix daemon landing in its own process group.
     #[cfg(windows)]
     {
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-
-        // Also stop the DETACHED daemon from inheriting the client's own std
-        // handles. Rust's std `Command::spawn` calls CreateProcess with
-        // bInheritHandles=TRUE, so the child inherits *every* inheritable handle
-        // this process holds — including our stdout when it is a pipe
-        // (`agent-tui run ... | consumer`). We already redirect the daemon's own
-        // stdio to NUL above, but the *inherited* pipe write-end is a separate,
-        // still-open handle: because the daemon is long-lived (idle-timeout
-        // backstop, minutes) the pipe never EOFs and the consumer blocks
-        // forever. File redirection is unaffected (a file reads EOF regardless
-        // of extra open write handles), which matches the observed symptom. On
-        // Unix the equivalent leak can't happen: the null `dup2` closes the
-        // client's fd in the child. (The `unsafe` `SetHandleInformation` lives
-        // in agent-tui-daemon, since this crate is `#![forbid(unsafe_code)]`.)
-        agent_tui_daemon::deny_std_handle_inheritance();
+        agent_tui_daemon::win_spawn::spawn_detached_no_inherit(&exe, &args, &env_overrides)
+            .context("spawn daemon")
     }
-    let _child = cmd.spawn().context("spawn daemon")?;
-    Ok(())
+    // Elsewhere: redirect the daemon's stdio to null and spawn. The null `dup2`
+    // closes the client's fd in the child, so the pipe-inheritance leak the
+    // Windows path guards against cannot happen here.
+    #[cfg(not(windows))]
+    {
+        let mut cmd = tokio::process::Command::new(&exe);
+        cmd.args(&args);
+        for (k, v) in &env_overrides {
+            cmd.env(k, v);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _child = cmd.spawn().context("spawn daemon")?;
+        Ok(())
+    }
 }
 
 async fn wait_for_socket(layout: &SocketLayout, max_wait: Duration) -> Result<Stream> {

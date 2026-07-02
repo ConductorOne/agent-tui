@@ -2,14 +2,17 @@
 //!
 //! Delivers a UNIX-style signal to the pane's child:
 //!  - Unix: `killpg` to the process group so forwarded shell children get hit.
-//!  - Windows: interrupts (SIGINT / SIGQUIT / SIGBREAK) are delivered by writing
-//!    the corresponding control byte (ETX `0x03` / FS `0x1c`) into the
+//!  - Windows: SIGINT is delivered by writing ETX (`0x03`) into the
 //!    pseudoconsole INPUT via the master writer — the idiomatic ConPTY approach
-//!    used by Windows Terminal and wezterm. `GenerateConsoleCtrlEvent` does NOT
-//!    work here: the child runs on its own pseudoconsole and is not a
-//!    process-group root (portable-pty does not set `CREATE_NEW_PROCESS_GROUP`),
-//!    so the call always fails and delivers nothing. SIGTERM / SIGKILL use the
-//!    Windows descendant-tree kill in [`crate::pty::PtyChild::kill`].
+//!    used by Windows Terminal and wezterm (conhost translates the ETX byte into
+//!    a real `CTRL_C_EVENT` for the pane's console clients). SIGBREAK / SIGQUIT
+//!    (Ctrl-Break) is REJECTED with an honest error: no pseudoconsole input byte
+//!    is translated into a `CTRL_BREAK_EVENT` (conhost has no line discipline),
+//!    and `GenerateConsoleCtrlEvent` cannot reach the child — it runs on its own
+//!    pseudoconsole and is not a process-group root (portable-pty does not set
+//!    `CREATE_NEW_PROCESS_GROUP`). Writing FS `0x1c` (a former best-effort) is a
+//!    no-op on Windows, so we no longer report success for it. SIGTERM / SIGKILL
+//!    use the Windows descendant-tree kill in [`crate::pty::PtyChild::kill`].
 
 use std::sync::Arc;
 
@@ -122,7 +125,18 @@ fn parse_unix_signal(s: &str) -> Result<nix::sys::signal::Signal, String> {
 fn deliver(pane: &Pane, signal: &str) -> Result<(), DeliverErr> {
     let kind = parse_win_signal(signal).map_err(DeliverErr::InvalidArgs)?;
     match kind {
-        WinSig::CtrlC | WinSig::CtrlBreak => deliver_ctrl_event(pane, kind),
+        WinSig::CtrlC => deliver_interrupt(pane),
+        // Ctrl-Break has no honest delivery path to a ConPTY child (see the
+        // module doc): reject it rather than write a byte nothing consumes and
+        // then falsely report success.
+        WinSig::CtrlBreak => Err(DeliverErr::InvalidArgs(
+            "SIGBREAK/SIGQUIT (Ctrl-Break) cannot be delivered to a pane child on \
+             Windows: no pseudoconsole input byte is translated into a \
+             CTRL_BREAK_EVENT, and GenerateConsoleCtrlEvent cannot reach a child \
+             on its own pseudoconsole. Use `signal SIGINT` to interrupt, or \
+             `signal SIGTERM` / `die` to stop the pane."
+                .to_string(),
+        )),
         WinSig::Terminate => deliver_terminate(pane),
     }
 }
@@ -132,7 +146,9 @@ fn deliver(pane: &Pane, signal: &str) -> Result<(), DeliverErr> {
 enum WinSig {
     /// `SIGINT` / `2` → ETX (`0x03`) written to the ConPTY input.
     CtrlC,
-    /// `SIGBREAK` / `SIGQUIT` → FS (`0x1c`) written to the ConPTY input.
+    /// `SIGBREAK` / `SIGQUIT` → rejected on Windows with an honest error: no
+    /// pseudoconsole-input byte is translated into a `CTRL_BREAK_EVENT`. Still
+    /// parsed (so the name is recognized) but not deliverable.
     CtrlBreak,
     /// `SIGTERM` / `SIGKILL` / `15` / `9` → descendant-tree kill via `PtyChild::kill`.
     Terminate,
@@ -163,16 +179,19 @@ fn parse_win_signal(s: &str) -> Result<WinSig, String> {
     }
 }
 
-/// Deliver an interrupt to the ConPTY child by writing the control byte to the
-/// pseudoconsole INPUT via the existing master writer ([`crate::pty::PtyChild::write_input`]
-/// locks the ConPTY input) — the idiomatic ConPTY approach (how Windows Terminal
-/// and wezterm implement Ctrl-C). This replaces `GenerateConsoleCtrlEvent`, which
-/// cannot reach the child: it lives on a separate pseudoconsole and is not a
-/// process-group root (portable-pty does not pass `CREATE_NEW_PROCESS_GROUP`), so
-/// the console-ctrl call always fails and delivers nothing.
+/// Deliver SIGINT to the ConPTY child by writing ETX (`0x03`) to the
+/// pseudoconsole INPUT via the existing master writer
+/// ([`crate::pty::PtyChild::write_input`] locks the ConPTY input) — the idiomatic
+/// ConPTY approach (how Windows Terminal and wezterm implement Ctrl-C): conhost
+/// translates the ETX byte into a real `CTRL_C_EVENT` for the pane's console
+/// clients. Used instead of `GenerateConsoleCtrlEvent`, which cannot reach the
+/// child: it lives on a separate pseudoconsole and is not a process-group root
+/// (portable-pty does not pass `CREATE_NEW_PROCESS_GROUP`), so the console-ctrl
+/// call always fails and delivers nothing.
 ///
-/// SIGINT → ETX (`0x03`, Ctrl-C); SIGQUIT / SIGBREAK → FS (`0x1c`, Ctrl-\),
-/// best-effort (some line disciplines ignore it).
+/// SIGBREAK/SIGQUIT is NOT handled here — [`deliver`] rejects it with an honest
+/// error, because no pseudoconsole-input byte is translated into a
+/// `CTRL_BREAK_EVENT` (writing FS `0x1c` would be a silent no-op).
 ///
 /// Only interactive (`StdinMode::Pty`) panes have a ConPTY input to write to.
 /// Headless run/ask/edit panes (`Pipe`/`Closed`) have `writer = io::sink()`, so
@@ -180,23 +199,18 @@ fn parse_win_signal(s: &str) -> Result<WinSig, String> {
 /// while delivering nothing. We reject those up front with an honest error
 /// instead.
 #[cfg(windows)]
-fn deliver_ctrl_event(pane: &Pane, kind: WinSig) -> Result<(), DeliverErr> {
+fn deliver_interrupt(pane: &Pane) -> Result<(), DeliverErr> {
     use agent_tui_protocol::request::StdinMode;
 
     if pane.pty.stdin_mode() != StdinMode::Pty {
         return Err(DeliverErr::InvalidArgs(
-            "cannot deliver a console interrupt (SIGINT/SIGBREAK) to a headless \
+            "cannot deliver a console interrupt (SIGINT) to a headless \
              run/ask/edit pane: it has no console input. Use `signal SIGTERM` \
              or `die` to stop it, or spawn an interactive pane."
                 .to_string(),
         ));
     }
-    let byte: u8 = match kind {
-        WinSig::CtrlC => 0x03,
-        WinSig::CtrlBreak => 0x1c,
-        WinSig::Terminate => unreachable!("Terminate routed elsewhere"),
-    };
-    pane.pty.write_input(&[byte]).map_err(|e| {
+    pane.pty.write_input(&[0x03]).map_err(|e| {
         DeliverErr::Internal(format!("write interrupt byte to pseudoconsole input: {e}"))
     })
 }
