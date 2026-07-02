@@ -260,6 +260,8 @@ async fn collect_panes(state: &DaemonState) -> Vec<PaneHandoff> {
 /// In-place upgrade is Unix-only (the Windows daemon process model is still
 /// in design — see `run_daemon`). Hand off nothing.
 #[cfg(not(unix))]
+// `async` to mirror the Unix signature its callers `.await`; the body is a stub.
+#[allow(clippy::unused_async)]
 async fn collect_panes(_state: &DaemonState) -> Vec<PaneHandoff> {
     Vec::new()
 }
@@ -421,6 +423,8 @@ pub async fn adopt(state: &DaemonState) {
 
 /// In-place upgrade is Unix-only; nothing to adopt on other platforms.
 #[cfg(not(unix))]
+// `async` to mirror the Unix signature its callers `.await`; no-op here.
+#[allow(clippy::unused_async)]
 pub async fn adopt(_state: &DaemonState) {}
 
 #[cfg(unix)]

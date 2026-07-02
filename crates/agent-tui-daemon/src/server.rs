@@ -305,6 +305,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     Ok(handle)
 }
 
+#[allow(clippy::similar_names)] // `req`/`res` read fine in this request/response loop
 async fn handle_conn(sock: Stream, state: DaemonState) {
     let (reader, mut writer) = tokio::io::split(sock);
     let mut reader = BufReader::new(reader);
@@ -1437,7 +1438,9 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
                 shutdown.notify_waiters();
                 // SAFETY: releasing the handle we opened above.
                 #[allow(unsafe_code)]
-                unsafe { CloseHandle(handle_addr as HANDLE) };
+                unsafe {
+                    CloseHandle(handle_addr as HANDLE)
+                };
                 return;
             }
             // WAIT_TIMEOUT → still alive, poll again. Any other status

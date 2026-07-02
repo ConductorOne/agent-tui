@@ -194,7 +194,11 @@ impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
     /// reader task piping output into `engine.feed`. `recorder`, when
     /// supplied, gets a tee of every byte chunk read from the PTY.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
@@ -314,8 +318,7 @@ impl PtyChild {
                     {
                         let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
                         return Err(anyhow!(
-                            "stdin mode {:?} requires Unix or Windows (Windows uses the headless spawn path)",
-                            stdin_mode
+                            "stdin mode {stdin_mode:?} requires Unix or Windows (Windows uses the headless spawn path)"
                         ));
                     }
                 }
@@ -326,8 +329,9 @@ impl PtyChild {
         // master read loop sees EOF instead of hanging.
         drop(pair.slave);
 
-        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(pair.master.take_writer().context("take_writer")?));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
+            pair.master.take_writer().context("take_writer")?,
+        ));
         let reader_writer = writer.clone();
         let reader = pair.master.try_clone_reader().context("clone_reader")?;
 
@@ -1206,7 +1210,7 @@ fn signal_name_to_num(_name: &str) -> Option<u32> {
 /// `ConPTY` and adopt paths use, so the ring / engine / `reader_done` semantics —
 /// and thus `tail`, `wait --exit`, and exit-code fidelity — are identical.
 #[cfg(windows)]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::similar_names)]
 fn spawn_headless_windows(
     argv: &[String],
     cwd: Option<&Path>,
@@ -1269,8 +1273,9 @@ fn spawn_headless_windows(
     // queries (DSR &c.); any the engine did synthesize have nowhere to go and
     // are harmlessly swallowed here (there is no back-channel to the child's
     // stdin, and mixing them in would corrupt the caller's input stream).
-    let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-        Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>));
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
+        Box::new(std::io::sink()) as Box<dyn Write + Send>
+    ));
     let reader_writer = writer.clone();
 
     let reader_engine = engine;
@@ -1308,7 +1313,7 @@ fn spawn_headless_windows(
     Ok(PtyChild {
         // Inert master: headless panes are never resized (resize is a no-op).
         master: MasterEnd::Portable(Mutex::new(
-            Box::new(ClosedMaster) as Box<dyn MasterPty + Send>,
+            Box::new(ClosedMaster) as Box<dyn MasterPty + Send>
         )),
         writer,
         stdin_pipe: Mutex::new(stdin_pipe),
@@ -1419,8 +1424,8 @@ impl portable_pty::ChildKiller for WindowsChildShim {
 }
 
 /// Windows force-kill of `pid` and its entire descendant tree via `taskkill
-/// /F /T`. portable-pty's Windows ChildKiller can't be used (inverts the
-/// TerminateProcess BOOL and only kills the direct child). `taskkill /T`
+/// /F /T`. portable-pty's Windows `ChildKiller` can't be used (inverts the
+/// `TerminateProcess` BOOL and only kills the direct child). `taskkill /T`
 /// reaps forked subprocesses the way `killpg` does on Unix. Dependency-free.
 #[cfg(windows)]
 pub(crate) fn kill_tree_windows(pid: u32) -> Result<()> {
@@ -1430,9 +1435,10 @@ pub(crate) fn kill_tree_windows(pid: u32) -> Result<()> {
     const TASKKILL_NOT_FOUND: i32 = 128; // taskkill exit code when PID already gone
     // Resolve taskkill by absolute path so a sanitized/relocated PATH can't
     // break teardown; fall back to the bare name if %SystemRoot% is unset.
-    let taskkill = std::env::var("SystemRoot")
-        .map(|root| format!("{root}\\System32\\taskkill.exe"))
-        .unwrap_or_else(|_| "taskkill.exe".to_string());
+    let taskkill = std::env::var("SystemRoot").map_or_else(
+        |_| "taskkill.exe".to_string(),
+        |root| format!("{root}\\System32\\taskkill.exe"),
+    );
     let status = Command::new(taskkill)
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .creation_flags(CREATE_NO_WINDOW)

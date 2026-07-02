@@ -140,7 +140,7 @@ pub trait Engine: Send + Sync {
     /// Drain any bytes the terminal must write back to the PTY (DSR
     /// cursor-position reports, DA1/DA2 device attributes, kitty-keyboard
     /// replies, …) produced while parsing the most recent `feed`. The daemon
-    /// reader loop forwards these to the PTY master. Default: none. ConPTY
+    /// reader loop forwards these to the PTY master. Default: none. `ConPTY`
     /// blocks the child on the startup `ESC[6n` until this reply is written.
     fn take_pty_writes(&self) -> Vec<u8> {
         Vec::new()
