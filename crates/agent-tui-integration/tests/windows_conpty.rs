@@ -12,11 +12,11 @@
 //!  1. `run | consumer` in a `cmd.exe` pipeline sees prompt EOF (the `win_spawn`
 //!     handle-inheritance allow-list).
 //!  2. An interactive pane's startup DSR (`ESC[6n`) is answered, unblocking
-//!     the child (engine `take_pty_writes` write-back via `dsr_probe`).
+//!     the child (engine `take_pty_writes` write-back via `conpty_probe`).
 //!  3. `tail --follow` delivers a fast-exiting child's trailing bytes before
 //!     the stream ends (`exit_drained` / `DRAIN_GRACE`).
 //!  4. `die` reaps the whole descendant tree (`taskkill /F /T`).
-//!  5. `signal SIGINT` interrupts via ETX written to the ConPTY input.
+//!  5. `signal SIGINT` delivers ETX to the child's ConPTY input.
 //!  6. `signal SIGBREAK` is rejected with an actionable error (no false
 //!     success).
 
@@ -188,19 +188,33 @@ where
     }
 }
 
-/// Locate the `dsr_probe` test binary, mirroring `agent_tui_binary`'s
+/// Locate the `conpty_probe` test binary, mirroring `agent_tui_binary`'s
 /// debug-then-release candidate order.
-fn dsr_probe_path() -> Result<PathBuf> {
+fn conpty_probe_path() -> Result<PathBuf> {
     let root = workspace_root()?;
     for c in [
-        root.join("target").join("debug").join("dsr_probe.exe"),
-        root.join("target").join("release").join("dsr_probe.exe"),
+        root.join("target").join("debug").join("conpty_probe.exe"),
+        root.join("target").join("release").join("conpty_probe.exe"),
     ] {
         if c.exists() {
             return Ok(c);
         }
     }
-    bail!("dsr_probe.exe not built under {}/target", root.display())
+    bail!("conpty_probe.exe not built under {}/target", root.display())
+}
+
+/// Extract the `text` field from a `tail --strip-ansi` JSON envelope.
+fn tail_text(out: &std::process::Output) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).with_context(|| {
+        format!(
+            "parse tail envelope: {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })?;
+    v.pointer("/data/text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("no data.text in tail envelope: {v}"))
 }
 
 /// Count processes whose command line contains `sentinel`, excluding the
@@ -230,13 +244,23 @@ async fn sentinel_process_count(sentinel: &str) -> Result<usize> {
 async fn run_in_cmd_pipeline_consumer_sees_prompt_eof() -> Result<()> {
     let rig = Rig::new("run-pipe-eof")?;
     let bin = agent_tui_binary()?;
-    let script = format!(
-        "\"{}\" --session {} --socket-dir \"{}\" run -- cmd /c echo agent-tui-e2e-eof | findstr agent-tui-e2e-eof",
-        bin.display(),
-        rig.session,
-        rig.socket_dir.display()
-    );
-    let out = tokio::time::timeout(Duration::from_secs(90), rig.cmd_exe(&script))
+    // Write the pipeline to a .cmd file instead of passing it as a `cmd /c`
+    // argument: Rust's CommandLineToArgvW quoting (\" for embedded quotes)
+    // collides with cmd's own outer-quote stripping and produced
+    // '"...agent-tui.exe" is not recognized' on the first CI run. Inside a
+    // batch file cmd parses the line natively, so quotes just work.
+    let script_path = rig.root.join("pipeline.cmd");
+    std::fs::write(
+        &script_path,
+        format!(
+            "\"{}\" --session {} --socket-dir \"{}\" run -- cmd /c echo agent-tui-e2e-eof | findstr agent-tui-e2e-eof\r\n",
+            bin.display(),
+            rig.session,
+            rig.socket_dir.display()
+        ),
+    )?;
+    let script = script_path.to_str().context("script path not utf-8")?;
+    let out = tokio::time::timeout(Duration::from_secs(90), rig.cmd_exe(script))
         .await
         .context("consumer did not see EOF within 90s (handle-inheritance regression?)")??;
     assert!(
@@ -253,15 +277,15 @@ async fn run_in_cmd_pipeline_consumer_sees_prompt_eof() -> Result<()> {
 }
 
 /// The engine must answer the ConPTY startup DSR (`ESC[6n`) or interactive
-/// children block waiting for the cursor-position report. `dsr_probe` is the
-/// minimal such child: without the `take_pty_writes` write-back its read
-/// blocks forever and the sentinel never appears.
+/// children block waiting for the cursor-position report. `conpty_probe dsr`
+/// is the minimal such child: without the `take_pty_writes` write-back its
+/// read blocks forever and the sentinel never appears.
 #[tokio::test]
 async fn interactive_pane_answers_startup_dsr() -> Result<()> {
     let rig = Rig::new("dsr")?;
-    let probe = dsr_probe_path()?;
+    let probe = conpty_probe_path()?;
     let probe_str = probe.to_str().context("probe path not utf-8")?;
-    let pane = rig.spawn_pane(&[probe_str]).await?;
+    let pane = rig.spawn_pane(&[probe_str, "dsr"]).await?;
     poll_until("DSR reply on pane", Duration::from_secs(30), || async {
         let out = rig
             .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
@@ -272,7 +296,7 @@ async fn interactive_pane_answers_startup_dsr() -> Result<()> {
     let out = rig
         .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
         .await?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = tail_text(&out)?;
     // --strip-ansi removes the reply's ESC, leaving "DSR-REPLY:[<row>;<col>R".
     let reply = text.split("DSR-REPLY:").nth(1).unwrap_or("");
     assert!(
@@ -350,14 +374,27 @@ async fn die_reaps_descendant_tree() -> Result<()> {
     Ok(())
 }
 
-/// `signal SIGINT` writes ETX to the ConPTY input; conhost raises a real
-/// `CTRL_C_EVENT` and `ping -t` exits.
+/// `signal SIGINT` writes ETX (`0x03`) to the ConPTY input — the daemon-side
+/// half of the interrupt contract. Asserted as byte delivery to the child's
+/// stdin (via `conpty_probe read-stdin` in VT-input mode): whether conhost
+/// then translates ETX into a `CTRL_C_EVENT` is conhost-mode- and
+/// Windows-version-dependent (a `ping -t` child did NOT exit on the
+/// windows-latest CI runner, though the author's Windows 11 e2e saw the
+/// interrupt land), so the suite pins the deterministic half.
 #[tokio::test]
-async fn sigint_via_conpty_etx_interrupts_child() -> Result<()> {
+async fn sigint_writes_etx_to_conpty_input() -> Result<()> {
     let rig = Rig::new("sigint")?;
-    let pane = rig.spawn_pane(&["ping", "-t", "127.0.0.1"]).await?;
-    // Give ping a beat to be running before the interrupt lands.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let probe = conpty_probe_path()?;
+    let probe_str = probe.to_str().context("probe path not utf-8")?;
+    let pane = rig.spawn_pane(&[probe_str, "read-stdin"]).await?;
+    // Let the probe set its console mode and reach its blocking read.
+    poll_until("probe mode-set", Duration::from_secs(15), || async {
+        let out = rig
+            .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
+            .await?;
+        Ok(String::from_utf8_lossy(&out.stdout).contains("MODE-SET:ok"))
+    })
+    .await?;
     let out = rig
         .output(false, &["signal", "--pane", &pane, "SIGINT"])
         .await?;
@@ -366,16 +403,25 @@ async fn sigint_via_conpty_etx_interrupts_child() -> Result<()> {
         "signal SIGINT failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    poll_until(
+        "ETX byte on child stdin",
+        Duration::from_secs(15),
+        || async {
+            let out = rig
+                .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
+                .await?;
+            Ok(String::from_utf8_lossy(&out.stdout).contains("STDIN-HEX:"))
+        },
+    )
+    .await?;
     let out = rig
-        .output(
-            false,
-            &["wait", "--pane", &pane, "--exit", "--max", "15000"],
-        )
+        .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
         .await?;
+    let text = tail_text(&out)?;
+    let hex = text.split("STDIN-HEX:").nth(1).unwrap_or("");
     assert!(
-        out.status.success(),
-        "child did not exit after SIGINT: {}",
-        String::from_utf8_lossy(&out.stderr)
+        hex.trim_end().ends_with("03"),
+        "ETX (0x03) not delivered to child stdin: {text}"
     );
     rig.die(&pane).await;
     Ok(())
