@@ -9,9 +9,11 @@
 ## TL;DR
 
 Windows works once we swap three cfg-gated pieces: **IPC** (Unix socket → named
-pipe), **signal delivery** (`killpg` → `GenerateConsoleCtrlEvent`/Job Object
-termination), and a few **path/comm assumptions**. None require an architecture
-change. Estimate: ~2 cycles.
+pipe), **signal delivery** (`killpg` → ConPTY-input ETX for SIGINT +
+`taskkill /F /T` descendant-tree kill for SIGTERM/SIGKILL — as implemented in
+PR #124, superseding the original `GenerateConsoleCtrlEvent`/Job Object plan;
+see the signal table in §2), and a few **path/comm assumptions**. None require
+an architecture change. Estimate: ~2 cycles.
 
 PTY itself isn't a blocker — `portable-pty` already uses ConPTY on Windows.
 
