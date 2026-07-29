@@ -290,21 +290,38 @@ async fn interactive_pane_answers_startup_dsr() -> Result<()> {
         let out = rig
             .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
             .await?;
-        Ok(String::from_utf8_lossy(&out.stdout).contains("DSR-REPLY:"))
+        Ok(String::from_utf8_lossy(&out.stdout).contains("DSR-REPLY-HEX:"))
     })
     .await?;
     let out = rig
         .output(false, &["tail", "--pane", &pane, "--strip-ansi"])
         .await?;
     let text = tail_text(&out)?;
-    // --strip-ansi removes the reply's ESC, leaving "DSR-REPLY:[<row>;<col>R".
-    let reply = text.split("DSR-REPLY:").nth(1).unwrap_or("");
+    let hex = text.split("DSR-REPLY-HEX:").nth(1).unwrap_or("").trim_end();
+    let reply = decode_hex(hex).with_context(|| format!("bad reply hex in: {text}"))?;
     assert!(
-        reply.trim_end().starts_with('[') && reply.trim_end().ends_with('R'),
-        "reply is not a cursor-position report: {text}"
+        reply.len() >= 6
+            && reply[0] == 0x1b
+            && reply[1] == b'['
+            && reply[reply.len() - 1] == b'R'
+            && reply[2..reply.len() - 1]
+                .iter()
+                .all(|b| b.is_ascii_digit() || *b == b';'),
+        "reply is not a cursor-position report (ESC[<row>;<col>R): {text}"
     );
     rig.die(&pane).await;
     Ok(())
+}
+
+/// Strict hex decode (even length, lowercase pairs as the probe emits).
+fn decode_hex(s: &str) -> Result<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        bail!("odd-length hex: {s:?}");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(Into::into))
+        .collect()
 }
 
 /// A fast child that writes-then-exits must have its trailing bytes delivered

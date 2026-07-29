@@ -94,7 +94,15 @@ mod imp {
         let mut buf = [0u8; 64];
         let (n, status) = read_until(&mut buf, b'R');
         println!("DSR-READ:n={n}:status={status}");
-        println!("DSR-REPLY:{}", String::from_utf8_lossy(&buf[..n]));
+        // Print the reply as HEX, not raw: the reply bytes are themselves a VT
+        // sequence (ESC[<row>;<col>R) and the pane's own terminal parser
+        // swallows them — which is exactly what hid a *successful* reply on
+        // the first CI iteration (n=6, stop-byte, empty text).
+        let mut hex = String::with_capacity(n * 2);
+        for b in &buf[..n] {
+            let _ = write!(hex, "{b:02x}");
+        }
+        println!("DSR-REPLY-HEX:{hex}");
         0
     }
 
