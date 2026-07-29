@@ -13,7 +13,7 @@
 //! ## Two assertion strategies
 //!
 //! Default-format `opencode run` writes only a session header to stdout
-//! ("`> build · o3-mini`"); the actual assistant body is persisted to
+//! ("`> build · fake-model`"); the actual assistant body is persisted to
 //! `~/.local/share/opencode/opencode.db` (`SQLite`, WAL mode). We use
 //! two assertion strategies depending on what we're testing:
 //!
@@ -102,16 +102,23 @@ fn write_opencode_config(scratch: &std::path::Path, server_url: &str) -> Result<
 ///   title-generation request to the model BEFORE the real prompt
 ///   when no title is supplied. That extra call burns the first slot
 ///   of any multi-slot Script. Passing a fixed title skips it.
-/// - `-m openai/o3-mini`: we use a built-in model name. The fake
-///   server doesn't care what the model is — only the path and
-///   shape matter.
+/// - `-m openai/fake-model`: use the model our own `opencode.json`
+///   defines under the provider's `models` map. Resolution then never
+///   touches opencode's live-fetched model catalog (models.dev) — which
+///   is NOT hermetic: the catalog floated forward and dropped the
+///   previously-used `o3-mini`, and the failure mode depended on the
+///   fetch outcome (fetch fails → `UnknownError` after the first-run DB
+///   migration; fetch succeeds → `Model not found: openai/o3-mini`;
+///   fetch falls back to the baked catalog → test passes). The fake
+///   server doesn't care what the model is — it echoes the request's
+///   `model` field back — only the path and shape matter.
 fn opencode_run_cmd(prompt: &str) -> Vec<String> {
     vec![
         "bash".into(),
         "-c".into(),
         format!(
             "cd /work && exec opencode run --pure --dangerously-skip-permissions \
-             --title 'fixed test title' -m openai/o3-mini {}",
+             --title 'fixed test title' -m openai/fake-model {}",
             shell_quote(prompt),
         ),
     ]
@@ -171,8 +178,8 @@ async fn opencode_persists_streamed_response_to_session_db() -> Result<()> {
     // long enough for the streaming response to land, be parsed by
     // OpenCode, committed to its SQLite session DB, and for the
     // process to exit. `wait_idle(2000)` is generous but bounded —
-    // a real opencode/o3-mini call against a localhost fake settles
-    // in well under a second.
+    // an opencode call against a localhost fake settles in well under
+    // a second.
     s.wait_text(r"build · ").await?;
     s.wait_idle(2000).await?;
 
@@ -217,7 +224,7 @@ fn opencode_run_json_cmd(prompt: &str) -> Vec<String> {
         "-c".into(),
         format!(
             "cd /work && exec opencode run --pure --dangerously-skip-permissions \
-             --title 'fixed test title' --format json -m openai/o3-mini {}",
+             --title 'fixed test title' --format json -m openai/fake-model {}",
             shell_quote(prompt),
         ),
     ]
