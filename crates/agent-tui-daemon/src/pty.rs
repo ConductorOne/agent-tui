@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 /// `Send + Sync` for storage inside `Arc<Pane>`.
 pub struct PtyChild {
     master: MasterEnd,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Separate write end of the child's stdin when `stdin_mode == Pipe`.
     /// `None` for `Pty` (writes go through `writer`) and `Closed` (stdin
     /// is /dev/null, no writer at all).
@@ -194,7 +194,11 @@ impl PtyChild {
     /// Spawn `argv` under a fresh PTY of size `(cols, rows)` and start the
     /// reader task piping output into `engine.feed`. `recorder`, when
     /// supplied, gets a tee of every byte chunk read from the PTY.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
     pub fn spawn(
         argv: &[String],
         cwd: Option<&Path>,
@@ -208,17 +212,7 @@ impl PtyChild {
         if argv.is_empty() {
             return Err(anyhow!("argv must be non-empty"));
         }
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("openpty")?;
-
-        // **Normalize LINES + COLUMNS to match the PTY we just allocated.**
+        // **Normalize LINES + COLUMNS to match the PTY we allocate below.**
         //
         // ncurses-based programs (tig, mc, dialog, …) read `LINES` and
         // `COLUMNS` from the environment first and only fall back to
@@ -254,6 +248,26 @@ impl PtyChild {
         ];
         env_overrides.extend(env.iter().cloned());
 
+        // Windows: `run`/`ask`/`edit` (Pipe/Closed) are subprocess-as-data — no
+        // TUI, output is ANSI-stripped by `tail`. Dispatch them to a plain
+        // (non-pseudoconsole) spawn BEFORE allocating a ConPTY, so no conhost is
+        // created and cooked ConPTY input echo can't corrupt the captured
+        // stdout. The interactive `Pty` path below still uses the real ConPTY.
+        #[cfg(windows)]
+        if matches!(stdin_mode, StdinMode::Pipe | StdinMode::Closed) {
+            return spawn_headless_windows(argv, cwd, &env_overrides, engine, recorder, stdin_mode);
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("openpty")?;
+
         let (child, stdin_pipe): (Box<dyn Child + Send + Sync>, Option<std::fs::File>) =
             match stdin_mode {
                 StdinMode::Pty => {
@@ -284,11 +298,12 @@ impl PtyChild {
                     // slave fd isn't exposed by portable-pty's trait — we
                     // re-derive it via ptsname().
                     //
-                    // Windows: the custom-stdin path is Unix-only because it
-                    // uses ptsname + dup + setsid. On Windows the spawn
-                    // returns an error pointing at the limitation; the
-                    // Windows port will land separately (see
-                    // `docs/design/windows-strategy.md`).
+                    // Unix custom-stdin path: pipe/`/dev/null` on stdin while
+                    // stdout/stderr stay on the slave PTY (uses ptsname + dup +
+                    // setsid). Windows never reaches this arm — Pipe/Closed are
+                    // dispatched to `spawn_headless_windows` above before the
+                    // ConPTY is allocated — but the arm still needs a body for
+                    // match exhaustiveness on every non-unix target.
                     #[cfg(unix)]
                     {
                         spawn_with_custom_stdin(
@@ -303,8 +318,7 @@ impl PtyChild {
                     {
                         let _ = (argv, cwd, &env_overrides, &pair, stdin_mode);
                         return Err(anyhow!(
-                            "stdin mode {:?} requires Unix; Windows support is tracked in docs/design/windows-strategy.md",
-                            stdin_mode
+                            "stdin mode {stdin_mode:?} requires Unix or Windows (Windows uses the headless spawn path)"
                         ));
                     }
                 }
@@ -315,7 +329,10 @@ impl PtyChild {
         // master read loop sees EOF instead of hanging.
         drop(pair.slave);
 
-        let writer = pair.master.take_writer().context("take_writer")?;
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
+            pair.master.take_writer().context("take_writer")?,
+        ));
+        let reader_writer = writer.clone();
         let reader = pair.master.try_clone_reader().context("clone_reader")?;
 
         let reader_engine = engine;
@@ -348,6 +365,7 @@ impl PtyChild {
                 &reader_capture_lock,
                 &reader_output_tx,
                 &reader_last_output,
+                &reader_writer,
             );
             // Reader saw EOF/error and is exiting: every byte the child
             // wrote is now in the output ring. Publish *after* the loop so
@@ -358,7 +376,7 @@ impl PtyChild {
 
         Ok(Self {
             master: MasterEnd::Portable(Mutex::new(pair.master)),
-            writer: Mutex::new(writer),
+            writer,
             stdin_pipe: Mutex::new(stdin_pipe),
             stdin_mode,
             output_buf,
@@ -414,7 +432,11 @@ impl PtyChild {
         let reader_fd = dup_owned(&owned)?;
         let writer_fd = dup_owned(&owned)?;
         let reader: Box<dyn Read + Send> = Box::new(std::fs::File::from(reader_fd));
-        let writer: Box<dyn Write + Send> = Box::new(std::fs::File::from(writer_fd));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(
+            std::fs::File::from(writer_fd),
+        )
+            as Box<dyn Write + Send>));
+        let reader_writer = writer.clone();
 
         let reader_engine = engine;
         let reader_recorder = recorder.clone();
@@ -447,13 +469,14 @@ impl PtyChild {
                 &reader_capture_lock,
                 &reader_output_tx,
                 &reader_last_output,
+                &reader_writer,
             );
             reader_done_signal.store(true, Ordering::Release);
         });
 
         Ok(Self {
             master: MasterEnd::Adopted(Mutex::new(owned)),
-            writer: Mutex::new(writer),
+            writer,
             // The original stdin pipe (if any) did not survive the exec; an
             // adopted pane writes input through the PTY master like `Pty` mode.
             stdin_pipe: Mutex::new(None),
@@ -618,9 +641,28 @@ impl PtyChild {
     pub fn kill(&self) -> Result<()> {
         match &self.child {
             ChildEnd::Portable { killer, .. } => {
-                let mut k = killer.lock().map_err(|e| anyhow!("killer poisoned: {e}"))?;
-                k.kill().context("kill child")?;
-                Ok(())
+                #[cfg(windows)]
+                {
+                    // portable-pty 0.9's Windows ChildKiller::kill() is unusable:
+                    // it inverts the TerminateProcess success BOOL and only kills
+                    // the direct child, orphaning the ConPTY host and any forked
+                    // grandchildren. Kill the whole descendant tree by PID — the
+                    // Windows analog of the Unix killpg teardown.
+                    let _ = killer;
+                    match self.child_pid() {
+                        Some(pid) => kill_tree_windows(pid),
+                        // A missing pid means the child mutex is poisoned; we
+                        // can't confirm a kill, so surface an error rather than
+                        // report a false `killed: true`.
+                        None => Err(anyhow!("cannot resolve child pid to kill")),
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let mut k = killer.lock().map_err(|e| anyhow!("killer poisoned: {e}"))?;
+                    k.kill().context("kill child")?;
+                    Ok(())
+                }
             }
             #[cfg(unix)]
             ChildEnd::Adopted { pid, .. } => {
@@ -654,9 +696,11 @@ impl PtyChild {
         }
     }
 
-    /// Child PID for Windows `GenerateConsoleCtrlEvent` delivery. portable-pty
-    /// spawns the child with `CREATE_NEW_PROCESS_GROUP` so the PID doubles as
-    /// the process-group id Windows control events expect.
+    /// Child PID. On Windows this is the ConPTY child used for descendant-tree
+    /// teardown (`kill_tree_windows`) and the owner-death / reap paths. Note:
+    /// portable-pty does NOT spawn the child with `CREATE_NEW_PROCESS_GROUP`, so
+    /// this PID is not a valid console-control group id — interrupts are
+    /// delivered by writing to the ConPTY input instead (see `handlers::signal`).
     pub fn child_pid(&self) -> Option<u32> {
         match &self.child {
             ChildEnd::Portable { child, .. } => child.lock().ok()?.process_id(),
@@ -738,6 +782,72 @@ impl PtyChild {
     #[must_use]
     pub fn subscribe_output(&self) -> watch::Receiver<u64> {
         self.output_tx.subscribe()
+    }
+
+    /// Windows-only: force the parked PTY reader thread to observe EOF by
+    /// dropping the ConPTY master.
+    ///
+    /// The daemon holds the ConPTY master for the pane's whole life. That keeps
+    /// the pseudoconsole — and its conhost host — alive, and conhost keeps the
+    /// **write** end of the output pipe open, so the blocking `read()` in the
+    /// reader thread never returns EOF even after the child exits. (On Unix the
+    /// slave closing on child exit EOFs the master immediately; there is no
+    /// analog here.) The cloned reader owns its own *duplicated* pipe read
+    /// handle (`try_clone_reader` → `DuplicateHandle`), not the pseudoconsole,
+    /// so only dropping the master — which after spawn holds the sole `Arc` to
+    /// the pseudoconsole (the slave was dropped, the writer + reader are
+    /// independent handles) — runs `ClosePseudoConsole`. That lets conhost close
+    /// the write end, unblocking the reader with EOF so its `spawn_blocking`
+    /// thread exits instead of leaking (and stalling the runtime's shutdown
+    /// join).
+    ///
+    /// Implemented by swapping in an inert [`ClosedMaster`] so the real master
+    /// drops now while [`MasterEnd::Portable`]'s type stays unchanged (the Unix
+    /// paths are untouched). Idempotent. Safe on a terminal-retained pane: the
+    /// engine grid and output ring are separate `Arc`s and remain readable;
+    /// only `resize` / `write_input` are affected, and both are already no-ops
+    /// once the child has exited.
+    #[cfg(windows)]
+    pub fn close_master(&self) {
+        let MasterEnd::Portable(m) = &self.master;
+        if let Ok(mut guard) = m.lock() {
+            let old = std::mem::replace(
+                &mut *guard,
+                Box::new(ClosedMaster) as Box<dyn MasterPty + Send>,
+            );
+            // Dropping the real master runs `ClosePseudoConsole`; conhost then
+            // closes the output pipe's write end and the reader EOFs.
+            drop(old);
+        }
+    }
+}
+
+/// Inert [`MasterPty`] swapped in by [`PtyChild::close_master`] (Windows only)
+/// so the live ConPTY master — the sole `Arc` holder of the pseudoconsole —
+/// drops and `ClosePseudoConsole` runs. Every method is a no-op: after the swap
+/// the pane is terminal, so resize/write are already meaningless and nothing
+/// reads back through this handle.
+#[cfg(windows)]
+struct ClosedMaster;
+
+#[cfg(windows)]
+impl MasterPty for ClosedMaster {
+    fn resize(&self, _size: PtySize) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn get_size(&self) -> anyhow::Result<PtySize> {
+        Ok(PtySize {
+            rows: 0,
+            cols: 0,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+    fn try_clone_reader(&self) -> anyhow::Result<Box<dyn Read + Send>> {
+        Ok(Box::new(std::io::empty()))
+    }
+    fn take_writer(&self) -> anyhow::Result<Box<dyn Write + Send>> {
+        Ok(Box::new(std::io::sink()))
     }
 }
 
@@ -1073,6 +1183,277 @@ fn signal_name_to_num(_name: &str) -> Option<u32> {
     None
 }
 
+/// Windows headless spawn for `run`/`ask`/`edit` — a plain (non-pseudoconsole)
+/// child, the Windows analog of the Unix [`spawn_with_custom_stdin`] path.
+///
+/// These verbs are "subprocess-as-data": no TUI, and `tail` ANSI-strips the
+/// output. A `ConPTY` would be *wrong* here — it echoes cooked stdin back onto
+/// stdout (doubling captured input) and reports `isatty(0)=true`. A plain spawn
+/// instead yields `isatty(0)=false` (real headless stdin), a genuine pipe EOF
+/// when we close the write end, and no stdin→stdout echo.
+///
+/// Handle plumbing mirrors the Unix CLOEXEC-pipe design:
+///  * stdout **and** stderr share ONE anonymous pipe (write end given to both),
+///    so their bytes interleave in a single ordered stream, exactly like the
+///    Unix `slave_out`/`slave_err` dup of one slave PTY.
+///  * stdin is a plain pipe (`Pipe`, write end retained as `stdin_pipe`) or the
+///    `NUL` device (`Closed`, via `Stdio::null()`).
+///  * every pipe end is created NON-inheritable ([`anon_pipe`]); `std::process`
+///    makes inheritable duplicates of only the specific stdio handles under its
+///    own inheritance lock, so the ends we retain never leak into the child —
+///    dropping our retained stdin write end therefore EOFs the child, just as
+///    dropping the write end of a CLOEXEC pipe does on Unix.
+///
+/// The resulting [`PtyChild`] has an inert [`ClosedMaster`] (headless panes are
+/// never resized) and an `io::sink` writer (input flows through `stdin_pipe`,
+/// not the PTY writer); output is driven by the same [`pty_reader_loop`] the
+/// `ConPTY` and adopt paths use, so the ring / engine / `reader_done` semantics —
+/// and thus `tail`, `wait --exit`, and exit-code fidelity — are identical.
+#[cfg(windows)]
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+fn spawn_headless_windows(
+    argv: &[String],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    engine: Arc<dyn Engine>,
+    recorder: Option<Recorder>,
+    stdin_mode: StdinMode,
+) -> Result<PtyChild> {
+    use std::process::Stdio;
+
+    // stdout+stderr: ONE pipe, its write end handed to both fds so ordering is
+    // preserved in a single stream. We keep the read end for the reader task.
+    let (out_read, out_write) = anon_pipe().context("create stdout/stderr pipe")?;
+    let out_write_err = out_write
+        .try_clone()
+        .context("dup stdout write end for stderr")?;
+
+    // stdin: real pipe (Pipe) or NUL (Closed). Either way isatty(0)=false and a
+    // real EOF reaches the child (drop the write end / NUL reads 0 immediately).
+    let (stdin_stdio, stdin_pipe): (Stdio, Option<std::fs::File>) = match stdin_mode {
+        StdinMode::Pipe => {
+            let (child_read, parent_write) = anon_pipe().context("create stdin pipe")?;
+            (Stdio::from(child_read), Some(parent_write))
+        }
+        StdinMode::Closed => (Stdio::null(), None),
+        StdinMode::Pty => unreachable!("Pty stdin uses the ConPTY path, not the headless spawn"),
+    };
+
+    let mut cmd = std::process::Command::new(&argv[0]);
+    for arg in &argv[1..] {
+        cmd.arg(arg);
+    }
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(stdin_stdio);
+    // `Stdio::from(File)` transfers ownership; std spawns an *inheritable* dup
+    // for the child and closes our (non-inheritable) original with `cmd`.
+    cmd.stdout(Stdio::from(out_write));
+    cmd.stderr(Stdio::from(out_write_err));
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawn headless child: {}", argv[0]))?;
+    // `cmd` — and the parent-side stdio originals it still owns — drops at the
+    // end of this function, leaving the child holding the only write ends, so
+    // `out_read` EOFs once the child (and any grandchild it passed stdout to)
+    // exits. Until then the child is alive holding the write ends, so the reader
+    // can never see a premature EOF.
+
+    let reader: Box<dyn Read + Send> = Box::new(out_read);
+    let child_boxed: Box<dyn Child + Send + Sync> = Box::new(WindowsChildShim::new(child));
+    let killer = child_boxed.clone_killer();
+
+    // Input goes through `stdin_pipe`, never the PTY writer, so the writer is an
+    // inert sink. A headless pipe child isn't a tty and won't emit terminal→host
+    // queries (DSR &c.); any the engine did synthesize have nowhere to go and
+    // are harmlessly swallowed here (there is no back-channel to the child's
+    // stdin, and mixing them in would corrupt the caller's input stream).
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(
+        Box::new(std::io::sink()) as Box<dyn Write + Send>
+    ));
+    let reader_writer = writer.clone();
+
+    let reader_engine = engine;
+    let reader_recorder = recorder.clone();
+    let first_bytes = Arc::new(Mutex::new(FirstBytes::default()));
+    let reader_first_bytes = first_bytes.clone();
+    let last_osc133 = Arc::new(Mutex::new(None));
+    let reader_osc133 = last_osc133.clone();
+    let output_buf = Arc::new(Mutex::new(OutputRing::default()));
+    let reader_output_buf = output_buf.clone();
+    let capture_lock = Arc::new(Mutex::new(()));
+    let reader_capture_lock = capture_lock.clone();
+    let reader_done = Arc::new(AtomicBool::new(false));
+    let reader_done_signal = reader_done.clone();
+    let (output_tx, _output_rx) = watch::channel(0u64);
+    let reader_output_tx = output_tx.clone();
+    let last_output = Arc::new(Mutex::new(None));
+    let reader_last_output = last_output.clone();
+    let reader_handle = tokio::task::spawn_blocking(move || {
+        pty_reader_loop(
+            reader,
+            &reader_engine,
+            reader_recorder.as_ref(),
+            &reader_first_bytes,
+            &reader_osc133,
+            &reader_output_buf,
+            &reader_capture_lock,
+            &reader_output_tx,
+            &reader_last_output,
+            &reader_writer,
+        );
+        reader_done_signal.store(true, Ordering::Release);
+    });
+
+    Ok(PtyChild {
+        // Inert master: headless panes are never resized (resize is a no-op).
+        master: MasterEnd::Portable(Mutex::new(
+            Box::new(ClosedMaster) as Box<dyn MasterPty + Send>
+        )),
+        writer,
+        stdin_pipe: Mutex::new(stdin_pipe),
+        stdin_mode,
+        output_buf,
+        capture_lock,
+        child: ChildEnd::Portable {
+            child: Mutex::new(child_boxed),
+            killer: Mutex::new(killer),
+        },
+        reader: Mutex::new(Some(reader_handle)),
+        recorder,
+        first_bytes,
+        last_osc133,
+        reader_done,
+        output_tx,
+        last_output,
+    })
+}
+
+/// Create an anonymous byte pipe with both ends **non-inheritable** (the
+/// Windows analog of a CLOEXEC pipe). `std::process` makes inheritable
+/// duplicates of only the specific stdio handles it is handed, under its own
+/// inheritance lock, so the ends we retain here never leak into the child.
+///
+/// Returns `(read_end, write_end)` as `std::fs::File`s (each `CloseHandle`s on
+/// drop). `File::read` maps `ERROR_BROKEN_PIPE` to `Ok(0)`, so the read end
+/// EOFs cleanly for [`pty_reader_loop`] once every write end has closed.
+#[cfg(windows)]
+fn anon_pipe() -> Result<(std::fs::File, std::fs::File)> {
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    let mut read: HANDLE = std::ptr::null_mut();
+    let mut write: HANDLE = std::ptr::null_mut();
+    // Null security attributes ⇒ default, non-inheritable pipe ends.
+    #[allow(unsafe_code)]
+    let ok = unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error()).context("CreatePipe");
+    }
+    // SAFETY: CreatePipe just handed us two fresh, exclusively-owned pipe
+    // handles; wrap each in a File that owns it (CloseHandle on drop). `HANDLE`
+    // and `RawHandle` are both `*mut c_void`.
+    #[allow(unsafe_code)]
+    let read_file = unsafe { std::fs::File::from_raw_handle(read as RawHandle) };
+    #[allow(unsafe_code)]
+    let write_file = unsafe { std::fs::File::from_raw_handle(write as RawHandle) };
+    Ok((read_file, write_file))
+}
+
+/// Wraps a `std::process::Child` so it satisfies portable-pty's `Child` +
+/// `ChildKiller` traits for the Windows headless spawn path. Mirrors the Unix
+/// [`StdChildShim`], plus the Windows-only `Child::as_raw_handle`. Exit status
+/// is mapped through `portable_pty::ExitStatus::from` (Windows: real numeric
+/// exit code, no signal), so `shell_exit_code` reports the faithful code and
+/// `run` returns it (e.g. `exit 7` → 7).
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsChildShim {
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
+}
+
+#[cfg(windows)]
+impl WindowsChildShim {
+    fn new(c: std::process::Child) -> Self {
+        Self {
+            child: std::sync::Arc::new(std::sync::Mutex::new(c)),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl portable_pty::Child for WindowsChildShim {
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        Ok(g.try_wait()?.map(portable_pty::ExitStatus::from))
+    }
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        Ok(portable_pty::ExitStatus::from(g.wait()?))
+    }
+    fn process_id(&self) -> Option<u32> {
+        let g = self.child.lock().expect("child mutex poisoned");
+        Some(g.id())
+    }
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        use std::os::windows::io::AsRawHandle;
+        let g = self.child.lock().expect("child mutex poisoned");
+        // Disambiguate: `std::process::Child` also carries portable-pty's own
+        // `Child::as_raw_handle`; we want the OS process handle.
+        Some(AsRawHandle::as_raw_handle(&*g))
+    }
+}
+
+#[cfg(windows)]
+impl portable_pty::ChildKiller for WindowsChildShim {
+    fn kill(&mut self) -> std::io::Result<()> {
+        let mut g = self.child.lock().expect("child mutex poisoned");
+        g.kill()
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(Self {
+            child: self.child.clone(),
+        })
+    }
+}
+
+/// Windows force-kill of `pid` and its entire descendant tree via `taskkill
+/// /F /T`. portable-pty's Windows `ChildKiller` can't be used (inverts the
+/// `TerminateProcess` BOOL and only kills the direct child). `taskkill /T`
+/// reaps forked subprocesses the way `killpg` does on Unix. Dependency-free.
+#[cfg(windows)]
+pub(crate) fn kill_tree_windows(pid: u32) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const TASKKILL_NOT_FOUND: i32 = 128; // taskkill exit code when PID already gone
+    // Resolve taskkill by absolute path so a sanitized/relocated PATH can't
+    // break teardown; fall back to the bare name if %SystemRoot% is unset.
+    let taskkill = std::env::var("SystemRoot").map_or_else(
+        |_| "taskkill.exe".to_string(),
+        |root| format!("{root}\\System32\\taskkill.exe"),
+    );
+    let status = Command::new(taskkill)
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("spawn taskkill")?;
+    if status.success() || status.code() == Some(TASKKILL_NOT_FOUND) {
+        Ok(())
+    } else {
+        Err(anyhow!("taskkill /F /T /PID {pid} exited with {status}"))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pty_reader_loop(
     mut reader: Box<dyn Read + Send>,
@@ -1084,6 +1465,7 @@ fn pty_reader_loop(
     capture_lock: &Arc<Mutex<()>>,
     output_tx: &watch::Sender<u64>,
     last_output: &Arc<Mutex<Option<std::time::Instant>>>,
+    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
 ) {
     let mut buf = [0u8; 8192];
     let mut osc_scanner = crate::osc133::Scanner::new();
@@ -1100,22 +1482,41 @@ fn pty_reader_loop(
                 // capture lock, so an `attach` capture observes a consistent
                 // (rendered frame, high-water) pair — no byte falls between.
                 let mut new_total: Option<u64> = None;
+                // Terminal→host replies (DSR cursor reports, DA1/DA2, KKP)
+                // the engine produced while parsing this chunk. Drained under
+                // `capture_lock` but written back AFTER releasing it — and
+                // NOT teed to the recorder (protocol handshake, not agent
+                // input; recording it would desync `.cast` replay).
+                let mut pty_writes: Vec<u8> = Vec::new();
                 let feed_result = {
                     let Ok(_cap) = capture_lock.lock() else {
                         break;
                     };
                     let r = engine.feed(&buf[..n]);
-                    if r.is_ok()
-                        && let Ok(mut ring) = output_buf.lock()
-                    {
-                        ring.push(&buf[..n]);
-                        new_total = Some(ring.total);
+                    if r.is_ok() {
+                        // Drain terminal→host replies unconditionally on a
+                        // successful feed — the child-unblocking handshake must
+                        // not be gated on the output ring's health (a poisoned
+                        // `output_buf` lock would otherwise strand the reply and
+                        // wedge the child on its startup `ESC[6n`).
+                        pty_writes = engine.take_pty_writes();
+                        if let Ok(mut ring) = output_buf.lock() {
+                            ring.push(&buf[..n]);
+                            new_total = Some(ring.total);
+                        }
                     }
                     r
                 };
                 if let Err(e) = feed_result {
                     tracing::warn!(error = %e, "engine.feed failed; ending pty reader");
                     break;
+                }
+                if !pty_writes.is_empty() {
+                    if let Ok(mut w) = writer.lock() {
+                        if let Err(e) = w.write_all(&pty_writes).and_then(|()| w.flush()) {
+                            tracing::warn!(error = %e, "pty write-back failed");
+                        }
+                    }
                 }
                 // Wake any streaming followers as soon as the bytes are in the
                 // ring (outside the capture lock). `send_replace` never errors,

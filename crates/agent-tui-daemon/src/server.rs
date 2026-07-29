@@ -158,9 +158,34 @@ impl DaemonHandle {
         }
     }
 
-    /// No-op on non-Unix (the daemon's Windows teardown path is still in
-    /// design — see the `--monitor-parent` note in [`run_daemon`]).
-    #[cfg(not(unix))]
+    /// Windows analog of the Unix group-kill: for every still-live pane, kill
+    /// the ConPTY child and its entire descendant tree via `kill_tree_windows`
+    /// (the same `taskkill /F /T` teardown `die`/`kill` use — the direct analog
+    /// of the `killpg` loop above). Mirrors the Unix iteration/locking: only
+    /// panes whose child is still running (`try_exit_code()` == `Ok(None)`) are
+    /// reaped; a terminal-retained pane has already exited, so it is skipped.
+    #[cfg(windows)]
+    pub async fn reap_all_panes(&self) {
+        for pane in self.registry.all_panes().await {
+            if matches!(pane.pty.try_exit_code(), Ok(None))
+                && let Some(pid) = pane.pty.child_pid()
+            {
+                let _ = crate::pty::kill_tree_windows(pid);
+            }
+            // Close the ConPTY master for EVERY pane (live or terminal-retained).
+            // The per-pane reader is a `spawn_blocking` thread parked in a
+            // blocking `read()` on the master; on Windows killing the child does
+            // not EOF it (conhost keeps the output pipe's write end open until
+            // `ClosePseudoConsole`). Unless we drop the master here, the runtime's
+            // shutdown join blocks forever on that parked thread and the daemon
+            // hangs on exit — the Windows analog of the Unix "SIGKILL makes the
+            // master EOF" guarantee `reap_all_panes` relies on.
+            pane.pty.close_master();
+        }
+    }
+
+    /// No-op on platforms that are neither Unix nor Windows.
+    #[cfg(not(any(unix, windows)))]
     pub async fn reap_all_panes(&self) {}
 }
 
@@ -280,6 +305,7 @@ pub async fn run_daemon(cfg: DaemonConfig) -> std::io::Result<DaemonHandle> {
     Ok(handle)
 }
 
+#[allow(clippy::similar_names)] // `req`/`res` read fine in this request/response loop
 async fn handle_conn(sock: Stream, state: DaemonState) {
     let (reader, mut writer) = tokio::io::split(sock);
     let mut reader = BufReader::new(reader);
@@ -661,7 +687,7 @@ async fn handle_streaming_events(
         // Terminal: child exited and the reader drained its last bytes.
         // Flush any pending screen change first so the final frame isn't
         // lost, then emit `child_exited` and end the stream.
-        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
+        if pane_arc.exit_drained() {
             if dirty {
                 flush_screen_events(
                     state,
@@ -900,7 +926,7 @@ async fn stream_follow(
         // code is the pane's REMEMBERED code (`poll_exit`), authoritative even
         // when the death was a 3rd-party `die` or the OS handle was already
         // reaped — so every follower gets the same faithful fate.
-        if pane_arc.poll_exit().is_some() && pane_arc.pty.reader_finished() {
+        if pane_arc.exit_drained() {
             let tail = pane_arc.pty.tail(cursor);
             if !tail.bytes.is_empty() {
                 let env = wrap_envelope(
@@ -1321,14 +1347,18 @@ async fn dispatch_command(state: &DaemonState, cmd: agent_tui_protocol::Command)
     }
 }
 
-/// Polls `kill(pid, 0)` every 500ms; fires the shutdown notify when the
-/// PID is gone. Used by the `--monitor-parent` flag.
+/// Watches the `--monitor-parent` PID and fires the shutdown notify when it
+/// dies, on a 500ms cadence.
 ///
-/// Cross-platform: `kill(pid, 0)` returns success while the process
-/// exists, `ESRCH` after it dies. On Windows we'd shell out to
-/// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)` — but
-/// the daemon's Windows path is still in design (RFC §13.x), so this
-/// helper is Unix-only for now and silently does nothing elsewhere.
+///  - Unix: polls `kill(pid, 0)` — success while the process exists, `ESRCH`
+///    (or `EPERM`) once it is gone.
+///  - Windows: holds a SYNCHRONIZE handle via `OpenProcess` and polls it with a
+///    non-blocking `WaitForSingleObject(handle, 0)` on the same 500ms cadence,
+///    yielding to the runtime between probes and returning early on external
+///    shutdown (a null handle is treated as already-dead). The probe must not
+///    block — a blocking `WaitForSingleObject(handle, 500)` would pin a tokio
+///    worker thread so the runtime-drop's blocking-pool join hangs the daemon
+///    on any non-parent-death shutdown (idle timeout / `daemon shutdown`).
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
     #[cfg(unix)]
@@ -1348,7 +1378,77 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
             }
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Windows analog of the `kill(pid, 0)` poll: hold a SYNCHRONIZE handle
+        // to the parent and probe it with a *non-blocking*
+        // `WaitForSingleObject(handle, 0)` on a 500ms cadence, yielding to the
+        // runtime via `tokio::time::sleep(..).await` between probes. A null
+        // handle means we cannot even open it (already gone, or unreadable) →
+        // treat as owner death. The select! also listens on `shutdown` so an
+        // externally-fired shutdown returns promptly and releases the handle,
+        // instead of pinning a worker thread in a blocking wait.
+        use windows_sys::Win32::Foundation::{CloseHandle, FALSE, HANDLE, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+        };
+        // Standard SYNCHRONIZE access right (0x0010_0000), defined locally to
+        // avoid depending on its exact windows-sys module path.
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+
+        // SAFETY: OpenProcess is a Win32 syscall; a null return is handled below.
+        #[allow(unsafe_code)]
+        let handle =
+            unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+        if handle.is_null() {
+            info!(
+                monitor_parent = pid,
+                "parent process not openable (already exited?); shutting down daemon"
+            );
+            shutdown.notify_waiters();
+            return;
+        }
+        // Hold the handle as an address (`usize` is `Send`) so it can live
+        // across the `.await` below; the raw `HANDLE` pointer is `!Send`, which
+        // would make this task's future non-`Send` and thus unspawnable. Cast
+        // back to `HANDLE` for each syscall.
+        let handle_addr = handle as usize;
+        loop {
+            tokio::select! {
+                // External shutdown (idle timeout / `daemon shutdown` / `die`):
+                // stop polling, release the handle, and let the runtime drop
+                // this task cleanly.
+                () = shutdown.notified() => {
+                    // SAFETY: releasing the handle we opened above.
+                    #[allow(unsafe_code)]
+                    unsafe { CloseHandle(handle_addr as HANDLE) };
+                    return;
+                }
+                // Yielding wait keeps the same 500ms cadence as the Unix poll
+                // without pinning a worker thread.
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+            // Non-blocking parent-liveness probe (0ms timeout): WAIT_OBJECT_0
+            // iff the parent's process object is signaled (it exited).
+            // SAFETY: the handle is valid until we CloseHandle it below.
+            #[allow(unsafe_code)]
+            let rc = unsafe { WaitForSingleObject(handle_addr as HANDLE, 0) };
+            if rc == WAIT_OBJECT_0 {
+                info!(monitor_parent = pid, "parent exited; shutting down daemon");
+                shutdown.notify_waiters();
+                // SAFETY: releasing the handle we opened above.
+                #[allow(unsafe_code)]
+                unsafe {
+                    CloseHandle(handle_addr as HANDLE)
+                };
+                return;
+            }
+            // WAIT_TIMEOUT → still alive, poll again. Any other status
+            // (WAIT_FAILED / WAIT_ABANDONED) is treated conservatively as
+            // still-alive; the next iteration re-checks.
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, shutdown);
     }

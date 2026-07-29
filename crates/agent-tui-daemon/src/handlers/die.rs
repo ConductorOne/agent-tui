@@ -160,16 +160,17 @@ async fn wait_for_group_exit(pgid: i32, grace: Duration) -> bool {
 async fn teardown(entry: &Pane, grace: Option<Duration>) -> Teardown {
     use tokio::time::{Instant, sleep};
 
+    // Determine the teardown outcome first (unchanged semantics), then always
+    // close the ConPTY master below.
+    let mut exited_within_grace = false;
     if let Some(grace) = grace {
         const POLL: Duration = Duration::from_millis(20);
         let deadline = Instant::now() + grace;
         loop {
             match entry.pty.try_exit_code() {
                 Ok(Some(_)) | Err(_) => {
-                    return Teardown {
-                        escalated: false,
-                        error: None,
-                    };
+                    exited_within_grace = true;
+                    break;
                 }
                 Ok(None) => {}
             }
@@ -180,9 +181,27 @@ async fn teardown(entry: &Pane, grace: Option<Duration>) -> Teardown {
             sleep(POLL.min(deadline - now)).await;
         }
     }
-    let error = entry.pty.kill().err().map(|e| e.to_string());
-    Teardown {
-        escalated: grace.is_some(),
-        error,
-    }
+    let outcome = if exited_within_grace {
+        Teardown {
+            escalated: false,
+            error: None,
+        }
+    } else {
+        let error = entry.pty.kill().err().map(|e| e.to_string());
+        Teardown {
+            escalated: grace.is_some(),
+            error,
+        }
+    };
+
+    // Release the parked PTY reader thread. On Windows, killing the child does
+    // NOT EOF the master: conhost holds the output pipe's write end open until
+    // `ClosePseudoConsole` runs. Dropping the master here unblocks the reader's
+    // `spawn_blocking` thread (which `JoinHandle::abort` can't cancel) so a
+    // terminal-retained pane doesn't leak a parked blocking-pool thread — and a
+    // later `daemon shutdown` doesn't hang joining it. The pane stays readable
+    // (engine grid + output ring are separate `Arc`s).
+    entry.pty.close_master();
+
+    outcome
 }

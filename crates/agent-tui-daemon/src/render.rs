@@ -395,6 +395,7 @@ impl GlyphStyle {
 /// Draw `ch` in color `fg` into `cell`, honoring `style` (bold/italic face
 /// selection, dim coverage, underline, strikethrough). Missing glyphs render a
 /// hollow placeholder box so the gap is visible (never panic).
+#[allow(clippy::similar_names)] // `gx0`/`gy0` are the glyph's x/y origin — clear in context
 fn render_glyph(
     frame: &mut Frame,
     glyphs: &mut GlyphCache<'_>,

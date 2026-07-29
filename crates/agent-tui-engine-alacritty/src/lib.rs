@@ -67,11 +67,17 @@ struct TermEvents {
     bell_count: AtomicU64,
     /// Most recent OSC 0/2 title; `None` after a reset (or never set).
     title: Mutex<Option<String>>,
+    /// Bytes the terminal must write back to the PTY: DSR/DA/KKP replies.
+    /// Accumulated from `Event::PtyWrite` during `parser.advance`, drained by
+    /// `take_pty_writes` after each feed and forwarded to the PTY by the daemon.
+    pty_writes: Mutex<Vec<u8>>,
 }
 
 /// Listener installed in the `Term`; forwards the events agents care about
-/// into the shared [`TermEvents`] sink and drops the rest (`PtyWrite`,
-/// clipboard, …) — the daemon polls `snapshot`/`subscribe` for state.
+/// into the shared [`TermEvents`] sink — bell/title for state, and `PtyWrite`
+/// (DSR/DA/KKP replies) so the daemon can write them back to the PTY — and
+/// drops the rest (clipboard, …). The daemon polls `snapshot`/`subscribe` for
+/// state and drains `take_pty_writes` after each feed.
 #[derive(Clone, Default)]
 struct EventProxy(Arc<TermEvents>);
 
@@ -86,6 +92,13 @@ impl EventListener for EventProxy {
             }
             Event::ResetTitle => {
                 *self.0.title.lock().expect("title lock poisoned") = None;
+            }
+            Event::PtyWrite(text) => {
+                self.0
+                    .pty_writes
+                    .lock()
+                    .expect("pty_writes lock poisoned")
+                    .extend_from_slice(text.as_bytes());
             }
             _ => {}
         }
@@ -301,6 +314,16 @@ impl Engine for AlacrittyEngine {
 
     fn subscribe(&self) -> MutationStream {
         self.events.subscribe()
+    }
+
+    fn take_pty_writes(&self) -> Vec<u8> {
+        std::mem::take(
+            &mut *self
+                .term_events
+                .pty_writes
+                .lock()
+                .expect("pty_writes lock poisoned"),
+        )
     }
 }
 

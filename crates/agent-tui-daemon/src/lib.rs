@@ -9,9 +9,11 @@
 //! the adapter registry consulted at spawn time. See `docs/design/RFC.md` §2, §4,
 //! §5, §13.1.
 
-// Crate-level `deny` rather than `forbid` so the Windows signal handler
-// can opt into a single `unsafe` call (`GenerateConsoleCtrlEvent`, see
-// handlers/signal.rs). Every other module stays unsafe-free.
+// Crate-level `deny` rather than `forbid` so a few Windows-only FFI paths can
+// opt into `unsafe` via `#[allow(unsafe_code)]`: the parent-process monitor
+// (server.rs), the descendant-tree kill (pty.rs), and the detached daemon spawn
+// with an explicit handle-inheritance allow-list (win_spawn.rs). Every other
+// module stays unsafe-free.
 #![deny(unsafe_code)]
 
 pub mod adapter_registry;
@@ -27,6 +29,8 @@ pub mod render;
 pub mod server;
 pub mod sidecar;
 pub mod upgrade;
+#[cfg(windows)]
+pub mod win_spawn;
 
 pub use paths::SocketLayout;
 pub use server::{DaemonConfig, DaemonHandle, run_daemon};

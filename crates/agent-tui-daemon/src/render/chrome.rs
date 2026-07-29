@@ -280,6 +280,7 @@ fn draw_shadow(canvas: &mut Pixmap, x: f32, y: f32, w: f32, h: f32) {
 /// Draw centered title text using the embedded Regular face, rasterized
 /// through the parent module's font context (so the title matches the grid's
 /// typeface). Kept minimal — a single regular weight, centered.
+#[allow(clippy::similar_names)] // `gx0`/`gy0` are the glyph's x/y origin — clear in context
 fn draw_title(canvas: &mut Pixmap, title: &str, win_x: f32, win_y: f32, win_w: f32) {
     use super::{PX, font_ctx};
     let ctx = font_ctx();

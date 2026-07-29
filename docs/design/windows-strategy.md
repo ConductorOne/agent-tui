@@ -63,17 +63,16 @@ Estimated change: ~150 LOC across `client.rs`, `server.rs`, `paths.rs`, and the 
 
 Today's `handlers::signal::deliver` is already `#[cfg(unix)]` / `#[cfg(not(unix))]` split (the not-unix arm currently errors). The Windows arm becomes:
 
-| Signal name | Windows mapping |
+| Signal name | Windows mapping (**as implemented** — supersedes the original `GenerateConsoleCtrlEvent` plan) |
 |---|---|
-| `SIGINT` | `GenerateConsoleCtrlEvent(CTRL_C_EVENT, child_pid)` via `windows-sys` |
-| `SIGBREAK` (new) | `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child_pid)` |
-| `SIGTERM` | First a soft attempt via `WM_CLOSE`, then `TerminateProcess` (via `Child::kill`) after a short grace |
-| `SIGKILL` | `TerminateProcess` directly (via `ChildKiller::kill`) |
+| `SIGINT` | Write ETX `0x03` to the ConPTY **input** via the master writer; conhost synthesizes a real `CTRL_C_EVENT` for the pane's console clients (the idiomatic ConPTY path used by Windows Terminal/wezterm). `GenerateConsoleCtrlEvent` does **not** work here — the child is on its own pseudoconsole and is not a process-group root, so the call reaches nothing. |
+| `SIGBREAK` / `SIGQUIT` | **Rejected** with `INVALID_ARGS`: no pseudoconsole-input byte is translated into a `CTRL_BREAK_EVENT`, and `GenerateConsoleCtrlEvent` can't reach a child on its own pseudoconsole. Writing FS `0x1c` would be a silent no-op, so we don't claim success. Callers use `SIGINT` (interrupt) or `SIGTERM`/`die` (stop). |
+| `SIGTERM` / `SIGKILL` | Descendant-tree kill via `taskkill /F /T /PID` (`PtyChild::kill` → `kill_tree_windows`). |
 | `SIGHUP` / `SIGUSR*` / etc. | Reject with `INVALID_ARGS` — no analog |
 
-ConPTY also doesn't expose process groups; we deliver to the child PID. portable-pty puts spawned children into a Job Object on Windows, so `TerminateProcess` cleans up grand-children automatically.
+ConPTY doesn't expose process groups: `SIGINT` targets the child's console via the ConPTY input, and terminate uses the `taskkill /F /T` descendant-tree kill (portable-pty's own kill is child-PID-only, so we reap the tree explicitly rather than rely on a Job Object).
 
-Estimated change: ~80 LOC in `handlers/signal.rs` + a `windows-sys` workspace dep.
+Implemented in `handlers/signal.rs` (+ `pty.rs` for the tree kill), with a `windows-sys` workspace dep.
 
 ### 3. Comm normalization in adapter detect
 
