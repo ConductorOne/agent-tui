@@ -40,6 +40,11 @@ chrono = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# GetConsoleMode/SetConsoleMode for the dsr_probe test binary's VT-input setup
+# (src/bin/dsr_probe.rs). Same windows-sys version the daemon uses.
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
+
 [dev-dependencies]
 # Optional Docker-API features in the dev tier so `cargo test -p
 # agent-tui-integration --features docker` works without --no-default-features.
