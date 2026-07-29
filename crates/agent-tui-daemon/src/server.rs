@@ -1413,12 +1413,20 @@ async fn parent_pid_monitor(pid: u32, shutdown: Arc<Notify>) {
         // would make this task's future non-`Send` and thus unspawnable. Cast
         // back to `HANDLE` for each syscall.
         let handle_addr = handle as usize;
+        // Hold ONE `Notified` future across loop iterations. `notify_waiters()`
+        // stores no permit, so a future re-created each iteration misses a
+        // shutdown that fires in the gap between the sleep arm resolving and
+        // the next `notified()` being polled — the monitor would then keep
+        // polling until parent death. A polled-but-pending `Notified` stays
+        // registered, so the wakeup is latched and the next `select!` poll
+        // completes immediately.
+        let mut notified = std::pin::pin!(shutdown.notified());
         loop {
             tokio::select! {
                 // External shutdown (idle timeout / `daemon shutdown` / `die`):
                 // stop polling, release the handle, and let the runtime drop
                 // this task cleanly.
-                () = shutdown.notified() => {
+                () = &mut notified => {
                     // SAFETY: releasing the handle we opened above.
                     #[allow(unsafe_code)]
                     unsafe { CloseHandle(handle_addr as HANDLE) };
