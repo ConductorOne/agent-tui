@@ -43,7 +43,8 @@ jobs:
   test:
     # IPC is interprocess::local_socket on every platform (Unix sockets on
     # Linux/macOS, named pipes on Windows). Signals are cfg-gated so Windows
-    # gets GenerateConsoleCtrlEvent + TerminateProcess instead of killpg.
+    # uses ConPTY-input ETX (SIGINT) + taskkill tree-kill (SIGTERM/SIGKILL)
+    # instead of killpg.
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:

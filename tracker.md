@@ -38,7 +38,7 @@ Implication: v1 does not have Kitty graphics + Sixel + OSC 8 hyperlinks in the e
 - **PluginAdapter (sub-process JSON-RPC over stdio)** — Moved to P4 alongside `mcp serve`. Both speak stdio JSON-RPC; build the framework once.
 - **nvim / tmux built-in adapters** — Will land as external plug-ins via PluginAdapter once #2 ships. Avoids dragging `nvim --headless` / `tmux -CC` into CI.
 - **wezterm engine real impl** — Blocked on `wezterm-term` being published to crates.io. Track only.
-- **Windows runtime — cycle W2 (signal mapping + `.exe` strip in adapter comm + re-enable `windows-latest` in CI).** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; Windows-specific signal handling (`GenerateConsoleCtrlEvent` / `TerminateProcess` instead of `killpg`) is the next ~80 LOC cycle. See `docs/design/windows-strategy.md` for the full plan.
+- **Windows runtime — cycle W2 — SHIPPED (PR #124), with a mechanism change.** Cycle W1 (IPC swap to `interprocess`) shipped on all platforms; W2 landed signal handling as ConPTY-input ETX (SIGINT) + `taskkill /F /T` descendant-tree kill (SIGTERM/SIGKILL) instead of the planned `GenerateConsoleCtrlEvent` (which cannot reach a child on its own pseudoconsole), plus ConPTY DSR render, headless pipe spawn for `run`/`ask`/`edit`, the `run | consumer` handle-inheritance fix, and `windows-latest` in the CI matrix. SIGBREAK/SIGQUIT is rejected honestly (no delivery path). Still open: owner-only DACL on the named pipe, real Ctrl-Break delivery — see `docs/design/windows-strategy.md`.
 
 ### P-UX6 — timeout fix + small primitives (this PR)
 
